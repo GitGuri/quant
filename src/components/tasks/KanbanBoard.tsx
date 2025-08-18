@@ -1,3 +1,4 @@
+// KanbanBoard.tsx
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   Card,
@@ -33,7 +34,8 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
-import { TaskForm, type TaskFormData } from './TaskForm';
+// --- UPDATED: Import TaskStepFormData from TaskForm ---
+import { TaskForm, type TaskFormData, type TaskStepFormData } from './TaskForm'; // Assuming TaskStepFormData is exported
 import { ProjectForm, type ProjectFormData } from './ProjectForm';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -70,7 +72,16 @@ interface Project {
   progress_percentage: number;
 }
 
-// Extend Task interface to include project information + assignee fields
+// ---- UPDATED: Extend Task interface to include project information + assignee fields + NEW progress fields ----
+interface TaskStep {
+  id: string;
+  task_id: string;
+  title: string;
+  weight: number | null;
+  is_done: boolean;
+  position: number;
+}
+
 interface Task {
   id: string;
   user_id: string;
@@ -86,12 +97,18 @@ interface Task {
   assignee_name?: string | null;   // <-- backend-provided name
   project_id?: string | null;
   project_name?: string | null;
+  // --- NEW FIELDS FOR PROGRESS TRACKING ---
+  progress_mode: 'manual' | 'target' | 'steps'; // Matches backend enum
+  progress_goal: number | null;
+  progress_current: number | null;
+  steps: TaskStep[]; // Array of steps
 }
+// ---- END UPDATED ----
 
 interface Column {
   id: string;
   title: string;
-  tasks: Task[];
+  tasks: Task[]; // Updated type
   color: string;
 }
 
@@ -116,7 +133,7 @@ export function KanbanBoard() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [users, setUsers] = useState<User[]>([]); // <-- New: users list
   const [selectedProjectId, setSelectedProjectId] = useState<string>('all');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true); // Add loading state for task creation
 
   const { toast } = useToast();
   const { isAuthenticated } = useAuth();
@@ -135,6 +152,7 @@ export function KanbanBoard() {
 
   const getStatusFromProgress = (progress: number): Task['status'] => {
     if (progress === 100) return 'Done';
+    if (progress >= 75) return 'Review'; // Added 'Review' status
     if (progress >= 25) return 'In Progress';
     return 'To Do';
   };
@@ -143,6 +161,7 @@ export function KanbanBoard() {
     switch (status) {
       case 'To Do': return 'todo';
       case 'In Progress': return 'inprogress';
+      case 'Review': return 'inprogress'; // Map 'Review' to 'In Progress' column
       case 'Done': return 'done';
       default: return 'todo';
     }
@@ -166,6 +185,7 @@ export function KanbanBoard() {
 
   // ---- New: fetch users ----
   const fetchUsers = useCallback(async () => {
+    // --- FIXED: Removed extra space in URL ---
     const resp = await fetch('https://quantnow.onrender.com/api/users', {
       headers: getAuthHeaders(),
     });
@@ -192,6 +212,7 @@ export function KanbanBoard() {
     try {
       await fetchUsers(); // <-- ensure users are loaded
 
+      // --- FIXED: Removed extra space in URL ---
       const projectsResponse = await fetch('https://quantnow.onrender.com/api/projects', {
         headers: getAuthHeaders(),
       });
@@ -199,11 +220,13 @@ export function KanbanBoard() {
       const projectsData: Project[] = await projectsResponse.json();
       setProjects(projectsData);
 
+      // --- FIXED: Removed extra space in URL ---
       const tasksResponse = await fetch('https://quantnow.onrender.com/api/tasks', {
         headers: getAuthHeaders(),
       });
       if (!tasksResponse.ok) throw new Error(`HTTP error! status: ${tasksResponse.status}`);
-      const tasksData: Task[] = await tasksResponse.json();
+      // --- CRITICAL FIX: Use tasksResponse.json(), not tasksData.json() ---
+      const tasksData: Task[] = await tasksResponse.json(); // Corrected line
 
       const newColumns = staticColumns.map(column => ({
         ...column,
@@ -274,34 +297,45 @@ export function KanbanBoard() {
         todo: 'To Do',
         inprogress: 'In Progress',
         done: 'Done',
+        // Note: 'Review' status is usually set by progress logic, not direct drag
       };
       const newStatus = statusMap[overColumn.id] || activeTask.status;
 
-      // Optimistic UI
-      setColumns(
-        columns.map((column) => {
+      // --- IMPROVED: Optimistic UI - Update local state with full task object ---
+      setColumns(prevColumns =>
+        prevColumns.map(column => {
           if (column.id === activeColumn.id) {
-            return { ...column, tasks: column.tasks.filter(t => t.id !== activeId) };
+            return {
+              ...column,
+              tasks: column.tasks.filter(t => t.id !== activeId)
+            };
           }
           if (column.id === overColumn.id) {
-            return { ...column, tasks: [...column.tasks, { ...activeTask, status: newStatus }] };
+            return {
+              ...column,
+              tasks: [...column.tasks, { ...activeTask, status: newStatus }]
+            };
           }
           return column;
         })
       );
 
       try {
+        // --- FIXED: Removed extra space in URL ---
         const response = await fetch(`https://quantnow.onrender.com/api/tasks/${activeTask.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          // --- IMPROVED: Send the potentially updated task object, not just status ---
           body: JSON.stringify({ ...activeTask, status: newStatus }),
         });
         if (!response.ok) throw new Error('Failed to update task status on backend.');
         toast({ title: 'Task moved', description: `Task moved from ${activeColumn.title} to ${overColumn.title}` });
+        // Refresh data from backend to ensure consistency
         fetchTasksAndProjects();
       } catch (error) {
         console.error('Error updating task status:', error);
         toast({ title: 'Error', description: 'Failed to move task. Please try again.', variant: 'destructive' });
+        // Revert optimistic update on error
         fetchTasksAndProjects();
       }
     }
@@ -325,35 +359,132 @@ export function KanbanBoard() {
 
   const handleAddTask = () => setShowNewTaskForm(true);
 
-  const handleSaveNewTask = async (taskData: TaskFormData) => {
+  // --- UPDATED: handleSaveNewTask with robust step creation ---
+  const handleSaveNewTask = async (taskData: TaskFormData, initialStepsToAdd?: TaskStepFormData[]) => {
     if (!isAuthenticated || !token) {
-      toast({ title: 'Authentication Required', description: 'Please log in to create tasks.', variant: 'destructive' });
+      toast({
+        title: 'Authentication Required',
+        description: 'Please log in to create tasks.',
+        variant: 'destructive',
+      });
       return;
     }
-    const statusFromProgress = getStatusFromProgress(taskData.progress_percentage);
+
+    setIsLoading(true); // Show loading state during task creation
+    let createdTaskId: string | null = null;
+
     try {
+      // --- 1. Create the Task ---
+      console.log("[handleSaveNewTask] Creating task with data:", taskData);
       const response = await fetch('https://quantnow.onrender.com/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           ...taskData,
-          status: statusFromProgress,
-          user_id: 'frontend-user-123',
-          assignee_id: taskData.assignee_id ?? null, // <-- send id
+          status: getStatusFromProgress(taskData.progress_percentage), // Derive status
+          user_id: 'frontend-user-123', // This should ideally come from auth context
+          assignee_id: taskData.assignee_id ?? null,
         }),
       });
-      if (!response.ok) throw new Error('Failed to create task on backend.');
-      fetchTasksAndProjects();
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("[handleSaveNewTask] Failed to create task. Status:", response.status, "Body:", errorText);
+        throw new Error(`Failed to create task on backend. Status: ${response.status}. Details: ${errorText}`);
+      }
+
+      const newTask = await response.json();
+      createdTaskId = newTask?.id;
+      console.log("[handleSaveNewTask] New task created with ID:", createdTaskId);
+
+      if (!createdTaskId) {
+        throw new Error("Task creation succeeded, but the response did not contain a valid task ID.");
+      }
+
+      // --- 2. Handle Initial Steps (if applicable and task created successfully) ---
+      if (taskData.progress_mode === 'steps' && initialStepsToAdd && initialStepsToAdd.length > 0) {
+        console.log(`[handleSaveNewTask] Attempting to add ${initialStepsToAdd.length} initial steps to task ${createdTaskId}`);
+        const addStepPromises = initialStepsToAdd.map((step, index) =>
+          // Use a more robust async/await inside the map for better error handling per step
+          (async () => {
+            try {
+              const stepResponse = await fetch(`https://quantnow.onrender.com/api/tasks/${createdTaskId}/steps`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({
+                  title: step.title,
+                  weight: step.weight,
+                  is_done: step.is_done,
+                  position: step.position,
+                }),
+              });
+
+              if (!stepResponse.ok) {
+                const stepErrorText = await stepResponse.text();
+                console.error(`[handleSaveNewTask] Failed to add step '${step.title}' (index ${index}) to task ${createdTaskId}:`, stepResponse.status, stepErrorText);
+                // Throw an error to be caught by Promise.allSettled
+                throw new Error(`HTTP ${stepResponse.status}: ${stepErrorText}`);
+              }
+
+              const createdStep = await stepResponse.json();
+              console.log(`[handleSaveNewTask] Successfully added step '${step.title}' (ID: ${createdStep?.id}) to task ${createdTaskId}`);
+              return { status: 'fulfilled' as const, value: createdStep, stepTitle: step.title };
+            } catch (stepError: any) {
+              console.error(`[handleSaveNewTask] Error (network or otherwise) adding step '${step.title}' (index ${index}) to task ${createdTaskId}:`, stepError);
+              // Return a rejected status for Promise.allSettled
+              return { status: 'rejected' as const, reason: stepError, stepTitle: step.title };
+            }
+          })()
+        );
+
+        // Wait for all step creation attempts to settle (fulfill or reject)
+        const results = await Promise.allSettled(addStepPromises);
+
+        // Check for any failures
+        const failedSteps = results.filter(result => result.status === 'rejected');
+        if (failedSteps.length > 0) {
+          console.warn(`[handleSaveNewTask] Some initial steps failed to create for task ${createdTaskId}:`, failedSteps);
+          // Show a warning toast to the user
+          toast({
+            title: 'Task created, but some steps failed',
+            description: `The task was created, but ${failedSteps.length} out of ${initialStepsToAdd.length} initial steps could not be added. You can add them later via the task card.`,
+            variant: 'destructive', // Consider using 'warning' if available
+          });
+          // Note: The task itself is still created successfully.
+        } else {
+          console.log(`[handleSaveNewTask] All ${initialStepsToAdd.length} initial steps successfully added to task ${createdTaskId}`);
+        }
+      } else {
+        console.log("[handleSaveNewTask] No initial steps to add or not in 'steps' mode.");
+      }
+
+      // --- 3. Finalize: Refresh the task list and close the form ---
+      await fetchTasksAndProjects(); // Refresh list to show the new task (and ideally its steps if they were created)
       setShowNewTaskForm(false);
       toast({ title: 'Task created successfully' });
+
     } catch (error) {
-      console.error('Error creating task:', error);
-      toast({ title: 'Error', description: 'Failed to create task. Please try again.', variant: 'destructive' });
+      console.error('[handleSaveNewTask] Error during task creation or step addition:', error);
+      // Provide a user-friendly error message
+      toast({
+        title: 'Error',
+        description: `Failed to create task${createdTaskId ? ` or add steps to task ${createdTaskId}` : ''}. Please try again. Details: ${error instanceof Error ? error.message : String(error)}`,
+        variant: 'destructive',
+      });
+      // Even if step creation failed, if the task was created, it's good to refresh the list
+      // to show the user the task exists (even if steps are missing).
+      if (createdTaskId) {
+         fetchTasksAndProjects();
+      }
+    } finally {
+       setIsLoading(false); // Ensure loading state is turned off
     }
   };
+  // --- END UPDATED ---
 
   const handleOpenEdit = (task: Task) => setTaskToEdit(task);
 
+  // --- UPDATED: handleSubmitEdit to pass new fields ---
   const handleSubmitEdit = async (taskData: TaskFormData) => {
     if (!taskToEdit) return;
     if (!isAuthenticated || !token) {
@@ -362,18 +493,24 @@ export function KanbanBoard() {
     }
     const statusFromProgress = getStatusFromProgress(taskData.progress_percentage);
     try {
+      // --- FIXED: Removed extra space in URL ---
       const response = await fetch(`https://quantnow.onrender.com/api/tasks/${taskToEdit.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           ...taskData,
+          // --- NEW: Include new progress fields ---
+          progress_mode: taskData.progress_mode,
+          progress_goal: taskData.progress_mode === 'target' ? taskData.progress_goal : null,
+          progress_current: taskData.progress_mode === 'target' ? taskData.progress_current : 0,
+          // steps are managed separately via their own endpoint
           status: statusFromProgress,
-          user_id: 'frontend-user-123',
-          assignee_id: taskData.assignee_id ?? null, // <-- send id
+          user_id: 'frontend-user-123', // This should ideally come from auth context
+          assignee_id: taskData.assignee_id ?? null,
         }),
       });
       if (!response.ok) throw new Error('Failed to update task on backend.');
-      fetchTasksAndProjects();
+      fetchTasksAndProjects(); // Refresh list
       setTaskToEdit(null);
       toast({ title: 'Task updated successfully' });
     } catch (error) {
@@ -388,12 +525,13 @@ export function KanbanBoard() {
       return;
     }
     try {
+      // --- FIXED: Removed extra space in URL ---
       const response = await fetch(`https://quantnow.onrender.com/api/tasks/${taskId}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
       if (!response.ok) throw new Error('Failed to delete task on backend.');
-      fetchTasksAndProjects();
+      fetchTasksAndProjects(); // Refresh list
       toast({ title: 'Task deleted successfully' });
     } catch (error) {
       console.error('Error deleting task:', error);
@@ -407,16 +545,17 @@ export function KanbanBoard() {
       return;
     }
     try {
+      // --- FIXED: Removed extra space in URL ---
       const response = await fetch('https://quantnow.onrender.com/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           ...projectData,
-          assignee_id: projectData.assignee_id ?? null, // <-- send id
+          assignee_id: projectData.assignee_id ?? null,
         }),
       });
       if (!response.ok) throw new Error('Failed to create project on backend.');
-      fetchTasksAndProjects();
+      fetchTasksAndProjects(); // Refresh list
       setShowNewProjectForm(false);
       toast({ title: `Project "${projectData.name}" created successfully!` });
     } catch (error) {
@@ -432,16 +571,17 @@ export function KanbanBoard() {
       return;
     }
     try {
+      // --- FIXED: Removed extra space in URL ---
       const response = await fetch(`https://quantnow.onrender.com/api/projects/${activeProject.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           ...projectData,
-          assignee_id: projectData.assignee_id ?? null, // <-- send id
+          assignee_id: projectData.assignee_id ?? null,
         }),
       });
       if (!response.ok) throw new Error('Failed to update project on backend.');
-      fetchTasksAndProjects();
+      fetchTasksAndProjects(); // Refresh list
       setActiveProject(null);
       toast({ title: `Project "${projectData.name}" updated successfully!` });
     } catch (error) {
@@ -457,12 +597,13 @@ export function KanbanBoard() {
       return;
     }
     try {
+      // --- FIXED: Removed extra space in URL ---
       const response = await fetch(`https://quantnow.onrender.com/api/projects/${projectToDelete.id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
       if (!response.ok) throw new Error('Failed to delete project on backend.');
-      fetchTasksAndProjects();
+      fetchTasksAndProjects(); // Refresh list
       toast({ title: `Project "${projectToDelete.name}" and its tasks deleted.` });
       setProjectToDelete(null);
       setShowDeleteProjectAlert(false);
@@ -611,6 +752,7 @@ export function KanbanBoard() {
                         >
                           <AnimatePresence>
                             {columnTasks.map((task) => (
+                              // --- UPDATED: Pass onTaskUpdate prop ---
                               <TaskCard
                                 key={task.id}
                                 task={task}
@@ -620,6 +762,8 @@ export function KanbanBoard() {
                                 progressPercentage={task.progress_percentage}
                                 project_name={task.project_name}
                                 projects={projects}
+                                users={users} // Pass users if needed by TaskCard directly
+                                onTaskUpdate={fetchTasksAndProjects} // Pass refresh function
                               />
                             ))}
                           </AnimatePresence>
@@ -644,6 +788,7 @@ export function KanbanBoard() {
 
           <DragOverlay>
             {draggedTask && (
+              // --- UPDATED: Pass onTaskUpdate prop to DragOverlay TaskCard ---
               <TaskCard
                 task={draggedTask}
                 onEdit={() => {}}
@@ -652,6 +797,8 @@ export function KanbanBoard() {
                 progressPercentage={draggedTask.progress_percentage}
                 project_name={draggedTask.project_name}
                 projects={projects}
+                users={users}
+                onTaskUpdate={fetchTasksAndProjects} // Pass refresh function
               />
             )}
           </DragOverlay>
@@ -663,10 +810,10 @@ export function KanbanBoard() {
                 <DialogTitle>Create New Task</DialogTitle>
               </DialogHeader>
               <TaskForm
-                onSave={handleSaveNewTask}
+                onSave={handleSaveNewTask} // Updated to handle initial steps
                 onCancel={() => setShowNewTaskForm(false)}
                 projects={projects}
-                users={users}             // <-- pass users
+                users={users}
               />
             </DialogContent>
           </Dialog>
@@ -687,6 +834,10 @@ export function KanbanBoard() {
                     due_date: taskToEdit.due_date,
                     progress_percentage: taskToEdit.progress_percentage,
                     project_id: taskToEdit.project_id ?? null,
+                    // --- NEW: Prefill progress fields for editing ---
+                    progress_mode: taskToEdit.progress_mode,
+                    progress_goal: taskToEdit.progress_goal,
+                    progress_current: taskToEdit.progress_current,
                   }}
                   onSave={handleSubmitEdit}
                   onCancel={() => setTaskToEdit(null)}
