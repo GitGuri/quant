@@ -1,133 +1,168 @@
-import React, { useState, useEffect, useCallback } from 'react'
-import { Header } from '@/components/layout/Header'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { motion } from 'framer-motion'
-import Highcharts from 'highcharts'
-import HighchartsReact from 'highcharts-react-official'
-import HighchartsMore from 'highcharts/highcharts-more'
-import { TrendingUp, Calendar, BarChart3, FolderKanban, Loader2 } from 'lucide-react'
-import { useToast } from '@/components/ui/use-toast'
-import { useAuth } from '../AuthPage' // Import useAuth
-import axios from 'axios'
+// Projections.tsx
+
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Header } from '@/components/layout/Header';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { motion } from 'framer-motion';
+import Highcharts from 'highcharts';
+import HighchartsReact from 'highcharts-react-official';
+import HighchartsMore from 'highcharts/highcharts-more';
+import { TrendingUp, Calendar, BarChart3, FolderKanban, Loader2 } from 'lucide-react';
+import { useToast } from '@/components/ui/use-toast';
+import { useAuth } from '../AuthPage';
+import axios from 'axios';
+import { format, subDays, differenceInMonths } from 'date-fns'; // Added differenceInMonths
 
 // Initialize the Highcharts-more module for waterfall charts
-if (typeof HighchartsMore === 'function') HighchartsMore(Highcharts)
+if (typeof HighchartsMore === 'function') HighchartsMore(Highcharts);
 
 // IMPORTANT: Replace with your actual backend API URL
 const API_BASE_URL = 'https://quantnow.onrender.com';
 
 const Projections = () => {
-  const { toast } = useToast()
-  // Get isAuthenticated from the hook, and the token from localStorage
-  const { isAuthenticated } = useAuth()
+  const { toast } = useToast();
+  const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
-  
-  const [revenueGrowthRate, setRevenueGrowthRate] = useState(5)
-  const [costGrowthRate, setCostGrowthRate] = useState(3)
-  const [expenseGrowthRate, setExpenseGrowthRate] = useState(2)
-  const [baselineData, setBaselineData] = useState(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
+
+  const [revenueGrowthRate, setRevenueGrowthRate] = useState(5);
+  const [costGrowthRate, setCostGrowthRate] = useState(3);
+  const [expenseGrowthRate, setExpenseGrowthRate] = useState(2);
+  const [baselineData, setBaselineData] = useState<any>(null); // Use <any> for now
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [activeTab, setActiveTab] = useState('12-months'); // Changed initial tab to 12 months
+
+  // State for custom period dates and data
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  const [customProjectionData, setCustomProjectionData] = useState<any[]>([]);
 
   // Memoized function to get authentication headers
   const getAuthHeaders = useCallback(() => {
-    return token ? { 'Authorization': `Bearer ${token}` } : {};
+    return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
 
   // Use useCallback to memoize the function and prevent unnecessary re-creations
-  const fetchBaselineData = useCallback(async () => {
-    setIsRefreshing(true);
-    
-    // The useEffect hook now handles the isAuthenticated and token checks,
-    // so we can remove the check here for a cleaner function.
-    // The toast message is now handled by the UI when the refresh button is disabled.
+  const fetchBaselineData = useCallback(
+    async (startDate?: string, endDate?: string) => {
+      setIsRefreshing(true);
 
-    try {
-      const response = await axios.get(`${API_BASE_URL}/api/projections/baseline-data`, {
-        headers: getAuthHeaders(),
-      })
-      setBaselineData(response.data)
-      toast({
-        title: 'Success',
-        description: 'Financial baseline data loaded successfully.',
-        variant: 'default'
-      })
-    } catch (error) {
-      console.error('Error fetching baseline data:', error)
-      toast({
-        title: 'Error',
-        description: 'Failed to load financial baseline data.',
-        variant: 'destructive'
-      })
-      setBaselineData(null);
-    } finally {
-      setIsRefreshing(false)
-      setIsLoading(false)
-    }
-  }, [getAuthHeaders, toast])
+      if (!isAuthenticated || !token) {
+        setIsLoading(false);
+        setIsRefreshing(false);
+        toast({
+          title: 'Error',
+          description: 'Authentication required. Please log in to view projections.',
+          variant: 'destructive',
+        });
+        return;
+      }
 
-  // Initial data fetch on component mount. Now also depends on 'token'.
-  // This ensures the fetch only happens when both isAuthenticated and a valid token are present.
+      try {
+        let url = `${API_BASE_URL}/api/projections/baseline-data`;
+        if (startDate && endDate) {
+          url += `?startDate=${startDate}&endDate=${endDate}`;
+        }
+
+        const response = await axios.get(url, {
+          headers: getAuthHeaders(),
+        });
+        setBaselineData(response.data);
+        toast({
+          title: 'Success',
+          description: 'Financial baseline data loaded successfully.',
+          variant: 'default',
+        });
+      } catch (error) {
+        console.error('Error fetching baseline data:', error);
+        toast({
+          title: 'Error',
+          description: 'Failed to load financial baseline data.',
+          variant: 'destructive',
+        });
+        setBaselineData(null);
+      } finally {
+        setIsRefreshing(false);
+        setIsLoading(false);
+      }
+    },
+    [getAuthHeaders, isAuthenticated, token, toast]
+  );
+
+  // Initial data fetch on component mount and when activeTab changes
   useEffect(() => {
-    // Only fetch if authenticated AND a token exists in local storage
     if (isAuthenticated && token) {
-      fetchBaselineData()
-    } else {
-      // If not authenticated or token is not yet available, stop the loading state.
-      setIsLoading(false);
+      if (activeTab === '12-months' || activeTab === '5-years') {
+        fetchBaselineData();
+      }
     }
-  }, [isAuthenticated, token, fetchBaselineData])
+  }, [isAuthenticated, token, fetchBaselineData, activeTab]);
 
-  // A new function to handle the refresh button click
-  const handleRefresh = () => {
-    if (isAuthenticated && token) {
-      fetchBaselineData();
-    } else {
+  // Handle data fetch for custom period
+  const handleCustomFetch = async () => {
+    if (!customStartDate || !customEndDate) {
       toast({
         title: 'Error',
-        description: 'Authentication required. Please log in to view projections.',
+        description: 'Please select both start and end dates.',
         variant: 'destructive',
-      })
+      });
+      return;
     }
-  }
+    await fetchBaselineData(customStartDate, customEndDate);
+  };
+  
+  // Use useEffect to generate custom projections whenever baselineData changes after a custom fetch
+  useEffect(() => {
+    if (activeTab === 'custom' && baselineData) {
+      try {
+        const startDate = new Date(customStartDate);
+        const endDate = new Date(customEndDate);
+        const numberOfMonths = differenceInMonths(endDate, startDate) + 1;
+        
+        const customProjections = generateProjectionData(numberOfMonths);
+        setCustomProjectionData(customProjections);
+        
+      } catch (error) {
+        console.error("Error generating custom projection data:", error);
+        setCustomProjectionData([]);
+      }
+    }
+  }, [baselineData, activeTab, customStartDate, customEndDate]);
+
 
   const generateProjectionData = (periods: number, isYearly = false) => {
-    if (!baselineData) return []
-    
-    const data = []
-    const periodLabel = isYearly ? 'Year' : 'Month'
+    if (!baselineData) return [];
+
+    const data = [];
+    const periodLabel = isYearly ? 'Year' : 'Month';
 
     for (let i = 0; i <= periods; i++) {
-      // The baseline data is at index 0, so no growth is applied
       if (i === 0) {
-        const grossProfit = baselineData.sales - baselineData.costOfGoods
-        const netProfit = grossProfit - baselineData.totalExpenses
+        const grossProfit = baselineData.sales - baselineData.costOfGoods;
+        const netProfit = grossProfit - baselineData.totalExpenses;
         data.push({
           period: 'Baseline',
           sales: Math.round(baselineData.sales),
           costs: Math.round(baselineData.costOfGoods),
           expenses: Math.round(baselineData.totalExpenses),
           grossProfit: Math.round(grossProfit),
-          netProfit: Math.round(netProfit)
-        })
-        continue // Skip to the next iteration
+          netProfit: Math.round(netProfit),
+        });
+        continue;
       }
-      
-      const multiplier = isYearly ? i : i / 12
-      const sales =
-        baselineData.sales * Math.pow(1 + revenueGrowthRate / 100, multiplier)
+
+      const multiplier = isYearly ? i : i / 12;
+      const sales = baselineData.sales * Math.pow(1 + revenueGrowthRate / 100, multiplier);
       const costs =
-        baselineData.costOfGoods *
-        Math.pow(1 + costGrowthRate / 100, multiplier)
+        baselineData.costOfGoods * Math.pow(1 + costGrowthRate / 100, multiplier);
       const expenses =
-        baselineData.totalExpenses *
-        Math.pow(1 + expenseGrowthRate / 100, multiplier)
-      const grossProfit = sales - costs
-      const netProfit = grossProfit - expenses
+        baselineData.totalExpenses * Math.pow(1 + expenseGrowthRate / 100, multiplier);
+      const grossProfit = sales - costs;
+      const netProfit = grossProfit - expenses;
 
       data.push({
         period: `${periodLabel} ${i}`,
@@ -135,133 +170,141 @@ const Projections = () => {
         costs: Math.round(costs),
         expenses: Math.round(expenses),
         grossProfit: Math.round(grossProfit),
-        netProfit: Math.round(netProfit)
-      })
+        netProfit: Math.round(netProfit),
+      });
     }
-    return data
-  }
+    return data;
+  };
 
   // Helper to transform data for the inverted table (metrics as rows, periods as columns)
   const transformToInvertedTableData = (projectionData: any[]) => {
-    if (!projectionData || projectionData.length === 0) return { headers: [], rows: [] }
+    if (!projectionData || projectionData.length === 0)
+      return { headers: [], rows: [] };
 
-    const headers = projectionData.map(d => d.period) // Periods become headers
+    const headers = projectionData.map((d) => d.period);
     const metrics = [
       { key: 'sales', label: 'Sales' },
       { key: 'costs', label: 'Cost of Goods' },
       { key: 'grossProfit', label: 'Gross Profit' },
       { key: 'expenses', label: 'Total Expenses' },
-      { key: 'netProfit', label: 'Net Profit' }
-    ]
+      { key: 'netProfit', label: 'Net Profit' },
+    ];
 
-    const rows = metrics.map(metric => {
+    const rows = metrics.map((metric) => {
       const rowData = {
         metric: metric.label,
-        values: projectionData.map(d => d[metric.key])
-      }
-      return rowData
-    })
+        values: projectionData.map((d) => d[metric.key]),
+      };
+      return rowData;
+    });
 
-    return { headers, rows }
-  }
+    return { headers, rows };
+  };
 
   const createChartOptions = (data: any[], title: string) => {
     if (!data || data.length === 0) {
       return {
         title: { text: title },
         series: [],
-        noData: { style: { fontWeight: 'bold', fontSize: '15px' }, position: { verticalAlign: 'middle' }, text: 'No data available to display chart.' }
+        noData: {
+          style: { fontWeight: 'bold', fontSize: '15px' },
+          position: { verticalAlign: 'middle' },
+          text: 'No data available to display chart.',
+        },
       };
     }
-    
+
     return {
       chart: {
         type: 'line',
-        height: 400
+        height: 400,
       },
       title: {
-        text: title
+        text: title,
       },
       xAxis: {
-        categories: data.map(d => d.period)
+        categories: data.map((d) => d.period),
       },
       yAxis: {
         title: {
-          text: 'Amount (R)'
+          text: 'Amount (R)',
         },
         labels: {
-          formatter: function () {
-            return (
-              'R' + Highcharts.numberFormat(this.value as number, 0, '.', ',')
-            )
-          }
-        }
+          formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
+            return 'R' + Highcharts.numberFormat(this.value as number, 0, '.', ',');
+          },
+        },
       },
       tooltip: {
         formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          return `<b>${this.series.name}</b><br/>${
-            this.x
-          }: R${Highcharts.numberFormat(this.y as number, 0, '.', ',')}`
-        }
+          return `<b>${this.series.name}</b><br/>${this.x}: R${Highcharts.numberFormat(
+            this.y as number,
+            0,
+            '.',
+            ','
+          )}`;
+        },
       },
       series: [
         {
           name: 'Sales',
-          data: data.map(d => d.sales),
-          color: '#3b82f6'
+          data: data.map((d) => d.sales),
+          color: '#3b82f6',
         },
         {
           name: 'Gross Profit',
-          data: data.map(d => d.grossProfit),
-          color: '#10b981'
+          data: data.map((d) => d.grossProfit),
+          color: '#10b981',
         },
         {
           name: 'Net Profit',
-          data: data.map(d => d.netProfit),
-          color: '#8b5cf6'
-        }
+          data: data.map((d) => d.netProfit),
+          color: '#8b5cf6',
+        },
       ] as Highcharts.SeriesOptionsType[],
       legend: {
-        enabled: true
+        enabled: true,
       },
       credits: {
-        enabled: false
-      }
-    }
-  }
+        enabled: false,
+      },
+    };
+  };
 
   const createWaterfallOptions = (data: any[]) => {
     if (!data || data.length === 0) {
       return {
         title: { text: 'Profit & Loss Waterfall - Latest Projection' },
         series: [],
-        noData: { style: { fontWeight: 'bold', fontSize: '15px' }, position: { verticalAlign: 'middle' }, text: 'No data available to display chart.' }
+        noData: {
+          style: { fontWeight: 'bold', fontSize: '15px' },
+          position: { verticalAlign: 'middle' },
+          text: 'No data available to display chart.',
+        },
       };
     }
 
-    const latestData = data[data.length - 1]
+    const latestData = data[data.length - 1];
     return {
       chart: {
         type: 'waterfall',
-        height: 400
+        height: 400,
       },
       title: {
-        text: 'Profit & Loss Waterfall - Latest Projection'
+        text: 'Profit & Loss Waterfall - Latest Projection',
       },
       xAxis: {
-        type: 'category'
+        type: 'category',
       },
       yAxis: {
         title: {
-          text: 'Amount (R)'
+          text: 'Amount (R)',
         },
         labels: {
-          formatter: function () {
-            return (
-              'R' + Highcharts.numberFormat(this.value as number, 0, '.', ',')
-            )
-          }
-        }
+          formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
+            return 'R' + Highcharts.numberFormat(this.value as number, 0, '.', ',');
+          },
+        },
       },
       tooltip: {
         formatter: function (this: Highcharts.TooltipFormatterContextObject) {
@@ -270,8 +313,8 @@ const Projections = () => {
             0,
             '.',
             ','
-          )}`
-        }
+          )}`;
+        },
       },
       series: [
         {
@@ -280,57 +323,57 @@ const Projections = () => {
           data: [
             {
               name: 'Sales',
-              y: latestData.sales
+              y: latestData.sales,
             },
             {
               name: 'Cost of Goods',
-              y: -latestData.costs
+              y: -latestData.costs,
             },
             {
               name: 'Gross Profit',
               isIntermediateSum: true,
-              color: '#3b82f6'
+              color: '#3b82f6',
             },
             {
               name: 'Expenses',
-              y: -latestData.expenses
+              y: -latestData.expenses,
             },
             {
               name: 'Net Profit',
               isSum: true,
-              color: '#8b5cf6'
-            }
-          ]
-        }
+              color: '#8b5cf6',
+            },
+          ],
+        },
       ] as Highcharts.SeriesOptionsType[],
       credits: {
-        enabled: false
-      }
-    }
-  }
+        enabled: false,
+      },
+    };
+  };
 
-  // Generate projection data only if baselineData is available
-  const projectionData12Months = baselineData ? generateProjectionData(12) : []
-  const projectionData5Years = baselineData ? generateProjectionData(5, true) : []
+  const projectionData12Months = baselineData ? generateProjectionData(12) : [];
+  const projectionData5Years = baselineData ? generateProjectionData(5, true) : [];
 
-  const inverted12MonthData = transformToInvertedTableData(projectionData12Months)
-  const inverted5YearData = transformToInvertedTableData(projectionData5Years)
+  const inverted12MonthData = transformToInvertedTableData(projectionData12Months);
+  const inverted5YearData = transformToInvertedTableData(projectionData5Years);
 
-  // Static project allocations for demonstration
+  const invertedCustomData = transformToInvertedTableData(customProjectionData);
+
+
   const projectAllocations = [
-    { name: 'Marketing Campaign A', allocation: 0.30 }, // 30% of total expenses
-    { name: 'Product Development X', allocation: 0.45 }, // 45%
-    { name: 'Operational Efficiency Y', allocation: 0.15 }, // 15%
-    { name: 'General Overhead', allocation: 0.10 } // 10%
-  ]
+    { name: 'Marketing Campaign A', allocation: 0.3 },
+    { name: 'Product Development X', allocation: 0.45 },
+    { name: 'Operational Efficiency Y', allocation: 0.15 },
+    { name: 'General Overhead', allocation: 0.1 },
+  ];
 
-  // Calculate project expenses for the baseline
   const baselineProjectExpenses = baselineData
-    ? projectAllocations.map(project => ({
+    ? projectAllocations.map((project) => ({
         name: project.name,
-        amount: Math.round(baselineData.totalExpenses * project.allocation)
+        amount: Math.round(baselineData.totalExpenses * project.allocation),
       }))
-    : []
+    : [];
 
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
@@ -342,7 +385,6 @@ const Projections = () => {
         transition={{ duration: 0.5 }}
         className='space-y-6'
       >
-        {/* Growth Rate Controls */}
         <Card>
           <CardHeader>
             <CardTitle className='flex items-center justify-between'>
@@ -351,8 +393,8 @@ const Projections = () => {
                 Projection Parameters
               </span>
               <Button
-                onClick={handleRefresh}
-                disabled={isRefreshing || !isAuthenticated || !token}
+                onClick={() => fetchBaselineData()}
+                disabled={isRefreshing || !isAuthenticated || !token || activeTab !== '12-months'}
               >
                 {isRefreshing ? (
                   <>
@@ -373,7 +415,7 @@ const Projections = () => {
                   id='revenue-growth'
                   type='number'
                   value={revenueGrowthRate}
-                  onChange={e => setRevenueGrowthRate(Number(e.target.value))}
+                  onChange={(e) => setRevenueGrowthRate(Number(e.target.value))}
                   min='0'
                   max='100'
                   step='0.1'
@@ -381,14 +423,12 @@ const Projections = () => {
                 />
               </div>
               <div>
-                <Label htmlFor='cost-growth'>
-                  Direct Costs Growth Rate (%)
-                </Label>
+                <Label htmlFor='cost-growth'>Direct Costs Growth Rate (%)</Label>
                 <Input
                   id='cost-growth'
                   type='number'
                   value={costGrowthRate}
-                  onChange={e => setCostGrowthRate(Number(e.target.value))}
+                  onChange={(e) => setCostGrowthRate(Number(e.target.value))}
                   min='0'
                   max='100'
                   step='0.1'
@@ -401,7 +441,7 @@ const Projections = () => {
                   id='expense-growth'
                   type='number'
                   value={expenseGrowthRate}
-                  onChange={e => setExpenseGrowthRate(Number(e.target.value))}
+                  onChange={(e) => setExpenseGrowthRate(Number(e.target.value))}
                   min='0'
                   max='100'
                   step='0.1'
@@ -417,18 +457,14 @@ const Projections = () => {
             <Loader2 className='h-12 w-12 animate-spin text-gray-500' />
           </div>
         ) : (
-          <Tabs defaultValue='12-months' className='w-full'>
-            <TabsList className='grid w-full grid-cols-4'>
+          <Tabs defaultValue='12-months' className='w-full' onValueChange={setActiveTab}>
+            <TabsList className='grid w-full grid-cols-3'>
               <TabsTrigger value='12-months' className='flex items-center gap-2'>
                 <Calendar className='h-4 w-4' />
                 12 Months
               </TabsTrigger>
               <TabsTrigger value='5-years' className='flex items-center gap-2'>
                 <TrendingUp className='h-4 w-4' />5 Years
-              </TabsTrigger>
-              <TabsTrigger value='project-breakdown' className='flex items-center gap-2'>
-                <FolderKanban className='h-4 w-4' />
-                Project Breakdown
               </TabsTrigger>
               <TabsTrigger value='custom' className='flex items-center gap-2'>
                 <BarChart3 className='h-4 w-4' />
@@ -475,9 +511,7 @@ const Projections = () => {
                     <table className='w-full border-collapse border border-border'>
                       <thead>
                         <tr className='bg-muted'>
-                          <th className='border border-border p-3 text-left'>
-                            Metric
-                          </th>
+                          <th className='border border-border p-3 text-left'>Metric</th>
                           {inverted12MonthData.headers.map((header, index) => (
                             <th key={index} className='border border-border p-3 text-right'>
                               {header}
@@ -547,9 +581,7 @@ const Projections = () => {
                     <table className='w-full border-collapse border border-border'>
                       <thead>
                         <tr className='bg-muted'>
-                          <th className='border border-border p-3 text-left'>
-                            Metric
-                          </th>
+                          <th className='border border-border p-3 text-left'>Metric</th>
                           {inverted5YearData.headers.map((header, index) => (
                             <th key={index} className='border border-border p-3 text-right'>
                               {header}
@@ -580,78 +612,136 @@ const Projections = () => {
               </Card>
             </TabsContent>
 
-            <TabsContent value='project-breakdown' className='space-y-6'>
-              <Card>
-                <CardHeader>
-                  <CardTitle className='flex items-center gap-2'>
-                    <FolderKanban className='h-5 w-5' />
-                    Baseline Expense Breakdown by Project (Static Allocation)
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className='text-sm text-muted-foreground mb-4'>
-                    This section demonstrates a project breakdown using static allocations applied to the baseline total expenses.
-                    In a real-world scenario, this data would come from your transaction categories or a dedicated project tracking system.
-                  </p>
-                  <div className='overflow-x-auto'>
-                    <table className='w-full border-collapse border border-border'>
-                      <thead>
-                        <tr className='bg-muted'>
-                          <th className='border border-border p-3 text-left'>
-                            Project Name
-                          </th>
-                          <th className='border border-border p-3 text-right'>
-                            Allocation (%)
-                          </th>
-                          <th className='border border-border p-3 text-right'>
-                            Baseline Expense (R)
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {baselineProjectExpenses.map((project, index) => (
-                          <tr key={index}>
-                            <td className='border border-border p-3 font-medium'>
-                              {project.name}
-                            </td>
-                            <td className='border border-border p-3 text-right'>
-                              {(projectAllocations[index].allocation * 100).toFixed(0)}%
-                            </td>
-                            <td className='border border-border p-3 text-right'>
-                              R{project.amount.toLocaleString('en-ZA')}
-                            </td>
-                          </tr>
-                        ))}
-                        <tr className='bg-blue-50 font-bold'>
-                          <td className='border border-border p-3'>Total</td>
-                          <td className='border border-border p-3 text-right'>100%</td>
-                          <td className='border border-border p-3 text-right'>
-                            R{baselineData?.totalExpenses.toLocaleString('en-ZA')}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
             <TabsContent value='custom' className='space-y-6'>
               <Card>
-                <CardContent className='flex items-center justify-center h-64'>
-                  <p className='text-muted-foreground'>
-                    Custom projection periods will be implemented here - allowing
-                    users to select specific start/end dates and custom growth
-                    scenarios.
-                  </p>
+                <CardHeader>
+                  <CardTitle>Custom Period</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
+                    <div>
+                      <Label htmlFor='custom-start-date'>Start Date</Label>
+                      <Input
+                        id='custom-start-date'
+                        type='date'
+                        value={customStartDate}
+                        onChange={(e) => setCustomStartDate(e.target.value)}
+                        disabled={isRefreshing}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor='custom-end-date'>End Date</Label>
+                      <Input
+                        id='custom-end-date'
+                        type='date'
+                        value={customEndDate}
+                        onChange={(e) => setCustomEndDate(e.target.value)}
+                        disabled={isRefreshing}
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleCustomFetch}
+                    className='mt-4 w-full'
+                    disabled={isRefreshing || !isAuthenticated || !token}
+                  >
+                    {isRefreshing ? (
+                      <>
+                        <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                        Fetching...
+                      </>
+                    ) : (
+                      'Fetch Baseline Data & Generate Projections'
+                    )}
+                  </Button>
                 </CardContent>
               </Card>
+
+              {customProjectionData.length > 0 && (
+                <>
+                  <div className='grid grid-cols-1 lg:grid-cols-2 gap-6'>
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Custom Period Financial Projection</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <HighchartsReact
+                          highcharts={Highcharts}
+                          options={createChartOptions(
+                            customProjectionData,
+                            'Custom Period Financial Projection'
+                          )}
+                        />
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Profit Analysis (Latest Projection)</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <HighchartsReact
+                          highcharts={Highcharts}
+                          options={createWaterfallOptions(customProjectionData)}
+                        />
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Detailed Custom Projections (Inverted)</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className='overflow-x-auto'>
+                        <table className='w-full border-collapse border border-border'>
+                          <thead>
+                            <tr className='bg-muted'>
+                              <th className='border border-border p-3 text-left'>Metric</th>
+                              {invertedCustomData.headers.map((header, index) => (
+                                <th key={index} className='border border-border p-3 text-right'>
+                                  {header}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {invertedCustomData.rows.map((row, rowIndex) => (
+                              <tr
+                                key={row.metric}
+                                className={row.metric === 'Baseline' ? 'bg-blue-50' : ''}
+                              >
+                                <td className='border border-border p-3 font-medium'>
+                                  {row.metric}
+                                </td>
+                                {row.values.map((value, colIndex) => (
+                                  <td
+                                    key={colIndex}
+                                    className='border border-border p-3 text-right'
+                                  >
+                                    R{value.toLocaleString('en-ZA')}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </>
+              )}
+              {customProjectionData.length === 0 && (
+                <p className='text-muted-foreground text-center'>
+                  Select a date range and click "Fetch" to see custom period financials.
+                </p>
+              )}
             </TabsContent>
           </Tabs>
         )}
       </motion.div>
     </div>
-  )
-}
+  );
+};
 
-export default Projections
+export default Projections;
