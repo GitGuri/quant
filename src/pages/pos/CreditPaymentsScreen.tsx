@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Card,
   Tabs,
@@ -13,7 +13,7 @@ import {
   Col,
 } from 'antd';
 import { UserOutlined, SearchOutlined } from '@ant-design/icons';
-import { useAuth } from '../../AuthPage'; // Import useAuth
+import { useAuth } from '../../AuthPage';
 import axios from 'axios';
 
 const { Title, Text } = Typography;
@@ -21,7 +21,7 @@ const { Title, Text } = Typography;
 // A simple debounce utility function to replace the lodash import
 const debounce = (func: (...args: any[]) => void, delay: number) => {
   let timeout: NodeJS.Timeout | null;
-  return function(...args: any[]) {
+  return function (...args: any[]) {
     const context = this;
     if (timeout) {
       clearTimeout(timeout);
@@ -31,7 +31,6 @@ const debounce = (func: (...args: any[]) => void, delay: number) => {
     }, delay);
   };
 };
-
 
 // IMPORTANT: Replace with your actual backend API URL
 const API_BASE_URL = 'https://quantnow.onrender.com';
@@ -59,6 +58,59 @@ interface SaleBackend {
   sale_date: string; // Renamed from created_at to match the backend
 }
 
+// ===== Credit Score Types & Helpers =====
+type ScoreColor = 'green' | 'blue' | 'orange' | 'red' | 'default';
+interface CreditScoreInfo {
+  score: number;
+  label: 'Excellent' | 'Good' | 'Fair' | 'Poor' | 'Unknown';
+  color: ScoreColor;
+}
+
+const scoreFromRatio = (ratio: number): CreditScoreInfo => {
+  // Clamp ratio 0..1 and map to score
+  const r = Math.max(0, Math.min(1, ratio));
+  const score = Math.round(r * 100);
+  if (score > 90) return { score, label: 'Excellent', color: 'green' };
+  if (score > 70) return { score, label: 'Good', color: 'blue' };
+  if (score > 50) return { score, label: 'Fair', color: 'orange' };
+  return { score, label: 'Poor', color: 'red' };
+};
+
+// Heuristic: compute a score from credit history we already have
+const computeCreditScoreFromHistory = (history: SaleBackend[] | undefined | null): CreditScoreInfo => {
+  if (!history || history.length === 0) return { score: 50, label: 'Unknown', color: 'default' };
+
+  let onTimePaid = 0;   // fully paid before or on the due date
+  let onTrack = 0;      // not fully paid yet but due date still in future/today
+  let lateOrOverdue = 0; // overdue or likely late
+
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+  history.forEach(sale => {
+    const due = sale.due_date ? sale.due_date.slice(0, 10) : null;
+    const fullyPaid = sale.remaining_credit_amount <= 0;
+    if (!due) {
+      // no due date → treat fully paid as on-time unknown, unpaid as neutral
+      if (fullyPaid) onTimePaid++;
+      return;
+    }
+    if (fullyPaid) {
+      // If it's fully paid and we can't tell pay date, assume on-time if due is not in the past
+      if (due >= today) onTimePaid++;
+      else lateOrOverdue++; // conservative penalty if due already past
+    } else {
+      // Not fully paid yet
+      if (due < today) lateOrOverdue++; // overdue
+      else onTrack++; // still on track
+    }
+  });
+
+  const total = onTimePaid + onTrack + lateOrOverdue;
+  const ratio = total > 0 ? (onTimePaid * 1.0 + onTrack * 0.6) / total : 0.5; // weight onTrack as partial credit
+  return scoreFromRatio(ratio);
+};
+
+// ===== Component =====
 const CreditPaymentsScreen: React.FC = () => {
   const [messageApi, contextHolder] = message.useMessage();
   const [tab, setTab] = useState<'payments' | 'history'>('payments');
@@ -73,15 +125,17 @@ const CreditPaymentsScreen: React.FC = () => {
   const [searchText, setSearchText] = useState('');
   const [customersList, setCustomersList] = useState<CustomerBackend[]>([]);
 
+  // Cache of computed scores by customer id (so we can show on Payments tab without changing backend)
+  const [scoreCache, setScoreCache] = useState<Record<number, CreditScoreInfo>>({});
+
   const { isAuthenticated, user } = useAuth();
-  const token = localStorage.getItem('token');
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
 
   const getAuthHeaders = useCallback(() => {
     return token ? { 'Authorization': `Bearer ${token}` } : {};
   }, [token]);
 
   // --- API Fetching Functions ---
-
   const fetchCustomers = useCallback(async () => {
     setLoading(true);
     try {
@@ -117,11 +171,11 @@ const CreditPaymentsScreen: React.FC = () => {
         `${API_BASE_URL}/api/credit-sales`,
         { headers: getAuthHeaders() }
       );
-      
+
       if (response.data.length === 0) {
         console.warn('API returned an empty array for credit sales.');
       }
-      
+
       setOutstandingCredits(response.data);
       messageApi.success('Credit sales loaded successfully.');
     } catch (error) {
@@ -152,7 +206,9 @@ const CreditPaymentsScreen: React.FC = () => {
         remaining_credit_amount: parseFloat(item.remaining_credit_amount as any),
       }));
 
-      setHistoryCredits(sanitizedData.sort((a, b) => new Date(b.sale_date).getTime() - new Date(a.sale_date).getTime()));
+      setHistoryCredits(
+        sanitizedData.sort((a, b) => new Date(b.sale_date).getTime() - new Date(a.sale_date).getTime())
+      );
       messageApi.success(`Credit history for ${selectedCustomer.name} loaded.`);
     } catch (error) {
       console.error('Failed to fetch customer credit history:', error);
@@ -207,11 +263,7 @@ const CreditPaymentsScreen: React.FC = () => {
       return;
     }
     const payAmount = parseFloat(paymentAmount);
-    if (
-      !payAmount ||
-      payAmount <= 0 ||
-      payAmount > selectedCredit.remaining_credit_amount
-    ) {
+    if (!payAmount || payAmount <= 0 || payAmount > selectedCredit.remaining_credit_amount) {
       messageApi.warning('Invalid payment amount or exceeds remaining balance.');
       return;
     }
@@ -252,8 +304,9 @@ const CreditPaymentsScreen: React.FC = () => {
     if (credit.remaining_credit_amount <= 0) return ['Paid', 'blue'];
     if (!credit.due_date) return ['On Time', 'green'];
     const today = new Date().toISOString().slice(0, 10);
-    if (credit.due_date < today) return ['Overdue', 'red'];
-    if (credit.due_date === today) return ['Due Today', 'gold'];
+    const due = credit.due_date.slice(0, 10);
+    if (due < today) return ['Overdue', 'red'];
+    if (due === today) return ['Due Today', 'gold'];
     return ['On Time', 'green'];
   };
 
@@ -264,6 +317,48 @@ const CreditPaymentsScreen: React.FC = () => {
     boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
     cursor: 'pointer',
   };
+
+  // ===== Lazy score tag (Payments tab): fetches history per customer once and caches it =====
+  const CreditScoreTagLazy: React.FC<{ customerId: number }> = ({ customerId }) => {
+    const cached = scoreCache[customerId];
+
+    useEffect(() => {
+      let ignore = false;
+      const load = async () => {
+        if (cached || !isAuthenticated || !token) return;
+        try {
+          const resp = await axios.get<SaleBackend[]>(
+            `${API_BASE_URL}/api/sales/customer/${customerId}/credit-history`,
+            { headers: getAuthHeaders() }
+          );
+          const info = computeCreditScoreFromHistory(resp.data);
+          if (!ignore) {
+            setScoreCache(prev => ({ ...prev, [customerId]: info }));
+          }
+        } catch (e) {
+          if (!ignore) {
+            setScoreCache(prev => ({
+              ...prev,
+              [customerId]: { score: 50, label: 'Unknown', color: 'default' },
+            }));
+          }
+        }
+      };
+      load();
+      return () => {
+        ignore = true;
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [customerId, isAuthenticated, token]);
+
+    const display = cached ?? { score: 0, label: 'Unknown', color: 'default' };
+    return <Tag color={display.color}>{`Score: ${display.score || '—'}${display.score ? ` (${display.label})` : ''}`}</Tag>;
+  };
+
+  // ===== Derived score (History tab): uses already fetched history =====
+  const selectedCustomerScore = useMemo(() => {
+    return computeCreditScoreFromHistory(historyCredits);
+  }, [historyCredits]);
 
   return (
     <>
@@ -296,7 +391,7 @@ const CreditPaymentsScreen: React.FC = () => {
               </div>
             ) : outstandingCredits.length === 0 ? (
               <Text
-                type='secondary'
+                type="secondary"
                 style={{ display: 'block', marginTop: 40, textAlign: 'center' }}
               >
                 No outstanding credit sales found.
@@ -311,18 +406,24 @@ const CreditPaymentsScreen: React.FC = () => {
                     onClick={() => openModal(credit)}
                     styles={{ body: { padding: 16 } }}
                   >
-                    <Row align='middle' wrap={false}>
-                      <Col flex='auto'>
+                    <Row align="middle" wrap={false}>
+                      <Col flex="auto">
                         <Text strong style={{ color: '#111' }}>
                           {credit.customer_name}
                         </Text>
                         <div>
-                          Amount Due: <b>R{credit.remaining_credit_amount.toFixed(2)}</b>
+                          Amount Due:{' '}
+                          <b>R{credit.remaining_credit_amount.toFixed(2)}</b>
                         </div>
-                        <div>Due: {credit.due_date ? credit.due_date.split('T')[0] : 'N/A'}</div>
+                        <div>
+                          Due:{' '}
+                          {credit.due_date ? credit.due_date.split('T')[0] : 'N/A'}
+                        </div>
                       </Col>
-                      <Col>
+                      <Col style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
                         <Tag color={color}>{status}</Tag>
+                        {/* Lazy score tag per customer (cached) */}
+                        <CreditScoreTagLazy customerId={credit.customer_id} />
                       </Col>
                     </Row>
                   </Card>
@@ -347,14 +448,12 @@ const CreditPaymentsScreen: React.FC = () => {
                   }
                 }}
               >
-                <Row align='middle'>
+                <Row align="middle">
                   <Col>
                     <UserOutlined style={{ fontSize: 18, marginRight: 8 }} />
-                    {selectedCustomer
-                      ? `Customer: ${selectedCustomer.name}`
-                      : 'Select Customer'}
+                    {selectedCustomer ? `Customer: ${selectedCustomer.name}` : 'Select Customer'}
                   </Col>
-                  <Col flex='auto' style={{ textAlign: 'right' }}>
+                  <Col flex="auto" style={{ textAlign: 'right' }}>
                     <SearchOutlined />
                   </Col>
                 </Row>
@@ -366,44 +465,57 @@ const CreditPaymentsScreen: React.FC = () => {
                   <Spin />
                 </div>
               ) : selectedCustomer && historyCredits.length > 0 ? (
-                historyCredits.map((c) => {
-                  const [status, color] = dueStatus(c);
-                  const paidAmount = c.total_amount - c.remaining_credit_amount;
-                  return (
-                    <Card
-                      key={`${c.id}-${c.sale_date}`}
-                      style={cardStyle}
-                      onClick={() => openModal(c)}
-                      styles={{ body: { padding: 16 } }}
-                    >
-                      <Row align='middle' wrap={false}>
-                        <Col flex='auto'>
-                          <Text strong>{c.customer_name}</Text>
-                          <div>
-                            Original Amount: <b>R{c.total_amount.toFixed(2)}</b>
-                          </div>
-                          <div>
-                            Paid: <b>R{paidAmount.toFixed(2)}</b>
-                          </div>
-                          <div>
-                            Due Date: {c.due_date ? c.due_date.split('T')[0] : 'N/A'}
-                          </div>
-                          {c.remaining_credit_amount > 0 && (
+                <>
+                  {/* Show score for the selected customer */}
+                  <div style={{ marginBottom: 8, textAlign: 'right' }}>
+                    <Tag color={selectedCustomerScore.color}>
+                      {`Score: ${selectedCustomerScore.score} (${selectedCustomerScore.label})`}
+                    </Tag>
+                  </div>
+
+                  {historyCredits.map((c) => {
+                    const [status, color] = dueStatus(c);
+                    const paidAmount = c.total_amount - c.remaining_credit_amount;
+                    return (
+                      <Card
+                        key={`${c.id}-${c.sale_date}`}
+                        style={cardStyle}
+                        onClick={() => openModal(c)}
+                        styles={{ body: { padding: 16 } }}
+                      >
+                        <Row align="middle" wrap={false}>
+                          <Col flex="auto">
+                            <Text strong>{c.customer_name}</Text>
                             <div>
-                              Remaining: <b>R{c.remaining_credit_amount.toFixed(2)}</b>
+                              Original Amount: <b>R{c.total_amount.toFixed(2)}</b>
                             </div>
-                          )}
-                        </Col>
-                        <Col>
-                          <Tag color={color}>{status}</Tag>
-                        </Col>
-                      </Row>
-                    </Card>
-                  );
-                })
+                            <div>
+                              Paid: <b>R{paidAmount.toFixed(2)}</b>
+                            </div>
+                            <div>
+                              Due Date: {c.due_date ? c.due_date.split('T')[0] : 'N/A'}
+                            </div>
+                            {c.remaining_credit_amount > 0 && (
+                              <div>
+                                Remaining: <b>R{c.remaining_credit_amount.toFixed(2)}</b>
+                              </div>
+                            )}
+                          </Col>
+                          <Col style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                            <Tag color={color}>{status}</Tag>
+                            {/* Also show score on each card for consistency */}
+                            <Tag color={selectedCustomerScore.color}>
+                              {`Score: ${selectedCustomerScore.score} (${selectedCustomerScore.label})`}
+                            </Tag>
+                          </Col>
+                        </Row>
+                      </Card>
+                    );
+                  })}
+                </>
               ) : (
                 <Text
-                  type='secondary'
+                  type="secondary"
                   style={{
                     display: 'block',
                     marginTop: 40,
@@ -435,13 +547,11 @@ const CreditPaymentsScreen: React.FC = () => {
                 Pay {selectedCredit.customer_name}
               </Title>
               <Text>
-                Remaining:{' '}
-                <b>R{selectedCredit.remaining_credit_amount.toFixed(2)}</b>
+                Remaining: <b>R{selectedCredit.remaining_credit_amount.toFixed(2)}</b>
               </Text>
-              <div style={{ margin: '12px 0' }}>
-              </div>
+              <div style={{ margin: '12px 0' }} />
               <Input
-                type='number'
+                type="number"
                 placeholder={`Enter amount (max R${selectedCredit.remaining_credit_amount.toFixed(2)})`}
                 value={paymentAmount}
                 onChange={(e) => setPaymentAmount(e.target.value)}
@@ -450,7 +560,7 @@ const CreditPaymentsScreen: React.FC = () => {
                 max={selectedCredit.remaining_credit_amount}
                 disabled={!isAuthenticated || loading}
               />
-              <Button type='primary' block onClick={handlePayment} disabled={!isAuthenticated || loading}>
+              <Button type="primary" block onClick={handlePayment} disabled={!isAuthenticated || loading}>
                 Confirm Payment
               </Button>
             </>
@@ -471,7 +581,7 @@ const CreditPaymentsScreen: React.FC = () => {
             Select Customer
           </Title>
           <Input
-            placeholder='Search by name...'
+            placeholder="Search by name..."
             value={searchText}
             allowClear
             onChange={(e) => debouncedSetSearchText(e.target.value)}
@@ -502,10 +612,18 @@ const CreditPaymentsScreen: React.FC = () => {
                       (Due: R{item.balance_due.toFixed(2)})
                     </Text>
                   )}
+                  {/* Optional: if you want a quick cached score in the picker too */}
+                  {scoreCache[item.id] && (
+                    <div style={{ marginTop: 6 }}>
+                      <Tag color={scoreCache[item.id].color}>
+                        {`Score: ${scoreCache[item.id].score} (${scoreCache[item.id].label})`}
+                      </Tag>
+                    </div>
+                  )}
                 </Card>
               ))
             ) : (
-              <Text type='secondary'>No customers found.</Text>
+              <Text type="secondary">No customers found.</Text>
             )}
           </div>
         </Modal>
@@ -515,3 +633,31 @@ const CreditPaymentsScreen: React.FC = () => {
 };
 
 export default CreditPaymentsScreen;
+
+/**
+ * ===== FRONTEND-ONLY GUARD FOR NEW CREDIT SALES =====
+ * Import this in your POS/Checkout file and call before allowing "payment_method = Credit".
+ *
+ * Example:
+ *   const ok = await canCustomerTakeNewCredit(customerId, token);
+ *   if (!ok) { show message & block "Credit" option }
+ */
+export async function canCustomerTakeNewCredit(
+  customerId: number,
+  token?: string,
+  minScore: number = 60,
+): Promise<boolean> {
+  try {
+    if (!token) return true; // if not authenticated context here, don't hard-block
+    const headers = { Authorization: `Bearer ${token}` };
+    const resp = await axios.get<SaleBackend[]>(
+      `${API_BASE_URL}/api/sales/customer/${customerId}/credit-history`,
+      { headers }
+    );
+    const info = computeCreditScoreFromHistory(resp.data);
+    return info.score >= minScore;
+  } catch {
+    // If we cannot compute the score, allow but you can flip to false if you prefer strict
+    return true;
+  }
+}

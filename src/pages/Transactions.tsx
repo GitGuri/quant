@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Header } from '../components/layout/Header';
 import {
   Card,
@@ -24,8 +24,10 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SelectGroup,
+  SelectLabel
 } from '@/components/ui/select';
-import { Edit, Printer, FileText } from 'lucide-react';
+import { Edit, Printer, FileText, Trash2 } from 'lucide-react';
 import { useAuth } from '../AuthPage'; // Assuming AuthPage exports useAuth and AuthProvider
 
 // Define an interface for your transaction data
@@ -61,6 +63,9 @@ const Transactions = () => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [editFormData, setEditFormData] = useState<any>({});
+  
+  // NEW: State for the search term within the edit modal's account list
+  const [editAccountSearchTerm, setEditAccountSearchTerm] = useState('');
 
   const { isAuthenticated } = useAuth(); // Get authentication status
   const token = localStorage.getItem('token'); // Retrieve the token
@@ -170,6 +175,36 @@ const Transactions = () => {
       account_id: transaction.account_id,
     });
     setIsEditModalOpen(true);
+    // NEW: Reset the account search term when the modal is opened
+    setEditAccountSearchTerm('');
+  };
+  
+  const handleDeleteClick = async (transactionId: string) => {
+    if (!token) {
+      alert('You are not authenticated. Please log in.');
+      return;
+    }
+  
+    if (window.confirm('Are you sure you want to delete this transaction? This action cannot be undone.')) {
+      try {
+        const response = await fetch(`https://quantnow.onrender.com/transactions/${transactionId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        });
+  
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+  
+        alert('Transaction deleted successfully!');
+        fetchTransactions(); // Re-fetch the transactions to update the list
+      } catch (error) {
+        console.error('Error deleting transaction:', error);
+        alert(`Failed to delete transaction: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   };
 
   const handleEditFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -277,6 +312,18 @@ const Transactions = () => {
   const handlePrint = () => {
     window.print();
   };
+  
+  // NEW: Memoized filtering of accounts for search
+  const filteredAccounts = useMemo(() => {
+    if (!editAccountSearchTerm) {
+      return accounts;
+    }
+    const lowerCaseSearchTerm = editAccountSearchTerm.toLowerCase();
+    return accounts.filter(account =>
+      account.name.toLowerCase().includes(lowerCaseSearchTerm) ||
+      account.code.toLowerCase().includes(lowerCaseSearchTerm)
+    );
+  }, [accounts, editAccountSearchTerm]);
 
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
@@ -409,6 +456,13 @@ const Transactions = () => {
                             >
                               <Edit className='h-4 w-4' />
                             </Button>
+                            <Button
+                              variant='ghost'
+                              size='sm'
+                              onClick={() => handleDeleteClick(transaction.id)}
+                            >
+                              <Trash2 className='h-4 w-4 text-red-500' />
+                            </Button>
                           </div>
                         </td>
                       </tr>
@@ -501,12 +555,26 @@ const Transactions = () => {
                   <SelectValue placeholder='Select account' />
                 </SelectTrigger>
                 <SelectContent>
+                   {/* NEW: Input for searching accounts */}
+                  <div className="p-2 sticky top-0 bg-background z-10">
+                    <Input
+                      placeholder="Search accounts..."
+                      value={editAccountSearchTerm}
+                      onChange={e => setEditAccountSearchTerm(e.target.value)}
+                    />
+                  </div>
                   <SelectItem value="NO_ACCOUNT_PLACEHOLDER">No Account</SelectItem>
-                  {accounts.map(acc => (
+                  {/* NEW: Map over filteredAccounts */}
+                  {filteredAccounts.map(acc => (
                     <SelectItem key={acc.id} value={acc.id}>
                       {acc.name} ({acc.code})
                     </SelectItem>
                   ))}
+                  {filteredAccounts.length === 0 && (
+                    <div className="p-2 text-center text-muted-foreground text-sm">
+                      No matching accounts found.
+                    </div>
+                  )}
                 </SelectContent>
               </Select>
 
