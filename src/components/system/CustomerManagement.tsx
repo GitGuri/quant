@@ -1,4 +1,3 @@
-// src/pages/sales/CustomerManagement.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -30,9 +29,15 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger
 } from '@/components/ui/alert-dialog';
-import { Plus, Search, Eye, Edit, User, Trash2, Loader2 } from 'lucide-react';
-import { CustomerForm } from './CustomerForm'; // Assuming this component exists and handles form input
+import { Plus, Search, Edit, Trash2, Loader2 } from 'lucide-react';
+import { CustomerForm } from './CustomerForm';
 import { useToast } from '@/hooks/use-toast';
+
+interface CustomField {
+  id: number;
+  name: string;
+  value: string;
+}
 
 interface Customer {
   id: string;
@@ -40,8 +45,10 @@ interface Customer {
   email: string;
   phone?: string;
   address?: string;
-  status: 'Active' | 'Inactive'; // Example statuses
-  // Add other customer-specific fields as per your backend
+  vatNumber?: string;
+  status?: 'Active' | 'Inactive';
+  customFields?: CustomField[];
+  totalInvoiced?: number;
 }
 
 interface CustomerSaveData {
@@ -49,7 +56,8 @@ interface CustomerSaveData {
   email: string;
   phone?: string;
   address?: string;
-  status?: 'Active' | 'Inactive';
+  vatNumber?: string;
+  customFields?: string;
 }
 
 export function CustomerManagement() {
@@ -65,7 +73,6 @@ export function CustomerManagement() {
 
   const getAuthHeaders = useCallback(() => {
     const token = localStorage.getItem('token');
-    // ADD THIS LOG
     console.log('Frontend: Token from localStorage in getAuthHeaders:', token ? token.substring(0, 10) + '...' : 'NONE');
     return token ? { 'Authorization': `Bearer ${token}` } : {};
   }, []);
@@ -74,43 +81,78 @@ export function CustomerManagement() {
     setLoading(true);
     setError(null);
     try {
-      const headers = getAuthHeaders(); // Call getAuthHeaders here to get the current headers
-      // ADD THIS LOG
+      const headers = getAuthHeaders();
       console.log('Frontend: Headers for fetchCustomers:', headers);
 
-      const response = await fetch('https://quantnow.onrender.com/api/customers', {
+      const response = await fetch(`https://quantnow.onrender.com/api/customers${searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : ''}`, {
         headers: {
           'Content-Type': 'application/json',
-          ...headers, // Use the headers from getAuthHeaders
+          ...headers,
         },
       });
+
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`Backend response for ${response.status}: ${errorText}`);
+        console.error(`Backend response for ${response.status}:`, errorText);
         throw new Error(`HTTP error! Status: ${response.status}`);
       }
-      const data: Customer[] = await response.json();
-      setCustomers(data);
+
+      const data: any[] = await response.json();
+      const formattedCustomers: Customer[] = data.map(customerDb => {
+        let parsedCustomFields: CustomField[] = [];
+        if (customerDb.custom_fields) {
+          try {
+            parsedCustomFields = JSON.parse(customerDb.custom_fields);
+            parsedCustomFields = parsedCustomFields.map(field => ({ ...field, id: field.id || Date.now() }));
+          } catch (e) {
+            console.error("Error parsing custom fields JSON for customer", customerDb.id, ":", e);
+            parsedCustomFields = [];
+          }
+        }
+
+        return {
+          id: customerDb.id.toString(),
+          name: customerDb.name,
+          email: customerDb.email,
+          phone: customerDb.phone,
+          address: customerDb.address,
+          vatNumber: customerDb.tax_id,
+          status: customerDb.status || 'Active',
+          totalInvoiced: parseFloat(customerDb.total_invoiced || '0.00'),
+          customFields: parsedCustomFields,
+        };
+      });
+
+      setCustomers(formattedCustomers);
     } catch (err) {
       console.error('Failed to fetch customers:', err);
       setError('Failed to load customers. Please try again.');
     } finally {
       setLoading(false);
     }
-  }, [getAuthHeaders]); // getAuthHeaders is already a dependency and memoized
+  }, [getAuthHeaders, searchTerm]);
 
   useEffect(() => {
-    // ADD THIS LOG
     console.log('Frontend: useEffect in CustomerManagement triggered.');
     fetchCustomers();
   }, [fetchCustomers]);
 
-  const filteredCustomers = customers.filter(
-    customer =>
-      customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      customer.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      customer.phone?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const handleFormSave = async (customerData: Customer) => {
+    const payload: CustomerSaveData = {
+      name: customerData.name,
+      email: customerData.email,
+      phone: customerData.phone,
+      address: customerData.address,
+      vatNumber: customerData.vatNumber,
+      customFields: JSON.stringify(customerData.customFields?.filter(f => f.name.trim() !== '') || []),
+    };
+
+    if (currentCustomer) {
+      await handleUpdateCustomer(currentCustomer.id, payload);
+    } else {
+      await handleCreateCustomer(payload);
+    }
+  };
 
   const handleCreateCustomer = async (customerData: CustomerSaveData) => {
     setLoading(true);
@@ -126,7 +168,7 @@ export function CustomerManagement() {
 
       if (!response.ok) {
         const errorBody = await response.json();
-        throw new Error(errorBody.message || 'Failed to create customer.');
+        throw new Error(errorBody.error || 'Failed to create customer.');
       }
 
       toast({
@@ -134,6 +176,7 @@ export function CustomerManagement() {
         description: 'Customer created successfully.',
       });
       setIsFormDialogOpen(false);
+      setCurrentCustomer(undefined);
       await fetchCustomers();
     } catch (err) {
       console.error('Error creating customer:', err);
@@ -161,7 +204,7 @@ export function CustomerManagement() {
 
       if (!response.ok) {
         const errorBody = await response.json();
-        throw new Error(errorBody.message || 'Failed to update customer.');
+        throw new Error(errorBody.error || 'Failed to update customer.');
       }
 
       toast({
@@ -193,7 +236,7 @@ export function CustomerManagement() {
 
       if (!response.ok) {
         const errorBody = await response.json();
-        throw new Error(errorBody.message || 'Failed to delete customer.');
+        throw new Error(errorBody.error || 'Failed to delete customer.');
       }
 
       toast({
@@ -217,15 +260,8 @@ export function CustomerManagement() {
     setCurrentCustomer(customer);
     setIsFormDialogOpen(true);
   };
-
-  const handleFormSave = (formData: CustomerSaveData) => {
-    if (currentCustomer) {
-      handleUpdateCustomer(currentCustomer.id, formData);
-    } else {
-      handleCreateCustomer(formData);
-    }
-  };
-
+  
+  // ADD THIS FUNCTION
   const handleFormCancel = () => {
     setIsFormDialogOpen(false);
     setCurrentCustomer(undefined);
@@ -241,7 +277,6 @@ export function CustomerManagement() {
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
             className='max-w-sm'
-            icon={<Search className='h-4 w-4 text-muted-foreground' />}
           />
           <Dialog open={isFormDialogOpen} onOpenChange={setIsFormDialogOpen}>
             <DialogTrigger asChild>
@@ -280,27 +315,35 @@ export function CustomerManagement() {
                   <TableHead>Email</TableHead>
                   <TableHead>Phone</TableHead>
                   <TableHead>Address</TableHead>
+                  <TableHead>VAT Number</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className='text-right'>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredCustomers.length === 0 ? (
+                {customers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className='text-center'>
+                    <TableCell colSpan={7} className='text-center'>
                       No customers found.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredCustomers.map(customer => (
+                  customers.filter(
+                    customer =>
+                      customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                      customer.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                      customer.phone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                      customer.vatNumber?.toLowerCase().includes(searchTerm.toLowerCase())
+                  ).map(customer => (
                     <TableRow key={customer.id}>
                       <TableCell className='font-medium'>{customer.name}</TableCell>
                       <TableCell>{customer.email}</TableCell>
                       <TableCell>{customer.phone || 'N/A'}</TableCell>
                       <TableCell>{customer.address || 'N/A'}</TableCell>
+                      <TableCell>{customer.vatNumber || 'N/A'}</TableCell>
                       <TableCell>
                         <Badge variant={customer.status === 'Active' ? 'default' : 'secondary'}>
-                          {customer.status}
+                          {customer.status || 'N/A'}
                         </Badge>
                       </TableCell>
                       <TableCell className='text-right'>

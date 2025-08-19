@@ -261,7 +261,7 @@ const hasAccess = (allowedRoles: string[] = []) => {
           </div>
           {state === 'expanded' && (
             <div>
-              <h1 className='font-bold text-lg'>Quantilytix</h1>
+              <h1 className='font-bold text-lg'>QxAnalytix</h1>
               <p className='text-xs text-muted-foreground'>
                 unlocking endless possibilities
               </p>
@@ -347,8 +347,8 @@ const hasAccess = (allowedRoles: string[] = []) => {
 
         {/* Logout Button */}
         <SidebarMenuItem>
-          <SidebarMenuButton onClick={handleLogout} className='w-full justify-start text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'>
-            <LogOut className='h-5 w-5' />
+<SidebarMenuButton onClick={handleLogout} className='w-full justify-start text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'>
+<LogOut className='h-5 w-5' />
             {state === 'expanded' && <span>Logout</span>}
           </SidebarMenuButton>
         </SidebarMenuItem>
