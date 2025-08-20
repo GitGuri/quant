@@ -22,19 +22,19 @@ import {
   UserAddOutlined,
   ShoppingCartOutlined,
 } from '@ant-design/icons';
-import { useAuth } from '../AuthPage';
+import { useAuth } from '../AuthPage'; // We'll still use this for isAuthenticated and token
 
 const useBreakpoint = Grid.useBreakpoint;
 const { Title, Text } = Typography;
-const { Option } = Select;
+const { Option = Select.Option } = Select; // Default to Select.Option for safety
 
 // --- START: MODIFIED TYPES TO MATCH BACKEND API ---
 interface ProductDB {
   id: number;
   name: string;
   description: string | null;
-  unit_price: number;
-  cost_price: number | null;
+  unit_price: number; // Ensure this is number
+  cost_price: number | null; // Ensure this is number or null
   sku: string | null;
   is_service: boolean;
   stock_quantity: number;
@@ -43,9 +43,8 @@ interface ProductDB {
   tax_rate_id: number | null;
   category: string | null;
   unit: string | null;
-  tax_rate_value?: number;
+  tax_rate_value?: number; // Added for convenience on frontend, assumed to be part of API response
 }
-
 interface CustomerFrontend {
   id: string; // keep as string (safer for large IDs)
   name: string;
@@ -58,19 +57,8 @@ interface CustomerFrontend {
   balanceDue?: number;
   creditLimit?: number;
 }
-
-type CartItem = (
-  | ProductDB
-  | {
-      id: string; // for custom items
-      name: string;
-      description: string;
-      unit_price: number;
-      is_service: boolean;
-      tax_rate_value: number;
-    }
-) & { quantity: number; subtotal: number };
-
+// CartItem now fully uses ProductDB structure, as custom items become ProductDB on add
+type CartItem = ProductDB & { quantity: number; subtotal: number };
 type PaymentType = 'Cash' | 'Bank' | 'Credit';
 // --- END: MODIFIED TYPES TO MATCH BACKEND API ---
 
@@ -84,7 +72,6 @@ interface CreditScoreInfo {
   color: ScoreColor;
 }
 const MIN_SCORE = 60; // threshold to FLAG (not block)
-
 const scoreFromRatio = (ratio: number): CreditScoreInfo => {
   const r = Math.max(0, Math.min(1, ratio));
   const score = Math.round(r * 100);
@@ -93,7 +80,6 @@ const scoreFromRatio = (ratio: number): CreditScoreInfo => {
   if (score > 50) return { score, label: 'Fair', color: 'orange' };
   return { score, label: 'Poor', color: 'red' };
 };
-
 interface SaleHistoryRow {
   id: number;
   customer_id: number | string;
@@ -102,22 +88,18 @@ interface SaleHistoryRow {
   due_date: string | null; // ISO
   sale_date: string; // ISO
 }
-
 const computeCreditScoreFromHistory = (
   history: SaleHistoryRow[] | undefined | null,
 ): CreditScoreInfo => {
   if (!history || history.length === 0)
     return { score: 50, label: 'Unknown', color: 'default' };
-
   const today = new Date().toISOString().slice(0, 10);
   let onTimePaid = 0;
   let onTrack = 0;
   let lateOrOverdue = 0;
-
   history.forEach((h) => {
     const due = h.due_date ? h.due_date.slice(0, 10) : null;
     const fullyPaid = h.remaining_credit_amount <= 0;
-
     if (!due) {
       if (fullyPaid) onTimePaid++; // assume neutral-good if no due date but paid
       return;
@@ -130,50 +112,55 @@ const computeCreditScoreFromHistory = (
       else onTrack++;
     }
   });
-
   const total = onTimePaid + onTrack + lateOrOverdue;
   const ratio = total > 0 ? (onTimePaid * 1.0 + onTrack * 0.6) / total : 0.5;
   return scoreFromRatio(ratio);
 };
 
+// --- Helper to get user name from localStorage (similar to AuthPage) ---
+// We can either import this from AuthPage if it's exported, or define it here.
+// Assuming it's exported from AuthPage as getUserName:
+// import { getUserName } from '../AuthPage';
+// If not exported, define it here:
+const getUserNameFromLocalStorage = () => {
+  // Mimic the logic from AuthPage
+  const storedName = localStorage.getItem('userName');
+  return storedName || 'Unknown User (Local Storage)';
+};
+// --- End Helper ---
+
 export default function POSScreen() {
   const [messageApi, contextHolder] = message.useMessage();
   const screens = useBreakpoint();
-
   const [customers, setCustomers] = useState<CustomerFrontend[]>([]);
   const [products, setProducts] = useState<ProductDB[]>([]);
-
   const [selectedCustomer, setSelectedCustomer] =
     useState<CustomerFrontend | null>(null);
   const [customerModal, setCustomerModal] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
   const [newCustomerForm] = Form.useForm();
   const [showNewCustomer, setShowNewCustomer] = useState(false);
-
   const [selectedProduct, setSelectedProduct] = useState<ProductDB | null>(null);
   const [productModal, setProductModal] = useState(false);
   const [productSearch, setProductSearch] = useState('');
   const [productQty, setProductQty] = useState(1);
-
   // Custom product state
   const [showCustomProductForm, setShowCustomProductForm] = useState(false);
-  const [customProductName, setCustomProductName] = useState('');
-  const [customProductUnitPrice, setCustomProductUnitPrice] = useState<number>(0);
-  const [customProductDescription, setCustomProductDescription] = useState('');
-  const [customProductTaxRate, setCustomProductTaxRate] = useState<number>(0.15);
-
+  const [customProductForm] = Form.useForm(); // New Form instance for custom product
   const [cart, setCart] = useState<CartItem[]>([]);
-
   const [paymentType, setPaymentType] = useState<PaymentType>('Cash');
   const [amountPaid, setAmountPaid] = useState(0);
   const [dueDate, setDueDate] = useState<string | null>(null);
-
+  // --- State for Bank Name ---
+  const [bankName, setBankName] = useState<string | null>(null);
+  // --- End State for Bank Name ---
+  // --- Removed loggedInUserInfo state ---
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-
-  // Declare isLoading state
+  // Global loading state for the screen
   const [isLoading, setIsLoading] = useState(false);
-
+  // Specific loading state for adding custom product (to disable custom product form elements)
+  const [isAddingCustomProduct, setIsAddingCustomProduct] = useState(false);
   // Cache scores by customer id (string)
   const [creditScoreCache, setCreditScoreCache] = useState<
     Record<string, CreditScoreInfo>
@@ -183,12 +170,13 @@ export default function POSScreen() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
 
+  // --- Removed the useEffect hook for fetching user info ---
+
   // Fetch score & cache when customer is selected
   const fetchAndCacheCustomerScore = useCallback(
     async (customerId: string) => {
       if (!isAuthenticated || !token) return;
       if (creditScoreCache[customerId]) return; // already cached
-
       try {
         const resp = await fetch(
           `${API_BASE_URL}/api/sales/customer/${customerId}/credit-history`,
@@ -196,7 +184,6 @@ export default function POSScreen() {
         );
         if (!resp.ok) throw new Error(`Score fetch failed: ${resp.status}`);
         const history: SaleHistoryRow[] = await resp.json();
-
         const info = computeCreditScoreFromHistory(history);
         setCreditScoreCache((prev) => ({ ...prev, [customerId]: info }));
       } catch (e) {
@@ -208,7 +195,6 @@ export default function POSScreen() {
     },
     [isAuthenticated, token, getAuthHeaders, creditScoreCache],
   );
-
   useEffect(() => {
     if (selectedCustomer?.id) {
       fetchAndCacheCustomerScore(selectedCustomer.id);
@@ -223,7 +209,7 @@ export default function POSScreen() {
         setCustomers([]);
         return;
       }
-      setIsLoading(true);
+      setIsLoading(true); // Set global loading
       try {
         const response = await fetch(`${API_BASE_URL}/api/customers`, {
           headers: getAuthHeaders(),
@@ -235,32 +221,40 @@ export default function POSScreen() {
         console.error('Error fetching customers:', error);
         messageApi.error('Failed to fetch customers.');
       } finally {
-        setIsLoading(false);
+        setIsLoading(false); // End global loading
       }
     }
-
     async function fetchProducts() {
       if (!isAuthenticated || !token) {
         messageApi.warning('Please log in to load products.');
         setProducts([]);
         return;
       }
-      setIsLoading(true);
+      console.log("Fetching products..."); // Log when product fetching starts
+      setIsLoading(true); // Set global loading
       try {
         const response = await fetch(`${API_BASE_URL}/products-services`, {
           headers: getAuthHeaders(),
         });
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data: ProductDB[] = await response.json();
-        setProducts(data);
+        // Explicitly parse numeric values to ensure they are numbers
+        const parsedData = data.map(p => ({
+            ...p,
+            unit_price: parseFloat(p.unit_price as any),
+            cost_price: p.cost_price != null ? parseFloat(p.cost_price as any) : null,
+            stock_quantity: parseInt(p.stock_quantity as any, 10), // Assuming stock is integer
+            // Add other numeric fields if they might come as strings
+        }));
+        setProducts(parsedData);
+        console.log(`Products fetched and set. Total products: ${parsedData.length}`); // Log when products are set
       } catch (error) {
         console.error('Error fetching products:', error);
         messageApi.error('Failed to fetch products.');
       } finally {
-        setIsLoading(false);
+        setIsLoading(false); // End global loading
       }
     }
-
     if (isAuthenticated && token) {
       fetchCustomers();
       fetchProducts();
@@ -271,92 +265,267 @@ export default function POSScreen() {
   }, [isAuthenticated, token, getAuthHeaders, messageApi]);
 
   // Add to cart
-  const addToCart = () => {
+  const addToCart = () => { // <-- Removed async
+    console.log("addToCart called!"); // Log at the very beginning of the function
     if (!isAuthenticated) {
       messageApi.error('Authentication required to add items to cart.');
       return;
     }
-
     let itemToAdd: CartItem | null = null;
-
+    let finalProduct: ProductDB | null = null;
     if (showCustomProductForm) {
-      if (!customProductName.trim() || customProductUnitPrice <= 0 || productQty <= 0) {
-        messageApi.error(
-          'Please enter a valid name, positive price, and positive quantity for the custom item.',
-        );
-        return;
-      }
-      itemToAdd = {
-        id: `custom-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-        name: customProductName.trim(),
-        description: customProductDescription.trim() || 'Custom item',
-        unit_price: customProductUnitPrice,
-        is_service: false,
-        tax_rate_value: customProductTaxRate,
-        quantity: productQty,
-        subtotal: productQty * customProductUnitPrice * (1 + customProductTaxRate),
-      };
+      // Validate custom product form fields
+      customProductForm.validateFields().then(async (values) => { // <-- Use .then for form validation
+        const customProductName = values.customProductName.trim();
+        const customProductUnitPrice = values.customProductUnitPrice;
+        const customProductDescription = values.customProductDescription;
+        const customProductTaxRate = parseFloat(values.customProductTaxRate);
+        setIsAddingCustomProduct(true);
+        try {
+          const existingProduct = products.find(p => p.name.toLowerCase() === customProductName.toLowerCase());
+          if (existingProduct) {
+            finalProduct = existingProduct;
+            messageApi.info(`Product "${customProductName}" already exists. Using existing product.`);
+          } else {
+            const createProductPayload = {
+              name: customProductName,
+              description: customProductDescription || null,
+              unit_price: customProductUnitPrice,
+              is_service: false,
+              stock_quantity: 0,
+              tax_rate_value: customProductTaxRate,
+              category: null,
+              unit: 'unit',
+              cost_price: null,
+            };
+            const createProductResponse = await fetch(`${API_BASE_URL}/products-services`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders(),
+              },
+              body: JSON.stringify(createProductPayload),
+            });
+            if (!createProductResponse.ok) {
+              const errorData = await createProductResponse.json();
+              throw new Error(errorData.error || 'Failed to create new product.');
+            }
+            finalProduct = await createProductResponse.json();
+            finalProduct.unit_price = parseFloat(finalProduct.unit_price as any);
+            if (finalProduct.cost_price != null) {
+                finalProduct.cost_price = parseFloat(finalProduct.cost_price as any);
+            }
+            finalProduct.stock_quantity = parseInt(finalProduct.stock_quantity as any, 10);
+            setProducts(prev => [...prev, finalProduct!]);
+            messageApi.success(`New product "${finalProduct!.name}" created and added to product list.`);
+          }
+          itemToAdd = {
+            ...finalProduct!,
+            quantity: productQty,
+            subtotal:
+              productQty *
+              finalProduct!.unit_price *
+              (1 + (finalProduct!.tax_rate_value ?? 0)),
+          };
+          // Common cart update logic for custom product
+          if (itemToAdd) {
+            const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
+            if (existingCartItem) {
+              setCart(
+                cart.map((i) =>
+                  i.id === itemToAdd!.id
+                    ? {
+                        ...i,
+                        quantity: i.quantity + itemToAdd!.quantity,
+                        subtotal:
+                          (i.quantity + itemToAdd!.quantity) *
+                          i.unit_price *
+                          (1 + (i.tax_rate_value ?? 0)),
+                      }
+                    : i,
+                ),
+              );
+            } else {
+              setCart([...cart, itemToAdd]);
+            }
+            // Reset selectors and form fields after successful addition
+            setSelectedProduct(null);
+            setProductQty(1);
+            setProductModal(false);
+            setShowCustomProductForm(false);
+            customProductForm.resetFields();
+            messageApi.success(`"${itemToAdd.name}" added to cart.`);
+          }
+        } catch (err: any) {
+          console.error('Error handling custom product:', err);
+          messageApi.error(err.message || 'Failed to process custom product.');
+        } finally {
+          setIsAddingCustomProduct(false);
+        }
+      }).catch((errorInfo) => {
+        // Handle validation errors
+        messageApi.error('Please fill in all required custom product fields.');
+      });
+      // Important: Return early to prevent the rest of the function from executing
+      // while the form validation promise resolves.
+      return;
     } else {
-      if (!selectedProduct || productQty < 1) return;
-
-      const availableQty = selectedProduct.stock_quantity ?? 0;
-      const alreadyInCart = cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
-      if (productQty + alreadyInCart > availableQty) {
-        messageApi.error(
-          `Not enough stock for "${selectedProduct.name}". Only ${
-            availableQty - alreadyInCart
-          } units available.`,
-        );
-        return;
+      // Existing product logic
+      if (!selectedProduct || productQty < 1) {
+        console.log("addToCart (existing product): Exiting early because no product selected or quantity < 1.", { selectedProduct, productQty });
+        return; // Early exit if no product selected or quantity is invalid
       }
-      itemToAdd = {
-        ...selectedProduct,
-        quantity: productQty,
-        subtotal:
-          productQty *
-          selectedProduct.unit_price *
-          (1 + (selectedProduct.tax_rate_value ?? 0)),
-      };
+      // If it's a service, skip stock checks entirely.
+      if (selectedProduct.is_service) {
+          console.log(`addToCart (existing product): "${selectedProduct.name}" is a service, skipping stock check.`);
+          finalProduct = selectedProduct; // Set finalProduct for services
+          itemToAdd = {
+              ...selectedProduct,
+              quantity: productQty,
+              subtotal: productQty * selectedProduct.unit_price * (1 + (selectedProduct.tax_rate_value ?? 0)),
+          };
+          // Common cart update logic for service
+          if (itemToAdd) {
+            const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
+            if (existingCartItem) {
+              setCart(
+                cart.map((i) =>
+                  i.id === itemToAdd!.id
+                    ? {
+                        ...i,
+                        quantity: i.quantity + itemToAdd!.quantity,
+                        subtotal:
+                          (i.quantity + itemToAdd!.quantity) *
+                          i.unit_price *
+                          (1 + (i.tax_rate_value ?? 0)),
+                      }
+                    : i,
+                ),
+              );
+            } else {
+              setCart([...cart, itemToAdd]);
+            }
+            // Reset selectors and form fields after successful addition
+            setSelectedProduct(null);
+            setProductQty(1);
+            setProductModal(false);
+            setShowCustomProductForm(false);
+            messageApi.success(`"${itemToAdd.name}" added to cart.`);
+          }
+      } else {
+          // Only perform stock check for non-service items
+          const availableQty = selectedProduct.stock_quantity ?? 0;
+          const alreadyInCart = cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
+          const totalRequested = productQty + alreadyInCart;
+          console.log(`Current product state for stock check:`, {
+              name: selectedProduct.name,
+              stock_quantity: selectedProduct.stock_quantity,
+              is_service: selectedProduct.is_service
+          });
+          console.log(`Stock check details: Requested Qty: ${productQty}, Already in Cart: ${alreadyInCart}, Available: ${availableQty}, Total Requested: ${totalRequested}`);
+          console.log(`Condition (availableQty < 1) for "${selectedProduct.name}" is: ${availableQty < 1}.`); // NEW LOG HERE
+          if (availableQty < 1) { // MODIFIED CONDITION: Flag if available stock is less than 1 (0 or negative)
+              console.log(`Attempting to show out-of-stock modal for: ${selectedProduct.name}. Available Stock: ${availableQty}`);
+              // --- FIXED MODAL LOGIC ---
+              Modal.confirm({
+                  title: 'Item Out of Stock',
+                  content: `"${selectedProduct.name}" is out of stock (only ${availableQty} units available). Do you want to add it to the cart anyway?`,
+                  okText: 'Yes, Add Anyway',
+                  cancelText: 'No, Cancel',
+                  onOk: () => { // <-- Use onOk callback
+                      const item = {
+                          ...selectedProduct,
+                          quantity: productQty,
+                          subtotal:
+                              productQty *
+                              selectedProduct.unit_price *
+                              (1 + (selectedProduct.tax_rate_value ?? 0)),
+                      };
+                      const existingCartItem = cart.find((i) => i.id === item.id);
+                      if (existingCartItem) {
+                          setCart(
+                              cart.map((i) =>
+                                  i.id === item.id
+                                      ? {
+                                          ...i,
+                                          quantity: i.quantity + item.quantity,
+                                          subtotal:
+                                              (i.quantity + item.quantity) *
+                                              i.unit_price *
+                                              (1 + (i.tax_rate_value ?? 0)),
+                                      }
+                                      : i,
+                              ),
+                          );
+                      } else {
+                          setCart([...cart, item]);
+                      }
+                      // Reset selectors and form fields after successful addition
+                      setSelectedProduct(null);
+                      setProductQty(1);
+                      setProductModal(false);
+                      setShowCustomProductForm(false);
+                      // customProductForm.resetFields(); // Not needed for existing product
+                      messageApi.success(`"${selectedProduct.name}" added to cart.`);
+                  },
+                  onCancel: () => { // <-- Use onCancel callback
+                      messageApi.info('Adding item to cart cancelled.');
+                      // Optionally reset some states if needed specifically on cancel
+                      // setProductQty(1); // Keep current quantity if user wants to try again
+                      // setSelectedProduct(null); // Keep product selected if user wants to try again
+                      // setProductModal(false); // Keep modal open if user wants to try again
+                  },
+              });
+              // Crucial: Return here so the rest of addToCart doesn't execute until modal callback.
+              return;
+              // --- END FIXED MODAL LOGIC ---
+          }
+          // If not out of stock (availableQty >= 1 for non-service), proceed to add to cart normally.
+          finalProduct = selectedProduct;
+          itemToAdd = {
+              ...selectedProduct,
+              quantity: productQty,
+              subtotal:
+                  productQty *
+                  selectedProduct.unit_price *
+                  (1 + (selectedProduct.tax_rate_value ?? 0)),
+          };
+          // Common cart update logic for in-stock product
+          if (itemToAdd) {
+            const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
+            if (existingCartItem) {
+              setCart(
+                cart.map((i) =>
+                  i.id === itemToAdd!.id
+                    ? {
+                        ...i,
+                        quantity: i.quantity + itemToAdd!.quantity,
+                        subtotal:
+                          (i.quantity + itemToAdd!.quantity) *
+                          i.unit_price *
+                          (1 + (i.tax_rate_value ?? 0)),
+                      }
+                    : i,
+                ),
+              );
+            } else {
+              setCart([...cart, itemToAdd]);
+            }
+            // Reset selectors and form fields after successful addition
+            setSelectedProduct(null);
+            setProductQty(1);
+            setProductModal(false);
+            setShowCustomProductForm(false);
+            messageApi.success(`"${itemToAdd.name}" added to cart.`);
+          }
+      }
     }
-
-    if (!itemToAdd) return;
-
-    const existing = cart.find((i) => i.id === itemToAdd!.id);
-    if (existing) {
-      setCart(
-        cart.map((i) =>
-          i.id === itemToAdd!.id
-            ? {
-                ...i,
-                quantity: i.quantity + itemToAdd!.quantity,
-                subtotal:
-                  (i.quantity + itemToAdd!.quantity) *
-                  i.unit_price *
-                  (1 + (i.tax_rate_value ?? 0)),
-              }
-            : i,
-        ),
-      );
-    } else {
-      setCart([...cart, itemToAdd]);
-    }
-
-    // reset selectors
-    setSelectedProduct(null);
-    setProductQty(1);
-    setProductModal(false);
-    setShowCustomProductForm(false);
-    setCustomProductName('');
-    setCustomProductUnitPrice(0);
-    setCustomProductDescription('');
-    setCustomProductTaxRate(0.15);
   };
 
   const removeFromCart = (id: number | string) =>
     setCart(cart.filter((i) => i.id !== id));
 
-  // Add customer
-  const [newCustomerFormInstance] = Form.useForm(); // keep your form instance
+  const [newCustomerFormInstance] = Form.useForm();
   const handleAddCustomer = async (values: {
     name: string;
     phone: string;
@@ -381,7 +550,6 @@ export default function POSScreen() {
       const existing = existingCustomers.find(
         (c) => c.phone?.replace(/\D/g, '') === values.phone.replace(/\D/g, ''),
       );
-
       if (existing) {
         setSelectedCustomer(existing);
         messageApi.info(
@@ -402,14 +570,12 @@ export default function POSScreen() {
             vatNumber: values.taxId || null,
           }),
         });
-
         if (!response.ok) {
           const errorData = await response.json();
           throw new Error(
             errorData.detail || errorData.error || 'Failed to add new customer.',
           );
         }
-
         const newCustomer: CustomerFrontend = await response.json();
         setCustomers((prev) => [...prev, newCustomer]);
         setSelectedCustomer(newCustomer);
@@ -438,13 +604,11 @@ export default function POSScreen() {
       messageApi.warning('Add at least one product to the cart');
       return;
     }
-
     if (paymentType === 'Credit') {
       if (!selectedCustomer) {
         messageApi.error('Customer not selected for credit sale.');
         return;
       }
-
       // Credit limit check (block if exceeded)
       const currentBalance = selectedCustomer.balanceDue || 0;
       const customerCreditLimit = selectedCustomer.creditLimit || Infinity;
@@ -463,7 +627,6 @@ export default function POSScreen() {
         );
         return;
       }
-
       // Flag low score (DO NOT block)
       try {
         if (selectedCustomer?.id && !creditScoreCache[selectedCustomer.id]) {
@@ -482,19 +645,31 @@ export default function POSScreen() {
       }
     }
 
+    // --- Validation for Bank Name (Optional but good practice) ---
+    if (paymentType === 'Bank' && !bankName?.trim()) {
+        // messageApi.warning('Please enter the bank name for bank transfers.');
+        // return; // Uncomment if you want to make bank name mandatory
+    }
+    // --- End Validation for Bank Name ---
+
+    // --- Get Teller Name from localStorage (similar to AuthPage) ---
+    // const tellerName = getUserName(); // If exported from AuthPage
+    const tellerName = getUserNameFromLocalStorage(); // Using local helper
+    // --- End Get Teller Name ---
+
     setIsLoading(true);
     try {
       const salePayload = {
         cart: cart.map((item) => {
-          const isRealProduct = typeof item.id === 'number';
+          // All items in cart are now ProductDB type, so no need for isRealProduct check here
           return {
-            ...(isRealProduct ? { id: item.id } : {}),
+            id: item.id, // Use the actual product ID
             name: item.name,
             quantity: item.quantity,
             unit_price: item.unit_price,
             subtotal: item.subtotal,
-            is_service: (item as any).is_service || false,
-            tax_rate_value: (item as any).tax_rate_value ?? 0,
+            is_service: item.is_service || false,
+            tax_rate_value: item.tax_rate_value ?? 0,
           };
         }),
         paymentType,
@@ -505,11 +680,16 @@ export default function POSScreen() {
         amountPaid: paymentType === 'Cash' ? amountPaid : 0,
         change: paymentType === 'Cash' ? change : 0,
         dueDate: paymentType === 'Credit' ? dueDate : null,
-        tellerName: 'Dummy Teller',
-        branch: 'Dummy Branch',
-        companyName: 'DummyCo',
+        // --- Include bankName in payload ---
+        bankName: paymentType === 'Bank' ? bankName : null,
+        // --- End include bankName ---
+        // --- Use the fetched user's name instead of the dummy one ---
+        tellerName: tellerName, // Use name from localStorage
+        // tellerName: 'Dummy Teller', // <-- Removed or commented out this line
+        // --- End change ---
+        branch: '', // You might want to make this dynamic too
+        companyName: '', // You might want to make this dynamic too
       };
-
       const response = await fetch(`${API_BASE_URL}/api/sales`, {
         method: 'POST',
         headers: {
@@ -518,13 +698,11 @@ export default function POSScreen() {
         },
         body: JSON.stringify(salePayload),
       });
-
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to submit sale.');
       }
-
-      // Re-fetch products for fresh stock
+      // Re-fetch products for fresh stock (or to include newly created products)
       try {
         const productsResponse = await fetch(`${API_BASE_URL}/products-services`, {
           headers: getAuthHeaders(),
@@ -537,12 +715,14 @@ export default function POSScreen() {
       } catch (fetchError) {
         console.warn('Error re-fetching products:', fetchError);
       }
-
       setCart([]);
       setAmountPaid(0);
       setDueDate(null);
+      // --- Reset bankName ---
+      setBankName(null);
+      // --- End reset bankName ---
       setSelectedCustomer(null);
-      setPaymentType('Cash');
+      setPaymentType('Cash'); // Reset to default payment type
       messageApi.success('Sale submitted and recorded successfully!');
     } catch (err: any) {
       console.error('Error during sale submission:', err);
@@ -557,7 +737,6 @@ export default function POSScreen() {
       {contextHolder}
       <div style={{ padding: 18, maxWidth: 650, margin: '0 auto' }}>
         <Title level={3}>Point of Sale</Title>
-
         {/* Customer Select */}
         <Card
           style={{ marginBottom: 12, cursor: 'pointer' }}
@@ -591,7 +770,6 @@ export default function POSScreen() {
                   Credit Limit: R{(selectedCustomer.creditLimit || 0).toFixed(2)}
                 </div>
               )}
-
             {/* Credit Score Tag (if cached/loaded) */}
             {selectedCustomer?.id && creditScoreCache[selectedCustomer.id] && (
               <div style={{ marginTop: 6 }}>
@@ -603,7 +781,6 @@ export default function POSScreen() {
           </div>
           <UserAddOutlined />
         </Card>
-
         {/* Product Select */}
         <Card
           style={{ marginBottom: 12, cursor: 'pointer' }}
@@ -611,6 +788,8 @@ export default function POSScreen() {
             setSelectedProduct(null);
             setShowCustomProductForm(false);
             setProductModal(true);
+            customProductForm.resetFields(); // Reset form fields on opening modal
+            setProductQty(1); // Ensure qty is reset for new product selection
           }}
           bodyStyle={{
             display: 'flex',
@@ -622,9 +801,11 @@ export default function POSScreen() {
             <Text strong>
               {selectedProduct ? selectedProduct.name : 'Select Product'}
             </Text>
-            <div style={{ fontSize: 12, color: '#888' }}>
-              {selectedProduct ? `Price: R${selectedProduct.unit_price.toFixed(2)}` : ''}{' '}
-            </div>
+<div style={{ fontSize: 12, color: '#888' }}>
+  Price: R
+  {(selectedProduct?.unit_price || 0).toFixed(2)}{' '}
+  {selectedProduct?.is_service ? '(Service)' : ''}
+</div>
             {selectedProduct && (
               <div style={{ fontSize: 12, color: '#888' }}>
                 Stock: {selectedProduct.stock_quantity ?? 0} {selectedProduct.unit || ''}
@@ -633,7 +814,6 @@ export default function POSScreen() {
           </div>
           <ShoppingCartOutlined />
         </Card>
-
         {/* Quantity & Add to Cart */}
         <Row gutter={6} align="middle" style={{ marginBottom: 10 }}>
           <Col>
@@ -643,6 +823,7 @@ export default function POSScreen() {
               disabled={
                 !isAuthenticated ||
                 isLoading ||
+                isAddingCustomProduct || // Disable during custom product creation
                 (!selectedProduct && !showCustomProductForm)
               }
             >
@@ -658,6 +839,7 @@ export default function POSScreen() {
               disabled={
                 !isAuthenticated ||
                 isLoading ||
+                isAddingCustomProduct || // Disable during custom product creation
                 (!selectedProduct && !showCustomProductForm)
               }
             />
@@ -672,6 +854,7 @@ export default function POSScreen() {
               disabled={
                 !isAuthenticated ||
                 isLoading ||
+                isAddingCustomProduct || // Disable during custom product creation
                 (!selectedProduct && !showCustomProductForm)
               }
             >
@@ -685,16 +868,16 @@ export default function POSScreen() {
               disabled={
                 !isAuthenticated ||
                 isLoading ||
-                (!selectedProduct && !showCustomProductForm) ||
+                isAddingCustomProduct || // Disable during custom product creation
+                (!selectedProduct && !showCustomProductForm) || // Button disabled if no product selected AND not custom form
                 (showCustomProductForm &&
-                  (!customProductName.trim() || customProductUnitPrice <= 0))
+                  !customProductForm.getFieldValue('customProductName')?.trim()) // If custom form is open but name is empty
               }
             >
               Add to Cart
             </Button>
           </Col>
         </Row>
-
         {/* Cart */}
         <Card title="Cart" style={{ marginBottom: 14 }}>
           {isLoading && (
@@ -771,15 +954,24 @@ export default function POSScreen() {
             ))
           )}
         </Card>
-
-        {/* Payment and Submit */}
+        {/* Payment and Submit - IMPROVED ALIGNMENT */}
         <Card>
-          <Row gutter={12} align="middle">
-            <Col flex="1 1 auto">
-              <Text strong>Payment Method</Text>
+          {/* Use Flexbox for better alignment */}
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            {/* Payment Method Field Group */}
+            <div style={{ flex: 1, minWidth: 150 }}>
+              <div style={{ marginBottom: 4 }}>
+                <Text strong>Payment Method</Text>
+              </div>
               <Select
                 value={paymentType}
-                onChange={setPaymentType}
+                onChange={(value) => {
+                    setPaymentType(value);
+                    // Optional: Reset related fields when payment type changes
+                    if (value !== 'Cash') setAmountPaid(0);
+                    if (value !== 'Credit') setDueDate(null);
+                    if (value !== 'Bank') setBankName(null); // Reset bank name
+                }}
                 style={{ width: '100%' }}
                 disabled={!isAuthenticated || isLoading}
               >
@@ -787,11 +979,15 @@ export default function POSScreen() {
                 <Option value="Bank">Bank</Option>
                 <Option value="Credit">Credit</Option>
               </Select>
-            </Col>
+            </div>
 
+            {/* Conditional Fields based on Payment Type */}
+            {/* Amount Paid (Cash) */}
             {paymentType === 'Cash' && (
-              <Col flex="1 1 auto">
-                <Text>Amount Paid</Text>
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div style={{ marginBottom: 4 }}>
+                  <Text>Amount Paid</Text>
+                </div>
                 <InputNumber
                   min={0}
                   value={amountPaid}
@@ -799,7 +995,7 @@ export default function POSScreen() {
                   style={{ width: '100%' }}
                   disabled={!isAuthenticated || isLoading}
                 />
-                <div>
+                <div style={{ marginTop: 4 }}>
                   <Text strong>
                     Change:&nbsp;
                     <span style={{ color: change < 0 ? 'red' : 'green' }}>
@@ -807,12 +1003,31 @@ export default function POSScreen() {
                     </span>
                   </Text>
                 </div>
-              </Col>
+              </div>
             )}
 
+            {/* Bank Name (Bank) */}
+            {paymentType === 'Bank' && (
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div style={{ marginBottom: 4 }}>
+                  <Text>Bank Name</Text>
+                </div>
+                <Input
+                  placeholder="e.g., FNB, ABSA"
+                  value={bankName || ''}
+                  onChange={(e) => setBankName(e.target.value)}
+                  style={{ width: '100%' }}
+                  disabled={!isAuthenticated || isLoading}
+                />
+              </div>
+            )}
+
+            {/* Due Date (Credit) */}
             {paymentType === 'Credit' && (
-              <Col flex="1 1 auto">
-                <Text>Due Date</Text>
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div style={{ marginBottom: 4 }}>
+                  <Text>Due Date</Text>
+                </div>
                 <Input
                   type="date"
                   value={dueDate || ''}
@@ -837,16 +1052,16 @@ export default function POSScreen() {
                         </Tag>
                       )}
                     <Text type="warning" style={{ color: 'orange' }}>
-                      Credit selected. Please review customer’s score and limit.
+                      Credit selected. Please review customer's score and limit.
                     </Text>
                   </div>
                 )}
-              </Col>
+              </div>
             )}
-          </Row>
+          </div>
 
-          <Divider />
-          <div style={{ textAlign: 'center', marginBottom: 8 }}>
+          <Divider style={{ margin: '16px 0' }} />
+          <div style={{ textAlign: 'center', marginBottom: 12 }}>
             <Text strong>Total: R{total.toFixed(2)}</Text>
           </div>
           <Button
@@ -859,12 +1074,14 @@ export default function POSScreen() {
               cart.length === 0 ||
               (paymentType === 'Cash' && amountPaid < total) ||
               (paymentType === 'Credit' && !selectedCustomer)
+              // Optional: Add check for bank name if required
+              // || (paymentType === 'Bank' && !bankName?.trim())
+              // Removed check for loggedInUserInfo as it's no longer used
             }
           >
             Submit Sale
           </Button>
         </Card>
-
         {/* ----------- Modals ----------- */}
         <Modal
           open={customerModal}
@@ -922,7 +1139,6 @@ export default function POSScreen() {
                 </Card>
               ))}
           </div>
-
           {!showNewCustomer ? (
             <Button
               block
@@ -965,7 +1181,6 @@ export default function POSScreen() {
             </Form>
           )}
         </Modal>
-
         <Modal
           open={productModal}
           onCancel={() => {
@@ -973,10 +1188,7 @@ export default function POSScreen() {
             setShowCustomProductForm(false);
             setSelectedProduct(null);
             setProductQty(1);
-            setCustomProductName('');
-            setCustomProductUnitPrice(0);
-            setCustomProductDescription('');
-            setCustomProductTaxRate(0.15);
+            customProductForm.resetFields(); // Reset custom product form when modal closes
           }}
           footer={null}
           title="Select Product"
@@ -1019,7 +1231,11 @@ export default function POSScreen() {
                         <div>
                           <Text strong>{p.name}</Text>
                           <div style={{ fontSize: 13, color: '#888' }}>
-                            Price: R{p.unit_price.toFixed(2)} {p.is_service ? '(Service)' : ''}
+                            Price: R
+                            {typeof p.unit_price === 'number'
+                              ? p.unit_price.toFixed(2)
+                              : parseFloat(p.unit_price as any).toFixed(2)}{' '}
+                            {p.is_service ? '(Service)' : ''}
                           </div>
                           <div style={{ fontSize: 13, color: '#888' }}>
                             Stock: {p.stock_quantity ?? 0} {p.unit || ''}
@@ -1034,48 +1250,56 @@ export default function POSScreen() {
                 type="dashed"
                 icon={<PlusOutlined />}
                 onClick={() => setShowCustomProductForm(true)}
-                disabled={!isAuthenticated || isLoading}
+                disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
               >
                 Add Custom Product/Service
               </Button>
             </>
           ) : (
-            <Form layout="vertical">
-              <Form.Item label="Custom Product/Service Name" required>
+            <Form form={customProductForm} layout="vertical">
+              <Form.Item
+                name="customProductName"
+                label="Custom Product/Service Name"
+                rules={[{ required: true, message: 'Please enter product name!' }]}
+              >
                 <Input
-                  value={customProductName}
-                  onChange={(e) => setCustomProductName(e.target.value)}
                   placeholder="E.g., Custom Repair, Consultation Fee"
-                  disabled={!isAuthenticated || isLoading}
+                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 />
               </Form.Item>
-              <Form.Item label="Unit Price" required>
+              <Form.Item
+                name="customProductUnitPrice"
+                label="Unit Price"
+                rules={[{ required: true, message: 'Please enter unit price!' }, { type: 'number', min: 0.01, message: 'Price must be positive!' }]}
+              >
                 <InputNumber
                   min={0.01}
                   step={0.01}
-                  value={customProductUnitPrice}
-                  onChange={(value) => setCustomProductUnitPrice(value ?? 0)}
                   style={{ width: '100%' }}
                   formatter={(value) => `R ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                   parser={(value) => (value || '').replace(/R\s?|(,*)/g, '') as unknown as number}
-                  disabled={!isAuthenticated || isLoading}
+                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 />
               </Form.Item>
-              <Form.Item label="Description (Optional)">
+              <Form.Item
+                name="customProductDescription"
+                label="Description (Optional)"
+              >
                 <Input.TextArea
                   rows={2}
-                  value={customProductDescription}
-                  onChange={(e) => setCustomProductDescription(e.target.value)}
                   placeholder="Brief description of the custom item"
-                  disabled={!isAuthenticated || isLoading}
+                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 />
               </Form.Item>
-              <Form.Item label="Tax Rate" required>
+              <Form.Item
+                name="customProductTaxRate"
+                label="Tax Rate"
+                required
+                initialValue="0.15"
+              >
                 <Select
-                  value={customProductTaxRate.toString()}
-                  onChange={(value) => setCustomProductTaxRate(parseFloat(value))}
                   style={{ width: '100%' }}
-                  disabled={!isAuthenticated || isLoading}
+                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 >
                   <Option value="0">0%</Option>
                   <Option value="0.15">15%</Option>
@@ -1084,12 +1308,11 @@ export default function POSScreen() {
               <Button
                 type="primary"
                 block
-                onClick={addToCart}
+                onClick={addToCart} // This will trigger form validation
                 disabled={
                   !isAuthenticated ||
                   isLoading ||
-                  !customProductName.trim() ||
-                  customProductUnitPrice <= 0 ||
+                  isAddingCustomProduct ||
                   productQty <= 0
                 }
               >
@@ -1099,8 +1322,11 @@ export default function POSScreen() {
                 block
                 type="default"
                 style={{ marginTop: 8 }}
-                onClick={() => setShowCustomProductForm(false)}
-                disabled={!isAuthenticated || isLoading}
+                onClick={() => {
+                  setShowCustomProductForm(false);
+                  customProductForm.resetFields();
+                }}
+                disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
               >
                 Back to Existing Products
               </Button>

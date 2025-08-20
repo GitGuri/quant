@@ -24,11 +24,9 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  SelectGroup,
-  SelectLabel
 } from '@/components/ui/select';
-import { Edit, Printer, FileText, Trash2 } from 'lucide-react';
-import { useAuth } from '../AuthPage'; // Assuming AuthPage exports useAuth and AuthProvider
+import { Edit, Printer, FileText, Trash2, AlertTriangle } from 'lucide-react'; // Import AlertTriangle for duplicate icon
+import { useAuth } from '../AuthPage';
 
 // Define an interface for your transaction data
 interface Transaction {
@@ -41,6 +39,8 @@ interface Transaction {
   account_id: string | null;
   account_name: string | null;
   created_at: string;
+  // Optional: Add fields that might help in duplicate detection if available from backend
+  // potential_duplicate?: boolean; // This could be set by backend or frontend logic
 }
 
 // Interface for Account
@@ -48,7 +48,7 @@ interface Account {
   id: string;
   code: string;
   name: string;
-  type: string; // e.g., 'Asset', 'Liability', 'Equity', 'Revenue', 'Expense' - IMPORTANT for 'Revenue Accounts' filter
+  type: string; // e.g., 'Asset', 'Liability', 'Equity', 'Revenue', 'Expense'
 }
 
 const Transactions = () => {
@@ -67,15 +67,17 @@ const Transactions = () => {
   // NEW: State for the search term within the edit modal's account list
   const [editAccountSearchTerm, setEditAccountSearchTerm] = useState('');
 
-  const { isAuthenticated } = useAuth(); // Get authentication status
-  const token = localStorage.getItem('token'); // Retrieve the token
+  // NEW: State for duplicate filter
+  const [duplicateFilter, setDuplicateFilter] = useState<'all' | 'potential'>('all');
 
-  // Callback to fetch transactions, now including authentication header
+  const { isAuthenticated } = useAuth();
+  const token = localStorage.getItem('token');
+
+  // Callback to fetch transactions
   const fetchTransactions = useCallback(async () => {
     if (!token) {
       console.warn('No token found. User is not authenticated.');
-      // Optionally, redirect to login or show a message
-      setTransactions([]); // Clear transactions if not authenticated
+      setTransactions([]);
       setLoading(false);
       return;
     }
@@ -83,6 +85,7 @@ const Transactions = () => {
     setLoading(true);
     let queryParams = new URLSearchParams();
 
+    // Handle account filter
     if (selectedAccountFilter !== 'all') {
       if (selectedAccountFilter === 'revenue_accounts') {
         queryParams.append('accountType', 'Revenue');
@@ -105,32 +108,59 @@ const Transactions = () => {
       const response = await fetch(`https://quantnow.onrender.com/transactions?${queryParams.toString()}`, {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`, // Include the JWT token
+          'Authorization': `Bearer ${token}`,
         },
       });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      const data = await response.json();
-      setTransactions(data);
+      const data: Transaction[] = await response.json();
+      
+      // NEW: Add potential duplicate flag based on simple frontend logic
+      // This is a basic example. You might want more sophisticated logic or backend support.
+      const transactionsWithDuplicatesFlag = addPotentialDuplicateFlags(data);
+      
+      setTransactions(transactionsWithDuplicatesFlag);
     } catch (error) {
       console.error('Error fetching transactions:', error);
-      // Handle token expiration/invalidity here if needed, e.g., logout user
     } finally {
       setLoading(false);
     }
-  }, [selectedAccountFilter, searchTerm, fromDate, toDate, token]); // Add token to dependencies
+  }, [selectedAccountFilter, searchTerm, fromDate, toDate, token]);
+
+  // NEW: Function to add potential duplicate flags
+  const addPotentialDuplicateFlags = (transactions: Transaction[]): Transaction[] => {
+    // Create a map to group transactions by date and amount
+    const transactionGroups: Record<string, Transaction[]> = {};
+
+    transactions.forEach(transaction => {
+      // Create a key based on date and amount (rounded to 2 decimal places)
+      // You can adjust the key to include other factors like description similarity
+      const key = `${transaction.date}_${parseFloat(transaction.amount as string).toFixed(2)}`;
+      if (!transactionGroups[key]) {
+        transactionGroups[key] = [];
+      }
+      transactionGroups[key].push(transaction);
+    });
+
+    // Add potential_duplicate flag to transactions that appear more than once in a group
+    return transactions.map(transaction => {
+      const key = `${transaction.date}_${parseFloat(transaction.amount as string).toFixed(2)}`;
+      const group = transactionGroups[key];
+      // Mark as potential duplicate if there's more than one transaction in the group
+      const isPotentialDuplicate = group && group.length > 1;
+      return { ...transaction, potential_duplicate: isPotentialDuplicate };
+    });
+  };
 
   useEffect(() => {
-    // Only fetch if authenticated (token exists)
     if (isAuthenticated && token) {
       fetchTransactions();
     } else {
-      setTransactions([]); // Clear transactions if not authenticated
+      setTransactions([]);
     }
-  }, [fetchTransactions, isAuthenticated, token]); // Add isAuthenticated and token to dependencies
+  }, [fetchTransactions, isAuthenticated, token]);
 
-  // Fetch accounts only once on mount, now including authentication header
   useEffect(() => {
     const fetchAccounts = async () => {
       if (!token) {
@@ -139,10 +169,10 @@ const Transactions = () => {
         return;
       }
       try {
-        const response = await fetch('https://quantnow.onrender.com/accounts', { // Assuming /api/accounts is also secured
+        const response = await fetch('https://quantnow.onrender.com/accounts', {
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`, // Include the JWT token
+            'Authorization': `Bearer ${token}`,
           },
         });
         if (!response.ok) {
@@ -160,8 +190,7 @@ const Transactions = () => {
     } else {
       setAccounts([]);
     }
-  }, [isAuthenticated, token]); // Add isAuthenticated and token to dependencies
-
+  }, [isAuthenticated, token]);
 
   const handleEditClick = (transaction: Transaction) => {
     setEditingTransaction(transaction);
@@ -175,7 +204,6 @@ const Transactions = () => {
       account_id: transaction.account_id,
     });
     setIsEditModalOpen(true);
-    // NEW: Reset the account search term when the modal is opened
     setEditAccountSearchTerm('');
   };
   
@@ -199,7 +227,7 @@ const Transactions = () => {
         }
   
         alert('Transaction deleted successfully!');
-        fetchTransactions(); // Re-fetch the transactions to update the list
+        fetchTransactions();
       } catch (error) {
         console.error('Error deleting transaction:', error);
         alert(`Failed to delete transaction: ${error instanceof Error ? error.message : String(error)}`);
@@ -232,11 +260,11 @@ const Transactions = () => {
     }
 
     try {
-      const response = await fetch(`https://quantnow.onrender.com/transactions/manual`, { // Assuming /api/transactions/manual is also secured
-        method: 'POST', // Or PUT/PATCH if it's an update-specific endpoint
+      const response = await fetch(`https://quantnow.onrender.com/transactions/manual`, {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`, // Include the JWT token
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           id: editingTransaction.id,
@@ -254,7 +282,7 @@ const Transactions = () => {
         throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
-      fetchTransactions(); // Re-fetch to show updated data
+      fetchTransactions();
       setIsEditModalOpen(false);
       setEditingTransaction(null);
       setEditFormData({});
@@ -325,6 +353,14 @@ const Transactions = () => {
     );
   }, [accounts, editAccountSearchTerm]);
 
+  // NEW: Filter transactions based on duplicate filter
+  const filteredTransactions = useMemo(() => {
+    if (duplicateFilter === 'potential') {
+      return transactions.filter(t => t.potential_duplicate);
+    }
+    return transactions;
+  }, [transactions, duplicateFilter]);
+
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
       <Header title='Transactions' />
@@ -339,29 +375,48 @@ const Transactions = () => {
         <Card>
           <CardHeader>
             <CardTitle>Transaction Filters</CardTitle>
-            <CardDescription>Filter transactions by account and date range</CardDescription>
+            <CardDescription>Filter transactions by account, duplicates, and date range</CardDescription>
           </CardHeader>
           <CardContent>
-            {/* Account Filter */}
-            <div>
+            <div className="flex flex-wrap gap-4">
+              {/* Account Filter */}
+              <div className="flex-1 min-w-[200px]">
                 <Label className='mb-2 block font-medium'>Filter by Account</Label>
                 <Select
-                    value={selectedAccountFilter}
-                    onValueChange={setSelectedAccountFilter}
+                  value={selectedAccountFilter}
+                  onValueChange={setSelectedAccountFilter}
                 >
-                    <SelectTrigger className="w-[220px]">
-                        <SelectValue placeholder="Select an account" />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectItem value="all">All Accounts</SelectItem>
-                        <SelectItem value="revenue_accounts">Revenue Accounts</SelectItem>
-                        {accounts.map(account => (
-                            <SelectItem key={account.id} value={account.id}>
-                                {account.name} ({account.code})
-                            </SelectItem>
-                        ))}
-                    </SelectContent>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select an account" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Accounts</SelectItem>
+                    <SelectItem value="revenue_accounts">Revenue Accounts</SelectItem>
+                    {accounts.map(account => (
+                      <SelectItem key={account.id} value={account.id}>
+                        {account.name} ({account.code})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
+              </div>
+
+              {/* NEW: Duplicate Filter */}
+              <div className="flex-1 min-w-[200px]">
+                <Label className='mb-2 block font-medium'>Filter by Duplicates</Label>
+                <Select
+                  value={duplicateFilter}
+                  onValueChange={(value) => setDuplicateFilter(value as 'all' | 'potential')}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Show all transactions" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Transactions</SelectItem>
+                    <SelectItem value="potential">Potential Duplicates</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -428,19 +483,29 @@ const Transactions = () => {
                         Loading transactions...
                       </td>
                     </tr>
-                  ) : transactions.length === 0 ? (
+                  ) : filteredTransactions.length === 0 ? ( // Use filteredTransactions
                     <tr>
                       <td colSpan={7} className='text-center py-12 text-muted-foreground'>
                         No transactions found for the selected criteria
                       </td>
                     </tr>
                   ) : (
-                    transactions.map(transaction => (
-                      <tr key={transaction.id} className='border-b last:border-b-0 hover:bg-muted/50'>
+                    filteredTransactions.map(transaction => ( // Use filteredTransactions
+                      <tr 
+                        key={transaction.id} 
+                        className={`border-b last:border-b-0 hover:bg-muted/50 ${
+                          transaction.potential_duplicate ? 'bg-yellow-50 dark:bg-yellow-900/20' : ''
+                        }`}
+                      >
                         <td className='p-3'>
-                          <Badge variant={transaction.type === 'income' ? 'default' : 'secondary'}>
-                            {transaction.type}
-                          </Badge>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={transaction.type === 'income' ? 'default' : 'secondary'}>
+                              {transaction.type}
+                            </Badge>
+                            {transaction.potential_duplicate && (
+                              <AlertTriangle className="h-4 w-4 text-yellow-500" title="Potential Duplicate" />
+                            )}
+                          </div>
                         </td>
                         <td className='p-3'>{transaction.description || '-'}</td>
                         <td className='p-3'>{new Date(transaction.date).toLocaleDateString()}</td>
@@ -555,8 +620,7 @@ const Transactions = () => {
                   <SelectValue placeholder='Select account' />
                 </SelectTrigger>
                 <SelectContent>
-                   {/* NEW: Input for searching accounts */}
-                  <div className="p-2 sticky top-0 bg-background z-10">
+                   <div className="p-2 sticky top-0 bg-background z-10">
                     <Input
                       placeholder="Search accounts..."
                       value={editAccountSearchTerm}
@@ -564,7 +628,6 @@ const Transactions = () => {
                     />
                   </div>
                   <SelectItem value="NO_ACCOUNT_PLACEHOLDER">No Account</SelectItem>
-                  {/* NEW: Map over filteredAccounts */}
                   {filteredAccounts.map(acc => (
                     <SelectItem key={acc.id} value={acc.id}>
                       {acc.name} ({acc.code})

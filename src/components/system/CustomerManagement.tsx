@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+// src/pages/CustomerManagement.tsx
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,7 +30,21 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger
 } from '@/components/ui/alert-dialog';
-import { Plus, Search, Edit, Trash2, Loader2 } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+// --- Import Icons ---
+import {
+  Plus,
+  Search,
+  Edit,
+  Trash2,
+  Loader2,
+  Users,
+  CircleDollarSign, // High Value Icon
+  Coins,            // Low Value Icon
+  Repeat,          // Frequent Buyer Icon
+  Gem             // Big Spender Icon
+} from 'lucide-react';
+// --- End Import Icons ---
 import { CustomerForm } from './CustomerForm';
 import { useToast } from '@/hooks/use-toast';
 
@@ -39,17 +54,21 @@ interface CustomField {
   value: string;
 }
 
+// --- Updated Customer Interface to Match Backend Response ---
 interface Customer {
   id: string;
   name: string;
   email: string;
   phone?: string;
   address?: string;
-  vatNumber?: string;
+  vatNumber?: string; // Maps to tax_id from backend
   status?: 'Active' | 'Inactive';
   customFields?: CustomField[];
-  totalInvoiced?: number;
+  totalInvoiced: number;       // From backend aggregation
+  numberOfPurchases: number;   // From backend aggregation
+  averageOrderValue: number;   // Calculated by backend
 }
+// --- End Updated Customer Interface ---
 
 interface CustomerSaveData {
   name: string;
@@ -60,36 +79,53 @@ interface CustomerSaveData {
   customFields?: string;
 }
 
+// --- Define Customer Clusters ---
+type CustomerCluster = 'All' | 'High Value' | 'Low Value' | 'Frequent Buyer' | 'Big Spender';
+
+// --- Updated Cluster Tabs with Proper Icons ---
+const CLUSTER_TABS: { value: CustomerCluster; label: string; icon: React.ReactNode }[] = [
+  { value: 'All', label: 'All Customers', icon: <Users className="h-4 w-4 mr-2" /> },
+  { value: 'High Value', label: 'High Value', icon: <CircleDollarSign className="h-4 w-4 mr-2" /> },
+  { value: 'Low Value', label: 'Low Value', icon: <Coins className="h-4 w-4 mr-2" /> },
+  { value: 'Frequent Buyer', label: 'Frequent Buyers', icon: <Repeat className="h-4 w-4 mr-2" /> },
+  { value: 'Big Spender', label: 'Big Spenders', icon: <Gem className="h-4 w-4 mr-2" /> },
+];
+// --- End Define Customer Clusters ---
+
 export function CustomerManagement() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [isFormDialogOpen, setIsFormDialogOpen] = useState(false);
-  const [currentCustomer, setCurrentCustomer] = useState<Customer | undefined>(
-    undefined
-  );
+  const [currentCustomer, setCurrentCustomer] = useState<Customer | undefined>(undefined);
+  // --- State for Customer Clustering ---
+  const [activeCluster, setActiveCluster] = useState<CustomerCluster>('All');
+  // --- End State for Customer Clustering ---
   const { toast } = useToast();
 
   const getAuthHeaders = useCallback(() => {
     const token = localStorage.getItem('token');
-    console.log('Frontend: Token from localStorage in getAuthHeaders:', token ? token.substring(0, 10) + '...' : 'NONE');
+    // console.log('Frontend: Token from localStorage in getAuthHeaders:', token ? token.substring(0, 10) + '...' : 'NONE'); // Optional debug log
     return token ? { 'Authorization': `Bearer ${token}` } : {};
   }, []);
 
-  const fetchCustomers = useCallback(async () => {
+  // --- Fetch Customers with Cluster Data from Backend ---
+  const fetchCustomersWithClusterData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const headers = getAuthHeaders();
-      console.log('Frontend: Headers for fetchCustomers:', headers);
+      // console.log('Frontend: Headers for fetchCustomersWithClusterData:', headers); // Optional debug log
 
-      const response = await fetch(`https://quantnow.onrender.com/api/customers${searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : ''}`, {
+      // --- CALL THE NEW BACKEND ENDPOINT ---
+      const response = await fetch(`https://quantnow.onrender.com/api/customers/cluster-data`, {
         headers: {
           'Content-Type': 'application/json',
           ...headers,
         },
       });
+      // --- END CALL THE NEW BACKEND ENDPOINT ---
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -97,45 +133,26 @@ export function CustomerManagement() {
         throw new Error(`HTTP error! Status: ${response.status}`);
       }
 
-      const data: any[] = await response.json();
-      const formattedCustomers: Customer[] = data.map(customerDb => {
-        let parsedCustomFields: CustomField[] = [];
-        if (customerDb.custom_fields) {
-          try {
-            parsedCustomFields = JSON.parse(customerDb.custom_fields);
-            parsedCustomFields = parsedCustomFields.map(field => ({ ...field, id: field.id || Date.now() }));
-          } catch (e) {
-            console.error("Error parsing custom fields JSON for customer", customerDb.id, ":", e);
-            parsedCustomFields = [];
-          }
-        }
-
-        return {
-          id: customerDb.id.toString(),
-          name: customerDb.name,
-          email: customerDb.email,
-          phone: customerDb.phone,
-          address: customerDb.address,
-          vatNumber: customerDb.tax_id,
-          status: customerDb.status || 'Active',
-          totalInvoiced: parseFloat(customerDb.total_invoiced || '0.00'),
-          customFields: parsedCustomFields,
-        };
-      });
-
-      setCustomers(formattedCustomers);
+      // --- RECEIVE DATA WITH METRICS FROM BACKEND ---
+      const data: Customer[] = await response.json();
+      // --- END RECEIVE DATA WITH METRICS ---
+      
+      setCustomers(data);
     } catch (err) {
-      console.error('Failed to fetch customers:', err);
+      console.error('Failed to fetch clustered customers:', err);
       setError('Failed to load customers. Please try again.');
     } finally {
       setLoading(false);
     }
-  }, [getAuthHeaders, searchTerm]);
+  }, [getAuthHeaders]);
+  // --- End Fetch Customers with Cluster Data ---
 
+  // --- Effect to Fetch Data on Mount and Search Change ---
   useEffect(() => {
-    console.log('Frontend: useEffect in CustomerManagement triggered.');
-    fetchCustomers();
-  }, [fetchCustomers]);
+    // console.log('Frontend: useEffect in CustomerManagement triggered.'); // Optional debug log
+    fetchCustomersWithClusterData();
+  }, [fetchCustomersWithClusterData, searchTerm]); // Add searchTerm if backend handles search, otherwise remove
+  // --- End Effect to Fetch Data ---
 
   const handleFormSave = async (customerData: Customer) => {
     const payload: CustomerSaveData = {
@@ -177,7 +194,7 @@ export function CustomerManagement() {
       });
       setIsFormDialogOpen(false);
       setCurrentCustomer(undefined);
-      await fetchCustomers();
+      await fetchCustomersWithClusterData(); // Refresh data
     } catch (err) {
       console.error('Error creating customer:', err);
       toast({
@@ -213,7 +230,7 @@ export function CustomerManagement() {
       });
       setIsFormDialogOpen(false);
       setCurrentCustomer(undefined);
-      await fetchCustomers();
+      await fetchCustomersWithClusterData(); // Refresh data
     } catch (err) {
       console.error('Error updating customer:', err);
       toast({
@@ -243,7 +260,7 @@ export function CustomerManagement() {
         title: 'Success',
         description: 'Customer deleted successfully.',
       });
-      await fetchCustomers();
+      await fetchCustomersWithClusterData(); // Refresh data
     } catch (err) {
       console.error('Error deleting customer:', err);
       toast({
@@ -260,18 +277,54 @@ export function CustomerManagement() {
     setCurrentCustomer(customer);
     setIsFormDialogOpen(true);
   };
-  
-  // ADD THIS FUNCTION
+
   const handleFormCancel = () => {
     setIsFormDialogOpen(false);
     setCurrentCustomer(undefined);
   };
 
+  // --- Function to Filter Customers by Cluster ---
+  const filterCustomersByCluster = useCallback((cluster: CustomerCluster): Customer[] => {
+    if (cluster === 'All') {
+      return customers;
+    }
+
+    return customers.filter(customer => {
+      // Use the metrics provided by the backend
+      const totalInvoiced = customer.totalInvoiced ?? 0;
+      const numberOfPurchases = customer.numberOfPurchases ?? 0;
+      const averageOrderValue = customer.averageOrderValue ?? 0;
+
+      switch (cluster) {
+        case 'High Value':
+          return totalInvoiced > 1000; // Example threshold
+        case 'Low Value':
+          return totalInvoiced <= 500; // Example threshold
+        case 'Frequent Buyer':
+          return numberOfPurchases > 5; // Example threshold
+        case 'Big Spender':
+          return averageOrderValue > 200; // Example threshold
+        default:
+          return true; // Should not happen, but safe default
+      }
+    });
+  }, [customers]);
+  // --- End Function to Filter Customers by Cluster ---
+
+  // Filter customers based on active cluster and search term
+  const filteredCustomers = filterCustomersByCluster(activeCluster).filter(
+    customer =>
+      customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      customer.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (customer.phone && customer.phone.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (customer.vatNumber && customer.vatNumber.toLowerCase().includes(searchTerm.toLowerCase()))
+  );
+
   return (
     <Card className='w-full'>
-      <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
+      <CardHeader className='flex flex-col sm:flex-row items-start sm:items-center justify-between space-y-2 sm:space-y-0 pb-2'>
         <CardTitle className='text-xl font-medium'>Customer Management</CardTitle>
-        <div className='flex items-center space-x-2'>
+        <div className='flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 w-full sm:w-auto'>
           <Input
             placeholder='Search customers...'
             value={searchTerm}
@@ -280,7 +333,7 @@ export function CustomerManagement() {
           />
           <Dialog open={isFormDialogOpen} onOpenChange={setIsFormDialogOpen}>
             <DialogTrigger asChild>
-              <Button onClick={() => setCurrentCustomer(undefined)}>
+              <Button onClick={() => setCurrentCustomer(undefined)} className='w-full sm:w-auto'>
                 <Plus className='mr-2 h-4 w-4' /> New Customer
               </Button>
             </DialogTrigger>
@@ -300,94 +353,109 @@ export function CustomerManagement() {
         </div>
       </CardHeader>
       <CardContent>
-        {loading ? (
-          <div className='flex justify-center items-center h-40'>
-            <Loader2 className='h-8 w-8 animate-spin' />
-          </div>
-        ) : error ? (
-          <div className='text-red-500 text-center py-4'>{error}</div>
-        ) : (
-          <div className='overflow-x-auto'>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Phone</TableHead>
-                  <TableHead>Address</TableHead>
-                  <TableHead>VAT Number</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className='text-right'>Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {customers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} className='text-center'>
-                      No customers found.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  customers.filter(
-                    customer =>
-                      customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                      customer.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                      customer.phone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                      customer.vatNumber?.toLowerCase().includes(searchTerm.toLowerCase())
-                  ).map(customer => (
-                    <TableRow key={customer.id}>
-                      <TableCell className='font-medium'>{customer.name}</TableCell>
-                      <TableCell>{customer.email}</TableCell>
-                      <TableCell>{customer.phone || 'N/A'}</TableCell>
-                      <TableCell>{customer.address || 'N/A'}</TableCell>
-                      <TableCell>{customer.vatNumber || 'N/A'}</TableCell>
-                      <TableCell>
-                        <Badge variant={customer.status === 'Active' ? 'default' : 'secondary'}>
-                          {customer.status || 'N/A'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className='text-right'>
-                        <div className='flex justify-end space-x-2'>
-                          <Button
-                            variant='ghost'
-                            size='sm'
-                            onClick={() => handleEditCustomer(customer)}
-                          >
-                            <Edit className='h-4 w-4' />
-                          </Button>
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant='ghost' size='sm'>
-                                <Trash2 className='h-4 w-4' />
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Delete Customer</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  Are you sure you want to delete {customer.name}?
-                                  This action cannot be undone.
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction
-                                  onClick={() => handleDeleteCustomer(customer.id)}
+        {/* --- Tabs for Customer Clusters --- */}
+        <Tabs value={activeCluster} onValueChange={(value) => setActiveCluster(value as CustomerCluster)} className="w-full mb-4">
+          <TabsList className="grid w-full grid-cols-5">
+            {CLUSTER_TABS.map(tab => (
+              <TabsTrigger key={tab.value} value={tab.value} className="flex items-center justify-center">
+                {tab.icon}
+                <span className="hidden sm:inline">{tab.label}</span>
+                <span className="sm:hidden">{tab.value}</span>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {CLUSTER_TABS.map(tab => (
+            <TabsContent key={tab.value} value={tab.value}>
+              {loading ? (
+                <div className='flex justify-center items-center h-40'>
+                  <Loader2 className='h-8 w-8 animate-spin' />
+                </div>
+              ) : error ? (
+                <div className='text-red-500 text-center py-4'>{error}</div>
+              ) : (
+                <div className='overflow-x-auto'>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Phone</TableHead>
+                        <TableHead>VAT Number</TableHead>
+                        <TableHead className="text-right">Total Invoiced (R)</TableHead>
+                        <TableHead className="text-right">Purchases</TableHead>
+                        <TableHead className="text-right">Avg Order (R)</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className='text-right'>Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredCustomers.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={9} className='text-center'>
+                            No customers found in this cluster matching your search.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        filteredCustomers.map(customer => (
+                          <TableRow key={customer.id}>
+                            <TableCell className='font-medium'>{customer.name}</TableCell>
+                            <TableCell>{customer.email}</TableCell>
+                            <TableCell>{customer.phone || 'N/A'}</TableCell>
+                            <TableCell>{customer.vatNumber || 'N/A'}</TableCell>
+                            <TableCell className="text-right">R{customer.totalInvoiced.toFixed(2)}</TableCell>
+                            <TableCell className="text-right">{customer.numberOfPurchases}</TableCell>
+                            <TableCell className="text-right">R{customer.averageOrderValue.toFixed(2)}</TableCell>
+                            <TableCell>
+                              <Badge variant={customer.status === 'Active' ? 'default' : 'secondary'}>
+                                {customer.status || 'N/A'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className='text-right'>
+                              <div className='flex justify-end space-x-2'>
+                                <Button
+                                  variant='ghost'
+                                  size='sm'
+                                  onClick={() => handleEditCustomer(customer)}
                                 >
-                                  Delete
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        )}
+                                  <Edit className='h-4 w-4' />
+                                </Button>
+                                <AlertDialog>
+                                  <AlertDialogTrigger asChild>
+                                    <Button variant='ghost' size='sm'>
+                                      <Trash2 className='h-4 w-4' />
+                                    </Button>
+                                  </AlertDialogTrigger>
+                                  <AlertDialogContent>
+                                    <AlertDialogHeader>
+                                      <AlertDialogTitle>Delete Customer</AlertDialogTitle>
+                                      <AlertDialogDescription>
+                                        Are you sure you want to delete {customer.name}?
+                                        This action cannot be undone.
+                                      </AlertDialogDescription>
+                                    </AlertDialogHeader>
+                                    <AlertDialogFooter>
+                                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                      <AlertDialogAction
+                                        onClick={() => handleDeleteCustomer(customer.id)}
+                                      >
+                                        Delete
+                                      </AlertDialogAction>
+                                    </AlertDialogFooter>
+                                  </AlertDialogContent>
+                                </AlertDialog>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </TabsContent>
+          ))}
+        </Tabs>
+        {/* --- End Tabs for Customer Clusters --- */}
       </CardContent>
     </Card>
   );
