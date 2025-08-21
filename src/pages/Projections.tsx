@@ -1,5 +1,3 @@
-// Projections.tsx
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from '@/components/layout/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,11 +9,13 @@ import { motion } from 'framer-motion';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
 import HighchartsMore from 'highcharts/highcharts-more';
-import { TrendingUp, Calendar, BarChart3, FolderKanban, Loader2 } from 'lucide-react';
+import { TrendingUp, Calendar, BarChart3, FolderKanban, Loader2, Download } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '../AuthPage';
 import axios from 'axios';
-import { format, subDays, differenceInMonths } from 'date-fns'; // Added differenceInMonths
+import { format, subDays, differenceInMonths } from 'date-fns';
+import { jsPDF } from 'jspdf';
+import 'jspdf-autotable';
 
 // Initialize the Highcharts-more module for waterfall charts
 if (typeof HighchartsMore === 'function') HighchartsMore(Highcharts);
@@ -31,15 +31,16 @@ const Projections = () => {
   const [revenueGrowthRate, setRevenueGrowthRate] = useState(5);
   const [costGrowthRate, setCostGrowthRate] = useState(3);
   const [expenseGrowthRate, setExpenseGrowthRate] = useState(2);
-  const [baselineData, setBaselineData] = useState<any>(null); // Use <any> for now
+  const [baselineData, setBaselineData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState('12-months'); // Changed initial tab to 12 months
-
-  // State for custom period dates and data
+  const [activeTab, setActiveTab] = useState('12-months');
+  
+  // State for custom period dates and download selection
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
   const [customProjectionData, setCustomProjectionData] = useState<any[]>([]);
+  const [downloadPeriod, setDownloadPeriod] = useState('12-months');
 
   // Memoized function to get authentication headers
   const getAuthHeaders = useCallback(() => {
@@ -352,28 +353,119 @@ const Projections = () => {
     };
   };
 
-  const projectionData12Months = baselineData ? generateProjectionData(12) : [];
-  const projectionData5Years = baselineData ? generateProjectionData(5, true) : [];
+  const getProjectionData = useMemo(() => {
+    switch (downloadPeriod) {
+      case '12-months':
+        return baselineData ? generateProjectionData(12) : [];
+      case '5-years':
+        return baselineData ? generateProjectionData(5, true) : [];
+      case 'custom':
+        return customProjectionData;
+      default:
+        return [];
+    }
+  }, [downloadPeriod, baselineData, customProjectionData]);
+  
+  const projectionData12Months = useMemo(() => baselineData ? generateProjectionData(12) : [], [baselineData]);
+  const projectionData5Years = useMemo(() => baselineData ? generateProjectionData(5, true) : [], [baselineData]);
 
   const inverted12MonthData = transformToInvertedTableData(projectionData12Months);
   const inverted5YearData = transformToInvertedTableData(projectionData5Years);
-
   const invertedCustomData = transformToInvertedTableData(customProjectionData);
 
+  const downloadCSV = useCallback((data: any[], filename: string) => {
+    if (!data || data.length === 0) {
+      toast({
+        title: 'No Data',
+        description: 'No data available to download.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
-  const projectAllocations = [
-    { name: 'Marketing Campaign A', allocation: 0.3 },
-    { name: 'Product Development X', allocation: 0.45 },
-    { name: 'Operational Efficiency Y', allocation: 0.15 },
-    { name: 'General Overhead', allocation: 0.1 },
-  ];
+    const invertedData = transformToInvertedTableData(data);
+    const headers = ['Metric', ...invertedData.headers];
 
-  const baselineProjectExpenses = baselineData
-    ? projectAllocations.map((project) => ({
-        name: project.name,
-        amount: Math.round(baselineData.totalExpenses * project.allocation),
-      }))
-    : [];
+    let csvContent = headers.map(header => `"${header}"`).join(',') + '\n';
+
+    invertedData.rows.forEach(row => {
+      const rowValues = [`"${row.metric}"`, ...row.values.map(value => value.toString())];
+      csvContent += rowValues.join(',') + '\n';
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    if (link.download !== undefined) {
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  }, [toast]);
+  
+  const downloadPDF = useCallback((data: any[], title: string, filename: string) => {
+    if (!data || data.length === 0) {
+      toast({
+        title: 'No Data',
+        description: 'No data available to download.',
+        variant: 'destructive',
+      });
+      return;
+    }
+  
+    const doc = new jsPDF();
+    
+    // --- Add a title page or header ---
+    doc.setFontSize(22);
+    doc.text(title, 14, 20);
+    doc.setFontSize(12);
+    doc.text('Financial Report Generated: ' + new Date().toLocaleDateString(), 14, 30);
+  
+    // --- Add Projections Table ---
+    const invertedData = transformToInvertedTableData(data);
+    const tableHeaders = invertedData.headers;
+    const tableRows = invertedData.rows.map(row => [row.metric, ...row.values.map(val => 'R' + val.toLocaleString('en-ZA'))]);
+  
+    (doc as any).autoTable({
+      startY: 40,
+      head: [['Metric', ...tableHeaders]],
+      body: tableRows,
+      theme: 'striped',
+      headStyles: { fillColor: '#f1f5f9' },
+      styles: { fontSize: 10, cellPadding: 2, overflow: 'linebreak' },
+    });
+  
+    // --- Add Profit Analysis Waterfall Table ---
+    if (data.length > 0) {
+      const latestData = data[data.length - 1];
+      const profitAnalysisData = [
+        ['Sales', 'R' + latestData.sales.toLocaleString('en-ZA')],
+        ['Cost of Goods', 'R' + (-latestData.costs).toLocaleString('en-ZA')],
+        ['Gross Profit', 'R' + (latestData.grossProfit).toLocaleString('en-ZA')],
+        ['Expenses', 'R' + (-latestData.expenses).toLocaleString('en-ZA')],
+        ['Net Profit', 'R' + (latestData.netProfit).toLocaleString('en-ZA')],
+      ];
+      
+      const startY = (doc as any).autoTable.previous.finalY + 10;
+      doc.addPage();
+      doc.setFontSize(16);
+      doc.text('Profit & Loss Analysis: ' + data[data.length - 1].period, 14, 20);
+
+      (doc as any).autoTable({
+        startY: 30,
+        head: [['Metric', 'Amount']],
+        body: profitAnalysisData,
+        theme: 'striped',
+        headStyles: { fillColor: '#f1f5f9' },
+        styles: { fontSize: 10, cellPadding: 2, overflow: 'linebreak' },
+      });
+    }
+  
+    doc.save(filename);
+  }, [transformToInvertedTableData, toast]);
 
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
@@ -402,7 +494,7 @@ const Projections = () => {
                     Refreshing...
                   </>
                 ) : (
-                  'Refresh Baseline Data'
+                  'Project'
                 )}
               </Button>
             </CardTitle>
@@ -452,6 +544,34 @@ const Projections = () => {
           </CardContent>
         </Card>
 
+        {/* Global Download Buttons */}
+        <div className='flex items-center gap-2 p-4 border rounded-md shadow-sm bg-background'>
+          <Label htmlFor='download-period-select' className='text-sm font-medium'>
+            Select Period:
+          </Label>
+          <select
+            id='download-period-select'
+            value={downloadPeriod}
+            onChange={(e) => setDownloadPeriod(e.target.value)}
+            className='h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+          >
+            <option value='12-months'>12 Months</option>
+            <option value='5-years'>5 Years</option>
+            <option value='custom' disabled={customProjectionData.length === 0}>
+              Custom Period
+            </option>
+          </select>
+          <Button
+            size='sm'
+            onClick={() => downloadCSV(getProjectionData, `${downloadPeriod}-projection.csv`)}
+            disabled={!getProjectionData || getProjectionData.length === 0}
+          >
+            <Download className='h-4 w-4 mr-2' />
+            Download Projections CSV
+          </Button>
+
+        </div>
+
         {isLoading ? (
           <div className='flex justify-center items-center h-96'>
             <Loader2 className='h-12 w-12 animate-spin text-gray-500' />
@@ -475,7 +595,7 @@ const Projections = () => {
             <TabsContent value='12-months' className='space-y-6'>
               <div className='grid grid-cols-1 lg:grid-cols-2 gap-6'>
                 <Card>
-                  <CardHeader>
+                  <CardHeader className='flex flex-row items-center justify-between space-y-0'>
                     <CardTitle>12-Month Projection</CardTitle>
                   </CardHeader>
                   <CardContent>
@@ -503,7 +623,7 @@ const Projections = () => {
               </div>
 
               <Card>
-                <CardHeader>
+                <CardHeader className='flex flex-row items-center justify-between space-y-0'>
                   <CardTitle>Detailed 12-Month Projections (Inverted)</CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -545,7 +665,7 @@ const Projections = () => {
             <TabsContent value='5-years' className='space-y-6'>
               <div className='grid grid-cols-1 lg:grid-cols-2 gap-6'>
                 <Card>
-                  <CardHeader>
+                  <CardHeader className='flex flex-row items-center justify-between space-y-0'>
                     <CardTitle>5-Year Projection</CardTitle>
                   </CardHeader>
                   <CardContent>
@@ -573,7 +693,7 @@ const Projections = () => {
               </div>
 
               <Card>
-                <CardHeader>
+                <CardHeader className='flex flex-row items-center justify-between space-y-0'>
                   <CardTitle>5-Year Summary Projections (Inverted)</CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -661,7 +781,7 @@ const Projections = () => {
                 <>
                   <div className='grid grid-cols-1 lg:grid-cols-2 gap-6'>
                     <Card>
-                      <CardHeader>
+                      <CardHeader className='flex flex-row items-center justify-between space-y-0'>
                         <CardTitle>Custom Period Financial Projection</CardTitle>
                       </CardHeader>
                       <CardContent>
@@ -689,7 +809,7 @@ const Projections = () => {
                   </div>
 
                   <Card>
-                    <CardHeader>
+                    <CardHeader className='flex flex-row items-center justify-between space-y-0'>
                       <CardTitle>Detailed Custom Projections (Inverted)</CardTitle>
                     </CardHeader>
                     <CardContent>
