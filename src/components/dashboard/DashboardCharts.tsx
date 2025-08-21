@@ -206,7 +206,7 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
       type: 'sunburst' // Set chart type to sunburst
     },
     title: {
-      text: `Sales, Incomes, and Expenses ${getDateRangeString()}` // Dynamic title
+      text: `Sales and Expenses ${getDateRangeString()}` // Dynamic title
     },
     subtitle: {
       text: 'Hierarchical view of financial categories'
@@ -292,7 +292,7 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
       >
         <Card>
           <CardHeader>
-            <CardTitle>Sales, Incomes, and Expenses</CardTitle>
+            <CardTitle>Sales and Expenses</CardTitle>
             <CardDescription>Hierarchical view of financial breakdown</CardDescription>
           </CardHeader>
           <CardContent>
