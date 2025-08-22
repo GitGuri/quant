@@ -286,6 +286,12 @@ const suggestAccountForUpload = (
     if (acc) return { accountId: String(acc.id), confidence: 60 };
   }
 
+  // --- NEW FALLBACK ---
+  const generalExpense = accounts.find(acc => safeText(acc.name).includes('general expense') && safeText(acc.type) === 'expense');
+  if (generalExpense) {
+      return { accountId: String(generalExpense.id), confidence: 30 };
+  }
+
   const defaultBank = accounts.find(acc => safeText(acc.name).includes('bank') && safeText(acc.type) === 'asset');
   if (defaultBank) return { accountId: String(defaultBank.id), confidence: 40 };
 
@@ -311,7 +317,26 @@ const suggestAccountForText = (
 
   let bestMatch: Account | null = null;
   let highestScore = -1;
+  
+  // NEW RULE: Add a specific, high-confidence rule for "Fuel Expense"
+  const fuelAccount = accounts.find(acc => safeText(acc.name).includes('fuel expense') && safeText(acc.type) === 'expense');
+  if (fuelAccount && (lowerCategory.includes('fuel') || lowerDescription.includes('fuel') || lowerDescription.includes('petrol'))) {
+      return { accountId: String(fuelAccount.id), confidence: 95 };
+  }
 
+  // FIX: Add a specific, high-confidence rule for "Salaries and wages"
+  const salariesAccount = accounts.find(acc => safeText(acc.name).includes('salaries and wages') && safeText(acc.type) === 'expense');
+  if (salariesAccount && (lowerCategory.includes('salaries and wages') || lowerDescription.includes('salary') || lowerDescription.includes('wages') || lowerDescription.includes('payroll'))) {
+      return { accountId: String(salariesAccount.id), confidence: 95 };
+  }
+
+  // FIX: Add a specific, high-confidence rule for "Rent Expense"
+  const rentAccount = accounts.find(acc => safeText(acc.name).includes('rent expense') && safeText(acc.type) === 'expense');
+  if (rentAccount && (lowerCategory.includes('rent expense') || lowerDescription.includes('rent') || lowerDescription.includes('rental'))) {
+      return { accountId: String(rentAccount.id), confidence: 95 };
+  }
+
+  // Rest of the existing logic follows here...
   for (const account of accounts) {
     const lowerAccName = safeText(account.name);
     const lowerAccType = safeText(account.type);
@@ -356,6 +381,12 @@ const suggestAccountForText = (
     (lowerTransactionType === 'expense' && accounts.find(a => safeText(a.type) === 'expense')) ||
     (lowerTransactionType === 'debt' && accounts.find(a => safeText(a.type) === 'liability'));
   if (byType) return { accountId: String((byType as Account).id), confidence: 40 };
+  
+  // --- NEW FALLBACK ---
+  const generalExpense = accounts.find(acc => safeText(acc.name).includes('general expense') && safeText(acc.type) === 'expense');
+  if (generalExpense) {
+      return { accountId: String(generalExpense.id), confidence: 30 };
+  }
 
   const bankOrCash = accounts.find(a => (safeText(a.name).includes('bank') || safeText(a.name).includes('cash')) && safeText(a.type) === 'asset');
   if (bankOrCash) return { accountId: String(bankOrCash.id), confidence: 20 };
@@ -832,15 +863,40 @@ const ChatInterface = () => {
 
       const result = await response.json();
 
+      console.log('API Response:', result);
+
       if (response.ok) {
         addAssistantMessage('Description analyzed successfully! Please review the extracted transactions.');
 
         const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
           const transactionType = tx.Type?.toLowerCase() || 'expense';
-          let transactionCategory = tx.Customer_name || 'Uncategorized';
+
+          // FIX: Use Destination_of_funds first, then fall back to Customer_name
+          let transactionCategory = tx.Destination_of_funds || tx.Customer_name || 'N/A';
           if (transactionType === 'income' && ['income','general income'].includes((transactionCategory || '').toLowerCase())) {
             transactionCategory = 'Sales Revenue';
           }
+          
+          // New logic to infer and update the category if it's N/A
+          let inferredCategory = transactionCategory;
+          const lowerDescription = (tx.Description || '').toLowerCase();
+          
+          if (inferredCategory.toLowerCase() === 'n/a' || !inferredCategory) {
+              if (lowerDescription.includes('rent') || lowerDescription.includes('rental')) {
+                inferredCategory = 'Rent Expense';
+              } else if (lowerDescription.includes('salary') || lowerDescription.includes('wages') || lowerDescription.includes('payroll')) {
+                inferredCategory = 'Salaries and wages';
+              } else if (lowerDescription.includes('fuel') || lowerDescription.includes('petrol')) {
+                inferredCategory = 'Fuel';
+              } else if (lowerDescription.includes('utilities') || lowerDescription.includes('water') || lowerDescription.includes('electricity')) {
+                inferredCategory = 'Utilities Expenses';
+              } else if (lowerDescription.includes('groceries') || lowerDescription.includes('shopping') || lowerDescription.includes('food')) {
+                inferredCategory = 'Groceries';
+              } else if (lowerDescription.includes('sale') || lowerDescription.includes('revenue') || lowerDescription.includes('money for services')) {
+                inferredCategory = 'Sales Revenue';
+              }
+          }
+          console.log(`Inferred category: ${inferredCategory}`);
 
           let transactionDate: string;
           try {
@@ -850,7 +906,7 @@ const ChatInterface = () => {
           } catch { transactionDate = new Date().toISOString().split('T')[0]; }
 
           const { accountId, confidence } = suggestAccountForText(
-            { type: transactionType, category: transactionCategory, description: tx.Description },
+            { type: transactionType, category: inferredCategory, description: tx.Description },
             accounts
           );
 
@@ -860,7 +916,7 @@ const ChatInterface = () => {
             amount: tx.Amount ? parseFloat(tx.Amount) : 0,
             description: tx.Description || 'Imported Transaction',
             date: transactionDate,
-            category: transactionCategory,
+            category: inferredCategory,
             account_id: accountId || '',
             original_text: userMessageContent,
             source: 'text-input',
@@ -869,7 +925,6 @@ const ChatInterface = () => {
           };
         });
 
-        // DUP CHECK (keep all selected)
         const flagged = markDuplicates(transformed, existingTxs);
 
         addAssistantMessage(
@@ -891,34 +946,45 @@ const ChatInterface = () => {
   };
 
   // -------------- Voice --------------
-  const startRecording = () => {
+const startRecording = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) { addAssistantMessage('Browser does not support speech recognition. Try Chrome.'); return; }
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true; // Use continuous recognition
+    recognition.interimResults = true; // Get interim results to show progress
 
     recognition.onstart = () => { setIsRecording(true); addUserMessage('Started voice input...'); };
+    
+    // On result, just set the text into the input field
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setTranscribedText(transcript);
-      setTypedDescription(transcript);
-      addUserMessage(`🗣️ "${transcript}"`);
-      handleTypedDescriptionSubmit();
+      const interimTranscript = Array.from(event.results)
+        .map((result: any) => result[0].transcript)
+        .join('');
+      setTranscribedText(interimTranscript);
+      setTypedDescription(interimTranscript);
     };
-    recognition.onerror = (event: any) => { console.error('Speech recognition error:', event); addAssistantMessage(`Speech recognition error: ${event.error}`); };
-    recognition.onend = () => setIsRecording(false);
+
+    recognition.onerror = (event: any) => { 
+      console.error('Speech recognition error:', event); 
+      setIsRecording(false);
+      addAssistantMessage(`Speech recognition error: ${event.error}. Please try again.`); 
+    };
+    
+    // The `onend` handler is REMOVED to prevent automatic stopping
+    // The user must now press the stop button
 
     recognitionRef.current = recognition;
     recognition.start();
   };
 
   const stopRecording = () => {
-    if (isRecording) {
+    if (recognitionRef.current && isRecording) {
+      recognitionRef.current.stop();
       setIsRecording(false);
-      addUserMessage('Stopped audio recording.');
+      addUserMessage(`🗣️ "${typedDescription}"`);
+      addAssistantMessage('Recording stopped. Press send to process this text.');
     }
   };
 
@@ -937,6 +1003,11 @@ const ChatInterface = () => {
       const result = await processTextResponse.json();
 
       if (processTextResponse.ok) {
+        if (!result.transactions || result.transactions.length === 0) {
+          addAssistantMessage('I could not make sense of that, please try again with a clearer description.');
+          return;
+        }
+
         addAssistantMessage('Audio processed successfully! Please review the extracted transactions.');
 
         const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
@@ -1001,7 +1072,7 @@ const ChatInterface = () => {
   const clearAudio = () => {
     setAudioBlob(null);
     setAudioUrl(null);
-    if (audioPlayerRef.current) audioPlayerRef.current.src = '';
+    if (audioPlayerRef.current) audioPlayer.current.src = '';
     addAssistantMessage('Audio cleared.');
   };
 
