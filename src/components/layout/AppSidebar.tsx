@@ -87,7 +87,7 @@ const businessItems: NavigationItem[] = [
     url: '/pos/products',
     icon: CreditCard,
     // Added 'ceo' and 'user' roles to this item and its children
-    allowedRoles: ['manager', 'pos-admin', 'user', 'ceo'],
+    allowedRoles: ['manager', 'pos-admin', 'user','admin', 'ceo'],
     children: [
       { title: 'Products', url: '/pos/products', icon: Package, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
       { title: 'Credits', url: '/pos/credits', icon: DollarSign, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
