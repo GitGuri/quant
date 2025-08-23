@@ -21,6 +21,11 @@ import {
   Trash2,
   Loader2,
   Mail, // For email sending
+  Download, // For direct download button
+  CheckCircle, // For Accepted status
+  XOctagon, // For Declined status
+  Clock, // For Expired status
+  MoreVertical // For dropdown menu trigger
 } from 'lucide-react';
 import {
   Dialog,
@@ -43,16 +48,18 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Textarea } from '@/components/ui/textarea'; // For email body
 import { Label } from '@/components/ui/label'; // For form labels
-import { QuotationForm } from '../invoice/QuotationForm'; // Corrected import path
+import { QuotationForm } from './QuotationForm'; // Corrected import path (assuming it's in the same directory now)
 import { useToast } from '@/components/ui/use-toast'; // Import useToast
 import { useAuth } from '../../AuthPage'; // Corrected import path for useAuth
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'; // Import DropdownMenu components
 
-// Declare global jspdf if it's loaded via CDN
-declare global {
-  interface Window {
-    jspdf: any;
-  }
-}
 
 // Define API Base URL
 const API_BASE_URL = 'https://quantnow.onrender.com';
@@ -69,7 +76,7 @@ interface QuotationLineItem {
   tax_rate: number;
 }
 
-interface Quotation {
+export interface Quotation { // Exported for potential use in other components like InvoicePreview
   id: string;
   quotation_number: string;
   customer_id: string;
@@ -92,31 +99,9 @@ interface Customer {
   email: string; // Added email for pre-filling
 }
 
-// --- NEW: Invoice interfaces for conversion ---
-interface InvoiceLineItem {
-  product_service_id: string | null;
-  description: string;
-  quantity: number;
-  unit_price: number;
-  line_total: number;
-  tax_rate: number;
-}
-
-interface NewInvoicePayload {
-  invoice_number: string;
-  customer_id: string;
-  invoice_date: string;
-  due_date: string; // Will need to be calculated
-  total_amount: number;
-  status: 'Draft' | 'Sent' | 'Paid' | 'Overdue'; // Default to 'Draft' or 'Sent'
-  currency: string;
-  notes: string | null;
-  line_items: InvoiceLineItem[];
-}
-
 // --- NEW: User Profile Interface ---
 interface UserProfile {
-  company?: string | null; // Changed to allow null
+  company?: string | null;
   email?: string | null;
   address?: string | null;
   city?: string | null;
@@ -124,9 +109,12 @@ interface UserProfile {
   postal_code?: string | null;
   country?: string | null;
   phone?: string | null;
+  vat_number?: string | null;
+  reg_number?: string | null;
   contact_person?: string | null;
   // Add other fields you might need from the profile
 }
+
 
 // --- QuotationList Component ---
 export function QuotationList() {
@@ -140,70 +128,26 @@ export function QuotationList() {
   const [isLoadingList, setIsLoadingList] = useState(true); // Loading state for the quotation list
   const [isFormLoading, setIsFormLoading] = useState(false); // New: Loading state for the form details
   const [isConverting, setIsConverting] = useState(false); // New: Loading state for conversion
-  const [isPdfLibLoaded, setIsPdfLibLoaded] = useState(false); // New: State to track PDF library loading
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null); // NEW: State for user profile
   const [isLoadingProfile, setIsLoadingProfile] = useState(false); // NEW: Loading state for profile
 
-  // States for Email functionality
-  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
-  const [emailRecipient, setEmailRecipient] = useState('');
+  // States for Email functionality (aligned with InvoiceList)
+  const [showSendEmailModal, setShowSendEmailModal] = useState(false);
+  const [emailRecipient, setEmailRecipient] = useState<string>('');
   const [emailSubject, setEmailSubject] = useState('');
   const [emailBody, setEmailBody] = useState('');
-  const [isSendingEmail, setIsSendingEmail] = useState(false); // Loading state for email sending
+  const [quotationToSendEmail, setQuotationToSendEmail] = useState<Quotation | null>(null);
+  const [emailProcessingQuotationId, setEmailProcessingQuotationId] = useState<string | null>(null);
+
+
+  // States for Download functionality
+  const [downloadProcessingQuotationId, setDownloadProcessingQuotationId] = useState<string | null>(null);
 
   const { isAuthenticated } = useAuth(); // Get authentication status
   const token = localStorage.getItem('token'); // Retrieve the token
 
-  // Effect to dynamically load jsPDF and autoTable
-  useEffect(() => {
-    if (window.jspdf && (window.jspdf.jsPDF.API as any).autoTable) {
-      setIsPdfLibLoaded(true);
-      return;
-    }
 
-    const loadScript = (src: string, id: string, callback: () => void) => {
-      if (document.getElementById(id)) {
-        callback();
-        return;
-      }
-      const script = document.createElement('script');
-      script.src = src;
-      script.id = id;
-      script.onload = callback;
-      script.onerror = () => {
-        console.error(`Failed to load script: ${src}`);
-        toast({
-          title: 'Script Load Error',
-          description: `Failed to load PDF library from ${src}. Please check your network.`,
-          variant: 'destructive',
-        });
-      };
-      document.head.appendChild(script);
-    };
-
-    // Load jsPDF first
-    loadScript(
-      'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
-      'jspdf-script',
-      () => {
-        // Then load autoTable after jsPDF is loaded
-        loadScript(
-          'https://unpkg.com/jspdf-autotable@3.5.23/dist/jspdf.plugin.autotable.js',
-          'jspdf-autotable-script',
-          () => {
-            setIsPdfLibLoaded(true);
-            toast({
-              title: 'PDF Library Loaded',
-              description: 'PDF generation capabilities are now available.',
-            });
-          }
-        );
-      }
-    );
-  }, [toast]);
-
-
-  // NEW: Function to fetch user profile
+  // NEW: Function to fetch user profile (Company details for PDF/Email)
   const fetchUserProfile = useCallback(async () => {
     if (!token) {
       console.warn('No token found. User is not authenticated for profile.');
@@ -287,8 +231,45 @@ export function QuotationList() {
       setQuotations([]);
       setUserProfile(null); // Clear profile if not authenticated
       setIsLoadingList(false);
+      setIsLoadingProfile(false); // Also reset profile loading
     }
   }, [fetchQuotations, fetchUserProfile, isAuthenticated, token]); // Add isAuthenticated and token to dependencies
+
+  // NEW useEffect for automatic "Expired" status check
+  useEffect(() => {
+    const checkExpiryDates = async () => {
+      if (!isAuthenticated || !token) return;
+
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // Normalize to start of day
+
+      for (const quotation of quotations) {
+        if (quotation.expiry_date) {
+          const expiry = new Date(quotation.expiry_date);
+          const expiryDay = new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate()); // Normalize to start of day
+
+          // If expired and not already 'Accepted', 'Declined', or 'Invoiced'
+          if (
+            expiryDay < today &&
+            quotation.status !== 'Expired' &&
+            quotation.status !== 'Accepted' &&
+            quotation.status !== 'Declined' &&
+            quotation.status !== 'Invoiced'
+          ) {
+            console.log(`Quotation ${quotation.quotation_number} has expired. Updating status...`);
+            await handleManualStatusUpdate(quotation.id, 'Expired', false); // Update without showing toast
+          }
+        }
+      }
+    };
+
+    // Run once on load and then perhaps periodically, or only when quotations change
+    const timer = setTimeout(checkExpiryDates, 5000); // Debounce or run after initial fetch
+    // Clear timeout if component unmounts or quotations array changes before it fires
+    return () => clearTimeout(timer);
+
+  }, [quotations, isAuthenticated, token]); // Re-run when quotations or auth state changes
+
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -311,7 +292,7 @@ export function QuotationList() {
 
   const filteredQuotations = quotations.filter(
     quotation =>
-      quotation.status !== 'Invoiced' &&
+      quotation.status !== 'Invoiced' && // Exclude 'Invoiced' quotations from the main list
       (quotation.quotation_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
         quotation.customer_name.toLowerCase().includes(searchTerm.toLowerCase()))
   );
@@ -413,237 +394,130 @@ export function QuotationList() {
     }
   };
 
-  // --- UPDATED: Handle PDF Download to generate Quotation PDF client-side ---
-  const handleDownloadPdf = async (quotation: Quotation) => {
-    if (!isPdfLibLoaded || !window.jspdf || !(window.jspdf.jsPDF.API as any).autoTable) {
+  // --- UPDATED: Handle PDF Download to generate Quotation PDF from server-side ---
+  const handleDownloadPdf = async (quotationId: string, quotationNumber: string) => {
+    if (!token) {
+      console.warn('No token found. Cannot download PDF.');
       toast({
-        title: 'PDF Library Not Ready',
-        description: 'PDF generation library is still loading or failed to load. Please try again in a moment.',
-        variant: 'destructive',
-      });
-      return;
-    }
-    if (isLoadingProfile) {
-      toast({
-        title: 'Loading Profile',
-        description: 'Company profile is still loading. Please wait a moment and try again.',
-        variant: 'default',
-      });
-      return;
-    }
-    if (!userProfile || !userProfile.company) { // Check if userProfile or company name is missing
-      toast({
-        title: 'Company Profile Missing',
-        description: 'Company name not loaded from your profile. Cannot generate PDF with company details. Please ensure your profile is complete.',
+        title: 'Authentication Error',
+        description: 'You are not authenticated. Please log in to download PDFs.',
         variant: 'destructive',
       });
       return;
     }
 
+    setDownloadProcessingQuotationId(quotationId); // Set the ID for the download process
     try {
-      const doc = new window.jspdf.jsPDF();
-      let yPos = 20;
-
-      // Set company header
-      doc.setFontSize(18);
-      doc.setFont(undefined, 'bold');
-      // Use company name from profile, with a fallback
-      doc.text(userProfile.company || 'Your Company Name', 14, yPos);
-      yPos += 7;
-      doc.setFontSize(10);
-      doc.setFont(undefined, 'normal');
-      if (userProfile.address) doc.text(userProfile.address, 14, yPos);
-      yPos += 5;
-      if (userProfile.city || userProfile.postal_code) doc.text(`${userProfile.city || ''} ${userProfile.postal_code || ''}`.trim(), 14, yPos);
-      yPos += 5;
-      if (userProfile.country) doc.text(userProfile.country, 14, yPos);
-      yPos += 5;
-      if (userProfile.phone) doc.text(`Phone: ${userProfile.phone}`, 14, yPos);
-      yPos += 5;
-      if (userProfile.email) doc.text(`Email: ${userProfile.email}`, 14, yPos);
-      yPos += 15;
-
-
-      // Document Title
-      doc.setFontSize(24);
-      doc.text('QUOTATION', doc.internal.pageSize.width / 2, yPos, { align: 'center' });
-      yPos += 15;
-
-      // Quotation Details (Right aligned)
-      doc.setFontSize(10);
-      doc.setFont(undefined, 'normal');
-      doc.text(`Quotation #: ${quotation.quotation_number}`, doc.internal.pageSize.width - 14, yPos, { align: 'right' });
-      yPos += 7;
-      doc.text(`Date: ${new Date(quotation.quotation_date).toLocaleDateString('en-ZA')}`, doc.internal.pageSize.width - 14, yPos, { align: 'right' });
-      yPos += 7;
-      doc.text(`Expiry Date: ${quotation.expiry_date ? new Date(quotation.expiry_date).toLocaleDateString('en-ZA') : 'N/A'}`, doc.internal.pageSize.width - 14, yPos, { align: 'right' });
-      yPos += 15; // Space after quotation details
-
-      // Bill To (Left aligned)
-      doc.setFontSize(12);
-      doc.setFont(undefined, 'bold');
-      doc.text('Bill To:', 14, yPos);
-      yPos += 7;
-      doc.setFontSize(10);
-      doc.setFont(undefined, 'normal');
-      doc.text(quotation.customer_name, 14, yPos);
-      yPos += 7;
-      if (quotation.customer_email) {
-        doc.text(quotation.customer_email, 14, yPos);
-        yPos += 7;
-      }
-      yPos += 10; // Space before table
-
-      // Line Items Table
-      const tableColumn = ['Item', 'Description', 'Qty', 'Unit Price (R)', 'Tax Rate (%)', 'Line Total (R)'];
-      const tableRows: any[] = [];
-      let subtotal = 0;
-      let totalTax = 0;
-
-      quotation.line_items?.forEach(item => {
-        const itemTax = item.quantity * item.unit_price * item.tax_rate;
-        const itemSubtotal = item.quantity * item.unit_price;
-        subtotal += itemSubtotal;
-        totalTax += itemTax;
-
-        tableRows.push([
-          item.product_service_name || 'Custom Item',
-          item.description,
-          item.quantity,
-          item.unit_price.toFixed(2),
-          (item.tax_rate * 100).toFixed(0),
-          item.line_total.toFixed(2),
-        ]);
-      });
-
-      // @ts-ignore - autoTable is a plugin, not directly part of jsPDF's core type definitions
-      doc.autoTable({
-        startY: yPos,
-        head: [tableColumn],
-        body: tableRows,
-        theme: 'striped',
-        headStyles: { fillColor: [20, 100, 150] },
-        styles: { fontSize: 9, cellPadding: 3 },
-        columnStyles: {
-          0: { cellWidth: 30 },
-          1: { cellWidth: 'auto' },
-          2: { cellWidth: 15, halign: 'right' },
-          3: { cellWidth: 25, halign: 'right' },
-          4: { cellWidth: 20, halign: 'right' },
-          5: { cellWidth: 25, halign: 'right' },
+      const response = await fetch(`${API_BASE_URL}/api/quotations/${quotationId}/pdf`, { // Corrected endpoint
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
         },
-        didDrawPage: function (data: any) {
-          // Footer
-          let pageCount = doc.internal.pages.length;
-          doc.setFontSize(8);
-          doc.text('Page ' + data.pageNumber + ' of ' + pageCount, data.settings.margin.left, doc.internal.pageSize.height - 10);
-        }
       });
 
-      // Get the final Y position after the table
-      yPos = (doc as any).autoTable.previous.finalY + 10;
-
-      // Totals Summary
-      doc.setFontSize(10);
-      doc.setFont(undefined, 'normal');
-      doc.text(`Subtotal: R${subtotal.toFixed(2)}`, doc.internal.pageSize.width - 14, yPos, { align: 'right' });
-      yPos += 7;
-      doc.text(`Tax: R${totalTax.toFixed(2)}`, doc.internal.pageSize.width - 14, yPos, { align: 'right' });
-      yPos += 7;
-      doc.setFontSize(12);
-      doc.setFont(undefined, 'bold');
-      doc.text(`TOTAL: R${quotation.total_amount.toFixed(2)}`, doc.internal.pageSize.width - 14, yPos, { align: 'right' });
-      yPos += 15;
-
-      // Notes
-      if (quotation.notes) {
-        doc.setFontSize(10);
-        doc.setFont(undefined, 'bold');
-        doc.text('Notes:', 14, yPos);
-        yPos += 7;
-        doc.setFont(undefined, 'normal');
-        doc.text(quotation.notes, 14, yPos, { maxWidth: doc.internal.pageSize.width - 28 });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to generate PDF.');
       }
 
-      doc.save(`Quotation_${quotation.quotation_number}.pdf`);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `quotation_${quotationNumber}.pdf`; // Dynamic filename
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url); // Clean up the URL
 
       toast({
         title: 'Download Started',
-        description: `Generating and downloading Quotation ${quotation.quotation_number}.pdf`,
+        description: `Quotation #${quotationNumber} is downloading...`,
+        variant: 'default',
       });
+
     } catch (error: any) {
-      console.error('Error generating PDF:', error);
+      console.error('Error downloading quotation PDF:', error);
       toast({
-        title: 'PDF Generation Failed',
-        description: error.message || 'Failed to generate quotation PDF. Please try again.',
+        title: 'Download Failed',
+        description: error.message || 'Failed to download quotation PDF. Please try again.',
         variant: 'destructive',
       });
+    } finally {
+        setDownloadProcessingQuotationId(null); // Clear the specific ID after download attempt
     }
   };
 
-  // --- NEW: Handle Send Email Click (opens dialog) ---
-  const handleSendEmailClick = async (quotation: Quotation) => {
+
+  const handleDeleteQuotationClick = (quotationId: string) => {
+    setQuotationToDelete(quotationId);
+  };
+
+  // This is the actual deletion logic, now named `handleDeleteQuotation`
+  const handleDeleteQuotation = useCallback(async () => {
+    if (!quotationToDelete) return;
+
     if (!token) {
-      console.warn('No token found. Cannot send email.');
+      console.warn('No token found. Cannot delete quotation.');
       toast({
         title: 'Authentication Error',
-        description: 'You are not authenticated. Please log in to send emails.',
-        variant: 'destructive',
-      });
-      return;
-    }
-    if (isLoadingProfile) {
-      toast({
-        title: 'Loading Profile',
-        description: 'Company profile is still loading. Please wait a moment and try again.',
-        variant: 'default',
-      });
-      return;
-    }
-    if (!userProfile || !userProfile.company) { // Check if userProfile or company name is missing
-      toast({
-        title: 'Company Profile Missing',
-        description: 'Company name not loaded from your profile. Cannot prepare email with company details. Please ensure your profile is complete.',
+        description: 'You are not authenticated. Please log in to delete quotations.',
         variant: 'destructive',
       });
       return;
     }
 
-    setSelectedQuotation(quotation); // Set the quotation for the email dialog
-    // Fetch customer details to pre-fill email if not already available in quotation list
+    setIsLoadingList(true);
     try {
-      const customerResponse = await fetch(`${API_BASE_URL}/api/customers/${quotation.customer_id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/quotations/${quotationToDelete}`, {
+        method: 'DELETE',
         headers: {
-          'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`, // Include the JWT token
         },
       });
-      if (customerResponse.ok) {
-        const customerData: Customer = await customerResponse.json();
-        setEmailRecipient(customerData.email || ''); // Pre-fill with customer's email
-      }
-    } catch (error) {
-      console.error('Failed to fetch customer email:', error);
-      setEmailRecipient(''); // Fallback if customer email cannot be fetched
-    }
 
-    // Use company name from profile for email subject and body
-    const companyName = userProfile.company || 'Your Company';
-    setEmailSubject(`Quotation ${quotation.quotation_number} from ${companyName}`);
-    setEmailBody(`Dear ${quotation.customer_name},\n\nPlease find attached your quotation, ${quotation.quotation_number}, for your review.\n\nBest regards,\n${userProfile.contact_person || companyName} Team`);
-    setIsEmailModalOpen(true);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to delete quotation');
+      }
+
+      toast({
+        title: 'Quotation Deleted',
+        description: 'The quotation has been successfully deleted.',
+      });
+      fetchQuotations(); // Refresh the list
+    } catch (error: any) {
+      console.error('Error deleting quotation:', error);
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to delete quotation. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setQuotationToDelete(null);
+      setIsLoadingList(false);
+    }
+  }, [quotationToDelete, fetchQuotations, toast, token]);
+
+
+  const handleSendEmailClick = (quotation: Quotation) => {
+    setQuotationToSendEmail(quotation); // Set the quotation for the email modal
+    setEmailRecipient(quotation.customer_email || ''); // Pre-fill with customer's email
+    setEmailSubject(`Quotation #${quotation.quotation_number} from ${userProfile?.company || 'Your Company'}`);
+    setEmailBody(`Dear ${quotation.customer_name},\n\nPlease find attached your quotation (Quotation ID: #${quotation.quotation_number}).\n\nTotal amount: ${quotation.currency} ${quotation.total_amount.toFixed(2)}\nExpiry Date: ${new Date(quotation.expiry_date || '').toLocaleDateString('en-ZA')}\n\nThank you for your business!\n\nSincerely,\n${userProfile?.company || 'Your Company'}\n${userProfile?.contact_person || ''}`); // Pre-fill email body
+    setShowSendEmailModal(true);
   };
 
-  // --- NEW: Handle Send Email (submits email) ---
-  const handleSendEmail = async () => {
-    if (!selectedQuotation || !emailRecipient || !emailSubject || !emailBody) {
+  const confirmSendQuotationEmail = useCallback(async () => {
+    if (!quotationToSendEmail || !emailRecipient || !emailSubject || !emailBody) {
       toast({
         title: 'Missing Information',
-        description: 'Please fill in all required email fields.',
+        description: 'Please ensure recipient email, subject, and body are filled.',
         variant: 'destructive',
       });
       return;
     }
+
     if (!token) {
       console.warn('No token found. Cannot send email.');
       toast({
@@ -654,15 +528,13 @@ export function QuotationList() {
       return;
     }
 
-    setIsSendingEmail(true);
+    setEmailProcessingQuotationId(quotationToSendEmail.id);
     try {
-      // This endpoint needs to be implemented in your backend for quotations
-      // Similar to '/api/invoices/:id/send-pdf-email'
-      const response = await fetch(`${API_BASE_URL}/api/quotations/${selectedQuotation.id}/send-pdf-email`, {
+      const response = await fetch(`${API_BASE_URL}/api/quotations/${quotationToSendEmail.id}/send-pdf-email`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`, // Include the JWT token
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           recipientEmail: emailRecipient,
@@ -678,24 +550,99 @@ export function QuotationList() {
 
       toast({
         title: 'Email Sent',
-        description: `Quotation ${selectedQuotation.quotation_number} email sent successfully to ${emailRecipient}.`,
+        description: `Quotation #${quotationToSendEmail.quotation_number} email sent successfully to ${emailRecipient}.`,
       });
-      setIsEmailModalOpen(false); // Close the email dialog
+
+      // Automatically update status to 'Sent' after successful email
+      await handleManualStatusUpdate(quotationToSendEmail.id, 'Sent', false); // Update without showing toast again
+
+      setShowSendEmailModal(false);
+      setEmailRecipient('');
+      setEmailSubject('');
+      setEmailBody('');
+      fetchQuotations(); // Refresh quotations to update status if changed
     } catch (error: any) {
-      console.error('Error sending email:', error);
+      console.error('Error sending quotation email:', error);
       toast({
-        title: 'Email Failed',
+        title: 'Email Send Error',
         description: error.message || 'Failed to send quotation email. Please try again.',
         variant: 'destructive',
       });
     } finally {
-      setIsSendingEmail(false);
+      setEmailProcessingQuotationId(null);
     }
-  };
+  }, [quotationToSendEmail, emailRecipient, emailSubject, emailBody, fetchQuotations, toast, token, userProfile?.company, userProfile?.contact_person]);
+
+    // NEW: Function to manually update quotation status
+    const handleManualStatusUpdate = useCallback(async (quotationId: string, newStatus: Quotation['status'], showToast: boolean = true) => {
+        if (!token) {
+            console.warn('No token found. Cannot update status.');
+            if (showToast) {
+                toast({
+                    title: 'Authentication Error',
+                    description: 'You are not authenticated. Please log in to update quotation status.',
+                    variant: 'destructive',
+                });
+            }
+            return false; // Indicate failure
+        }
+
+        try {
+            // First, fetch the full quotation details to ensure all required fields are present
+            const fetchResponse = await fetch(`${API_BASE_URL}/api/quotations/${quotationId}`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+            if (!fetchResponse.ok) {
+                const errorData = await fetchResponse.json();
+                throw new Error(errorData.error || 'Failed to fetch quotation details for status update.');
+            }
+            const detailedQuotation: Quotation = await fetchResponse.json();
+
+            // Now, update the status on the fetched object
+            const updatedQuotation = { ...detailedQuotation, status: newStatus };
+
+            // Send the complete, updated quotation object
+            const response = await fetch(`${API_BASE_URL}/api/quotations/${quotationId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify(updatedQuotation), // Send the full updated object
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to update quotation status.');
+            }
+
+            if (showToast) {
+                toast({
+                    title: 'Status Updated',
+                    description: `Quotation status updated to ${newStatus}.`,
+                    variant: 'default',
+                });
+            }
+            fetchQuotations(); // Refresh the list
+            return true; // Indicate success
+        } catch (error: any) {
+            console.error('Error updating quotation status:', error);
+            if (showToast) {
+                toast({
+                    title: 'Status Update Failed',
+                    description: error.message || `Failed to update status to ${newStatus}. Please try again.`,
+                    variant: 'destructive',
+                });
+            }
+            return false; // Indicate failure
+        }
+    }, [fetchQuotations, toast, token]);
 
 
-  // Function to convert a quotation to an invoice
-  const handleConvertToInvoice = async (quotation: Quotation) => {
+  const handleConvertQuotationToInvoice = useCallback(async (quotation: Quotation) => {
     if (quotation.status !== 'Accepted') {
       toast({
         title: 'Conversion Not Allowed',
@@ -705,10 +652,9 @@ export function QuotationList() {
       return;
     }
     if (!token) {
-      console.warn('No token found. Cannot convert quotation.');
       toast({
-        title: 'Authentication Error',
-        description: 'You are not authenticated. Please log in to convert quotations.',
+        title: 'Authentication Required',
+        description: 'Please log in to convert quotations to invoices.',
         variant: 'destructive',
       });
       return;
@@ -750,9 +696,30 @@ export function QuotationList() {
       const dueDate = new Date(invoiceDate);
       dueDate.setDate(invoiceDate.getDate() + 7);
 
+      interface InvoiceLineItemForConversion {
+        product_service_id: string | null;
+        description: string;
+        quantity: number;
+        unit_price: number;
+        line_total: number;
+        tax_rate: number;
+      }
+
+      interface NewInvoicePayload {
+        invoice_number: string;
+        customer_id: string; // Assuming customer_id is not null after check
+        invoice_date: string;
+        due_date: string;
+        total_amount: number;
+        status: 'Draft' | 'Sent' | 'Paid' | 'Overdue';
+        currency: string;
+        notes: string | null;
+        line_items: InvoiceLineItemForConversion[];
+      }
+
       const invoicePayload: NewInvoicePayload = {
         invoice_number: newInvoiceNumber,
-        customer_id: detailedQuotation.customer_id,
+        customer_id: detailedQuotation.customer_id, // This should be a string, check if it's null
         invoice_date: invoiceDate.toISOString().split('T')[0],
         due_date: dueDate.toISOString().split('T')[0],
         total_amount: detailedQuotation.total_amount,
@@ -785,18 +752,21 @@ export function QuotationList() {
         throw new Error(errorData.error || 'Failed to create invoice from quotation.');
       }
 
+      // After successful invoice creation, update the quotation status
       const updateQuotationStatusResponse = await fetch(`${API_BASE_URL}/api/quotations/${quotation.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`, // Include the JWT token
         },
-        body: JSON.stringify({ ...detailedQuotation, status: 'Invoiced' }),
+        // Only send the status to be updated, not the entire object if your backend handles partial updates
+        body: JSON.stringify({ status: 'Invoiced' }),
       });
 
       if (!updateQuotationStatusResponse.ok) {
         const errorData = await updateQuotationStatusResponse.json();
         console.warn(`Failed to update quotation status after conversion: ${errorData.error || 'Unknown error'}`);
+        // Decide if you want to throw an error here or just log a warning
       }
 
       toast({
@@ -804,7 +774,7 @@ export function QuotationList() {
         description: `Quotation ${quotation.quotation_number} converted to Invoice ${newInvoiceNumber}.`,
         variant: 'default',
       });
-      fetchQuotations();
+      fetchQuotations(); // Refresh the quotations list to reflect status change
     } catch (error: any) {
       console.error('Error converting quotation to invoice:', error);
       toast({
@@ -815,58 +785,12 @@ export function QuotationList() {
     } finally {
       setIsConverting(false);
     }
-  };
+  }, [fetchQuotations, toast, token]);
 
-  const confirmDeleteQuotation = (quotationId: string) => {
-    setQuotationToDelete(quotationId);
-  };
-
-  const handleDeleteQuotation = async () => {
-    if (!quotationToDelete) return;
-    if (!token) {
-      console.warn('No token found. Cannot delete quotation.');
-      toast({
-        title: 'Authentication Error',
-        description: 'You are not authenticated. Please log in to delete quotations.',
-        variant: 'destructive',
-      });
-      setQuotationToDelete(null);
-      return;
-    }
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/quotations/${quotationToDelete}`, {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`, // Include the JWT token
-        },
-      });
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to delete quotation');
-      }
-      setQuotations(prev => prev.filter(quo => quo.id !== quotationToDelete));
-      toast({
-        title: 'Quotation Deleted',
-        description: 'The quotation has been successfully deleted.',
-        variant: 'default',
-      });
-    } catch (error: any) {
-      console.error('Error deleting quotation:', error);
-      toast({
-        title: 'Deletion Failed',
-        description: error.message || 'Failed to delete quotation. Please try again.',
-        variant: 'destructive',
-      });
-    } finally {
-      setQuotationToDelete(null);
-    }
-  };
 
   const handleFormSubmitSuccess = () => {
     setShowQuotationForm(false);
-    fetchQuotations();
+    fetchQuotations(); // Refresh list after form submission
   };
 
   if (showQuotationForm) {
@@ -913,26 +837,25 @@ export function QuotationList() {
         </div>
       </CardHeader>
       <CardContent className='space-y-4'>
-        <div className='flex items-center justify-between'>
-          <div className='relative w-full max-w-sm'>
-            <Search className='absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground' />
+        <div className='flex items-center gap-4'> {/* Use flex-1 for search input to take available space */}
+          <div className='relative flex-1'>
+            <Search className='absolute left-3 top-3 h-4 w-4 text-muted-foreground' />
             <Input
-              placeholder='Search quotations...'
-              className='pl-8'
+              placeholder='Search quotations by number or customer...'
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
+              className='pl-10'
             />
           </div>
         </div>
+
         {isLoadingList ? (
           <div className='flex justify-center items-center h-40'>
             <Loader2 className='h-8 w-8 animate-spin text-gray-500' />
             <span className='ml-2 text-gray-600'>Loading quotations...</span>
           </div>
-        ) : filteredQuotations.length === 0 ? (
-          <p className="text-center text-muted-foreground py-8">No quotations found.</p>
         ) : (
-          <div className='overflow-x-auto'>
+          <div className='border rounded-lg overflow-x-auto'> {/* Add border and rounded-lg for table container */}
             <Table>
               <TableHeader>
                 <TableRow>
@@ -940,199 +863,302 @@ export function QuotationList() {
                   <TableHead>Customer</TableHead>
                   <TableHead>Date</TableHead>
                   <TableHead>Expiry Date</TableHead>
-                  <TableHead>Total</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className='text-right'>Actions</TableHead>
+                  <TableHead>Amount</TableHead>
+                  {/* Removed Status TableHead */}
+                  <TableHead className='text-left'>Actions</TableHead> {/* Adjusted alignment */}
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredQuotations.map(quotation => (
-                  <TableRow key={quotation.id}>
-                    <TableCell className='font-medium'>{quotation.quotation_number}</TableCell>
-                    <TableCell>{quotation.customer_name}</TableCell>
-                    <TableCell>{new Date(quotation.quotation_date).toLocaleDateString()}</TableCell>
-                    <TableCell>{quotation.expiry_date ? new Date(quotation.expiry_date).toLocaleDateString() : 'N/A'}</TableCell>
-                    <TableCell>{quotation.currency} {quotation.total_amount.toFixed(2)}</TableCell>
-                    <TableCell>
-                      <Badge className={getStatusColor(quotation.status)}>
-                        {quotation.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className='text-right'>
-                      <div className='flex justify-end space-x-2'>
-                        <Button variant='outline' size='sm' onClick={() => handleViewQuotationClick(quotation)}>
-                          <Eye className='h-4 w-4' />
-                        </Button>
-                        <Button variant='outline' size='sm' onClick={() => handleEditQuotationClick(quotation)}>
-                          <Edit className='h-4 w-4' />
-                        </Button>
-                        <Button variant='outline' size='sm' onClick={() => handleDownloadPdf(quotation)} disabled={!isPdfLibLoaded || isLoadingProfile}>
-                          {isLoadingProfile ? <Loader2 className='h-4 w-4 animate-spin' /> : <FileText className='h-4 w-4' />}
-                        </Button>
-                        <Button variant='outline' size='sm' onClick={() => handleSendEmailClick(quotation)} disabled={isLoadingProfile}>
-                          {isLoadingProfile ? <Loader2 className='h-4 w-4 animate-spin' /> : <Mail className='h-4 w-4' />}
-                        </Button>
-                        <Button
-                          variant='outline'
-                          size='sm'
-                          onClick={() => handleConvertToInvoice(quotation)}
-                          disabled={isConverting || quotation.status !== 'Accepted'}
-                        >
-                          {isConverting ? <Loader2 className='h-4 w-4 animate-spin' /> : <ArrowRight className='h-4 w-4' />}
-                        </Button>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button variant='destructive' size='sm' onClick={() => confirmDeleteQuotation(quotation.id)}>
-                              <Trash2 className='h-4 w-4' />
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                This action cannot be undone. This will permanently delete your quotation
-                                and remove its data from our servers.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Cancel</AlertDialogCancel>
-                              <AlertDialogAction onClick={handleDeleteQuotation}>Delete</AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {filteredQuotations.length === 0 ? (
+                    <TableRow>
+                        <TableCell colSpan={6} className='text-center py-8 text-muted-foreground'> {/* Adjusted colSpan */}
+                            No quotations found.
+                        </TableCell>
+                    </TableRow>
+                ) : (
+                  filteredQuotations.map(quotation => (
+                    <TableRow key={quotation.id}>
+                      <TableCell className='font-medium'>{quotation.quotation_number}</TableCell>
+                      <TableCell>{quotation.customer_name}</TableCell>
+                      <TableCell>{new Date(quotation.quotation_date).toLocaleDateString('en-ZA')}</TableCell>
+                      <TableCell>{quotation.expiry_date ? new Date(quotation.expiry_date).toLocaleDateString('en-ZA') : 'N/A'}</TableCell>
+                      <TableCell>
+                        R
+                        {(quotation.total_amount).toLocaleString('en-ZA', {
+                            minimumFractionDigits: 2,
+                        })}
+                      </TableCell>
+                      {/* Removed Status TableCell */}
+                      <TableCell className='text-left'> {/* Adjusted alignment to left */}
+                        <div className='flex items-center gap-2'> {/* Keep actions left-aligned within the cell */}
+                          <Button variant='ghost' size='sm' onClick={() => handleViewQuotationClick(quotation)}>
+                            <Eye className='h-4 w-4' />
+                          </Button>
+                          <Button variant='ghost' size='sm' onClick={() => handleEditQuotationClick(quotation)}>
+                            <Edit className='h-4 w-4' />
+                          </Button>
+
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            onClick={() => handleSendEmailClick(quotation)}
+                            disabled={isLoadingProfile || emailProcessingQuotationId === quotation.id}
+                          >
+                            {emailProcessingQuotationId === quotation.id ? <Loader2 className='h-4 w-4 animate-spin' /> : <Mail className='h-4 w-4' />}
+                          </Button>
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            onClick={() => handleConvertQuotationToInvoice(quotation)}
+                            disabled={isConverting || quotation.status !== 'Accepted'}
+                          >
+                            {isConverting ? <Loader2 className='h-4 w-4 animate-spin' /> : <ArrowRight className='h-4 w-4' />}
+                          </Button>
+
+                           {/* UPDATED: Manual Status Dropdown Trigger now displays status and color */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              {/* Apply the status color class directly to the button */}
+                              <Button
+                                variant='outline'
+                                size='sm'
+                                className={`flex items-center gap-1 ${getStatusColor(quotation.status)}`}
+                              >
+                                {quotation.status.toUpperCase()} <MoreVertical className='h-4 w-4' />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align='end'>
+                              <DropdownMenuLabel>Change Status</DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => handleManualStatusUpdate(quotation.id, 'Draft')}>
+                                <FileText className='mr-2 h-4 w-4' /> Draft
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleManualStatusUpdate(quotation.id, 'Sent')}>
+                                <Mail className='mr-2 h-4 w-4' /> Sent
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleManualStatusUpdate(quotation.id, 'Accepted')}>
+                                <CheckCircle className='mr-2 h-4 w-4 text-green-600' /> Accepted
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleManualStatusUpdate(quotation.id, 'Declined')}>
+                                <XOctagon className='mr-2 h-4 w-4 text-red-600' /> Declined
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleManualStatusUpdate(quotation.id, 'Expired')}>
+                                <Clock className='mr-2 h-4 w-4 text-orange-600' /> Expired
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button variant='ghost' size='sm' onClick={() => handleDeleteQuotationClick(quotation.id)}>
+                                <Trash2 className='h-4 w-4 text-red-500' />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Confirm Deletion</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  Are you sure you want to delete quotation {quotation.quotation_number}? This action cannot be undone.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction onClick={handleDeleteQuotation}>Delete</AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </div>
         )}
       </CardContent>
 
-      {/* View Quotation Modal */}
+      {/* View Quotation Modal (aligned with InvoiceList) */}
       <Dialog open={isViewModalOpen} onOpenChange={setIsViewModalOpen}>
-        <DialogContent className='max-w-4xl overflow-y-auto max-h-[90vh]'>
+        <DialogContent className='max-w-4xl max-h-[90vh] overflow-y-auto'>
           <DialogHeader>
             <DialogTitle>Quotation Details: {selectedQuotation?.quotation_number}</DialogTitle>
-            <DialogDescription>
-              Detailed view of the selected quotation.
-            </DialogDescription>
+            <DialogDescription>Detailed view of the selected quotation.</DialogDescription>
           </DialogHeader>
-          {selectedQuotation && (
-            <div className='grid grid-cols-1 md:grid-cols-2 gap-4 text-sm'>
-              <div className='space-y-2'>
-                <p><strong>Customer:</strong> {selectedQuotation.customer_name}</p>
-                {selectedQuotation.customer_email && <p><strong>Customer Email:</strong> {selectedQuotation.customer_email}</p>}
-                <p><strong>Quotation Date:</strong> {new Date(selectedQuotation.quotation_date).toLocaleDateString()}</p>
-                <p><strong>Expiry Date:</strong> {selectedQuotation.expiry_date ? new Date(selectedQuotation.expiry_date).toLocaleDateString() : 'N/A'}</p>
-                <p><strong>Status:</strong> <Badge className={getStatusColor(selectedQuotation.status)}>{selectedQuotation.status}</Badge></p>
+          {selectedQuotation ? (
+            <div className='space-y-4 text-sm'>
+              <div className='grid grid-cols-2 gap-4'>
+                <div>
+                  <p>
+                    <strong>Customer:</strong> {selectedQuotation.customer_name}
+                  </p>
+                  {selectedQuotation.customer_email && <p><strong>Customer Email:</strong> {selectedQuotation.customer_email}</p>}
+                  <p>
+                    <strong>Quotation Date:</strong> {new Date(selectedQuotation.quotation_date).toLocaleDateString('en-ZA')}
+                  </p>
+                  <p>
+                    <strong>Expiry Date:</strong> {selectedQuotation.expiry_date ? new Date(selectedQuotation.expiry_date).toLocaleDateString('en-ZA') : 'N/A'}
+                  </p>
+                </div>
+                <div>
+                  <p>
+                    <strong>Status:</strong>{' '}
+                    <Badge variant='secondary' className={getStatusColor(selectedQuotation.status)}>
+                      {selectedQuotation.status.toUpperCase()}
+                    </Badge>
+                  </p>
+                  <p>
+                    <strong>Total Amount:</strong> {selectedQuotation.currency}
+                    {(selectedQuotation.total_amount).toLocaleString('en-ZA', {
+                        minimumFractionDigits: 2,
+                    })}
+                  </p>
+                  <p>
+                    <strong>Currency:</strong> {selectedQuotation.currency}
+                  </p>
+                </div>
               </div>
-              <div className='space-y-2'>
-                <p><strong>Total Amount:</strong> {selectedQuotation.currency} {selectedQuotation.total_amount.toFixed(2)}</p>
-                <p><strong>Created At:</strong> {new Date(selectedQuotation.created_at).toLocaleString()}</p>
-                <p><strong>Last Updated:</strong> {new Date(selectedQuotation.updated_at).toLocaleString()}</p>
-              </div>
+              {selectedQuotation.notes && (
+                <p>
+                  <strong>Notes:</strong> {selectedQuotation.notes}
+                </p>
+              )}
 
-              <div className='md:col-span-2 mt-4'>
-                <h3 className='font-bold text-md mb-2'>Line Items</h3>
-                {selectedQuotation.line_items && selectedQuotation.line_items.length > 0 ? (
+              <h3 className='font-semibold text-lg mt-6'>Line Items</h3>
+              {selectedQuotation.line_items && selectedQuotation.line_items.length > 0 ? (
+                <div className='border rounded-lg overflow-hidden'>
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Item</TableHead>
+                        <TableHead>Product/Service</TableHead>
                         <TableHead>Description</TableHead>
-                        <TableHead className='text-right'>Qty</TableHead>
-                        <TableHead className='text-right'>Unit Price</TableHead>
-                        <TableHead className='text-right'>Tax Rate</TableHead>
-                        <TableHead className='text-right'>Line Total</TableHead>
+                        <TableHead>Qty</TableHead>
+                        <TableHead>Unit Price</TableHead>
+                        <TableHead>Tax Rate</TableHead>
+                        <TableHead>Line Total</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {selectedQuotation.line_items.map(item => (
                         <TableRow key={item.id}>
-                          <TableCell>{item.product_service_name || 'N/A'}</TableCell>
+                          <TableCell>{item.product_service_name || 'Custom Item'}</TableCell>
                           <TableCell>{item.description}</TableCell>
-                          <TableCell className='text-right'>{item.quantity}</TableCell>
-                          <TableCell className='text-right'>{selectedQuotation.currency} {item.unit_price.toFixed(2)}</TableCell>
-                          <TableCell className='text-right'>{(item.tax_rate * 100).toFixed(0)}%</TableCell>
-                          <TableCell className='text-right'>{selectedQuotation.currency} {item.line_total.toFixed(2)}</TableCell>
+                          <TableCell>{item.quantity}</TableCell>
+                          <TableCell>R{(item.unit_price ?? 0).toFixed(2)}</TableCell>
+                          <TableCell>{((item.tax_rate ?? 0) * 100).toFixed(2)}%</TableCell>
+                          <TableCell>R{(item.line_total ?? 0).toFixed(2)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
-                ) : (
-                  <p className="text-muted-foreground">No line items for this quotation.</p>
-                )}
-              </div>
-
-              {selectedQuotation.notes && (
-                <div className='md:col-span-2 mt-4'>
-                  <h3 className='font-bold text-md mb-2'>Notes</h3>
-                  <p className='whitespace-pre-wrap'>{selectedQuotation.notes}</p>
                 </div>
+              ) : (
+                <p className='text-muted-foreground'>No line items for this quotation.</p>
               )}
             </div>
+          ) : (
+            <div className='flex justify-center items-center h-40 text-muted-foreground'>
+              Select a quotation to view its details.
+            </div>
           )}
+          {/* Download Button in DialogFooter */}
           <DialogFooter>
-            <Button onClick={() => setIsViewModalOpen(false)}>Close</Button>
+            <Button
+              variant="outline"
+              onClick={() => setIsViewModalOpen(false)}
+            >
+              Close
+            </Button>
+            <Button
+              onClick={() => selectedQuotation && handleDownloadPdf(selectedQuotation.id, selectedQuotation.quotation_number)}
+              disabled={!selectedQuotation || downloadProcessingQuotationId === selectedQuotation?.id}
+            >
+              {downloadProcessingQuotationId === selectedQuotation?.id ? (
+                  <Loader2 className='h-4 w-4 animate-spin mr-2' />
+              ) : (
+                  <Download className='h-4 w-4 mr-2' />
+              )}
+              Download PDF
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Email Quotation Modal */}
-      <Dialog open={isEmailModalOpen} onOpenChange={setIsEmailModalOpen}>
-        <DialogContent className='sm:max-w-[425px]'>
-          <DialogHeader>
-            <DialogTitle>Email Quotation {selectedQuotation?.quotation_number}</DialogTitle>
-            <DialogDescription>
-              Compose and send the quotation via email.
-            </DialogDescription>
-          </DialogHeader>
-          <div className='grid gap-4 py-4'>
-            <div className='grid grid-cols-4 items-center gap-4'>
-              <Label htmlFor='recipient' className='text-right'>
-                Recipient
-              </Label>
-              <Input
-                id='recipient'
-                type='email'
-                value={emailRecipient}
-                onChange={(e) => setEmailRecipient(e.target.value)}
-                className='col-span-3'
-              />
-            </div>
-            <div className='grid grid-cols-4 items-center gap-4'>
-              <Label htmlFor='subject' className='text-right'>
-                Subject
-              </Label>
-              <Input
-                id='subject'
-                value={emailSubject}
-                onChange={(e) => setEmailSubject(e.target.value)}
-                className='col-span-3'
-              />
-            </div>
-            <div className='grid grid-cols-4 items-center gap-4'>
-              <Label htmlFor='body' className='text-right'>
-                Body
-              </Label>
-              <Textarea
-                id='body'
-                value={emailBody}
-                onChange={(e) => setEmailBody(e.target.value)}
-                className='col-span-3 min-h-[150px]'
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant='outline' onClick={() => setIsEmailModalOpen(false)}>Cancel</Button>
-            <Button onClick={handleSendEmail} disabled={isSendingEmail}>
-              {isSendingEmail && <Loader2 className='h-4 w-4 mr-2 animate-spin' />}
-              Send Email
-            </Button>
-          </DialogFooter>
-        </DialogContent>
+      {/* Send Email Confirmation Modal (aligned with InvoiceList) */}
+      <Dialog open={showSendEmailModal} onOpenChange={(open) => {
+          setShowSendEmailModal(open);
+          if (!open) {
+              setEmailRecipient('');
+              setEmailSubject('');
+              setEmailBody('');
+              setQuotationToSendEmail(null);
+          }
+      }}>
+          <DialogContent className='sm:max-w-[425px]'>
+              <DialogHeader>
+                  <DialogTitle>Send Quotation #{quotationToSendEmail?.quotation_number}</DialogTitle>
+                  <DialogDescription>
+                      Compose and send this quotation via email.
+                  </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 py-4">
+                  <div className='grid grid-cols-4 items-center gap-4'>
+                      <Label htmlFor="recipient" className='text-right'>
+                          Recipient
+                      </Label>
+                      <Input
+                          id="recipient"
+                          type="email"
+                          placeholder="recipient@example.com"
+                          value={emailRecipient}
+                          onChange={(e) => setEmailRecipient(e.target.value)}
+                          className="col-span-3"
+                      />
+                  </div>
+                  <div className='grid grid-cols-4 items-center gap-4'>
+                      <Label htmlFor="subject" className='text-right'>
+                          Subject
+                      </Label>
+                      <Input
+                          id="subject"
+                          value={emailSubject}
+                          onChange={(e) => setEmailSubject(e.target.value)}
+                          className="col-span-3"
+                      />
+                  </div>
+                  <div className='grid grid-cols-4 items-center gap-4'>
+                      <Label htmlFor="body" className='text-right'>
+                          Body
+                      </Label>
+                      <Textarea
+                          id="body"
+                          value={emailBody}
+                          onChange={(e) => setEmailBody(e.target.value)}
+                          className="col-span-3 min-h-[150px]"
+                      />
+                  </div>
+              </div>
+              <DialogFooter>
+                  <Button
+                      variant="outline"
+                      onClick={() => setShowSendEmailModal(false)}
+                      disabled={emailProcessingQuotationId !== null}
+                  >
+                      Cancel
+                  </Button>
+                  <Button
+                      onClick={confirmSendQuotationEmail}
+                      disabled={emailProcessingQuotationId !== null || !emailRecipient || !emailSubject || !emailBody || !quotationToSendEmail}
+                  >
+                      {emailProcessingQuotationId !== null ? (
+                          <Loader2 className='h-4 w-4 animate-spin mr-2' />
+                      ) : (
+                          <Mail className='h-4 w-4 mr-2' />
+                      )}
+                      Send Email
+                  </Button>
+              </DialogFooter>
+          </DialogContent>
       </Dialog>
     </Card>
   );

@@ -6,7 +6,7 @@ import { PurchaseList } from './PurchaseList'
 
 export function InvoiceQuoteTabs () {
   return (
-    <Tabs defaultValue='sales' className='w-full'>
+    <Tabs defaultValue='quotations' className='w-full'>
       <TabsList className='grid w-full grid-cols-2'> 
         <TabsTrigger value='quotations'>Quotations</TabsTrigger>
         <TabsTrigger value='sales'>Sales Invoices</TabsTrigger>

@@ -111,10 +111,14 @@ const Financials = () => {
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
 
-  const formatCurrency = (amount: number | null | undefined): string => {
-    if (amount === null || amount === undefined) return 'R 0.00';
-    return `R ${parseFloat(Number(amount).toFixed(2)).toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`;
-  };
+const formatCurrency = (amount: number | null | undefined): string => {
+  if (amount === null || amount === undefined) return 'R 0.00';
+  
+  // Remove negative sign by taking absolute value
+  const absoluteAmount = Math.abs(Number(amount));
+  
+  return `R ${parseFloat(absoluteAmount.toFixed(2)).toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`;
+};
 
   const fetchAllData = useCallback(async () => {
     if (!token) {

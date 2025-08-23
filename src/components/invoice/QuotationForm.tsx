@@ -14,20 +14,38 @@ import { Textarea } from '@/components/ui/textarea';
 import { Plus, XCircle, Loader2, ChevronLeft } from 'lucide-react';
 
 import { useToast } from '@/components/ui/use-toast';
-import { useAuth } from '../../AuthPage'; // Import useAuth
+import { useAuth } from '../../AuthPage'; // Corrected import path for useAuth
 
 // Define API Base URL
 const API_BASE_URL = 'https://quantnow.onrender.com';
 
 // Re-defining interfaces based on your provided backend structure for Quotations
-interface QuotationLineItem {
+export interface QuotationLineItem { // Exported for potential reuse
   id?: string;
   product_service_id: string | null;
+  product_service_name?: string; // For display, comes from backend JOIN
   description: string;
   quantity: number;
   unit_price: number;
   line_total: number;
   tax_rate: number;
+}
+
+export interface Quotation { // Exported for potential reuse
+  id: string;
+  quotation_number: string;
+  customer_id: string | null; // Allow null if new customer or temporary state
+  customer_name: string;
+  customer_email?: string;
+  quotation_date: string;
+  expiry_date: string;
+  status: string;
+  currency: string;
+  notes: string;
+  total_amount: number;
+  line_items: QuotationLineItem[];
+  created_at: string;
+  updated_at: string;
 }
 
 interface QuotationFormData {
@@ -63,7 +81,7 @@ interface Customer {
 }
 
 interface QuotationFormProps {
-  quotation?: any; // The quotation object if editing
+  quotation?: Quotation; // The quotation object if editing, now using the local interface
   onClose: () => void;
   onSubmitSuccess: () => void;
 }
@@ -111,7 +129,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
     quotation_date: initialQuotationDate,
     expiry_date: getDefaultExpiryDate(initialQuotationDate), // Set default expiry date
     status: 'Draft',
-    currency: 'ZAR',
+    currency: 'R',
     notes: '',
     line_items: [],
   });
@@ -179,7 +197,12 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
       }
     };
 
-    fetchProducts();
+    if (isAuthenticated && token) {
+        fetchProducts();
+    } else {
+        setProductsServices([]); // Clear if not authenticated
+    }
+
 
     // If 'quotation' prop is provided (for editing), populate the form
     if (quotation) {
@@ -190,7 +213,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
         quotation_date: quotation.quotation_date ? new Date(quotation.quotation_date).toISOString().split('T')[0] : initialQuotationDate,
         expiry_date: quotation.expiry_date ? new Date(quotation.expiry_date).toISOString().split('T')[0] : getDefaultExpiryDate(quotation.quotation_date || initialQuotationDate), // Set default expiry date if not provided
         status: quotation.status || 'Draft',
-        currency: quotation.currency || 'ZAR',
+        currency: quotation.currency || 'R',
         notes: quotation.notes || '',
         line_items: quotation.line_items?.map((item: any) => ({
           ...item,
@@ -225,7 +248,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
         setCustomerSearchQuery(quotation.customer_name); // Initialize customerSearchQuery
       }
     }
-  }, [quotation, toast, isAuthenticated, token]); // Added isAuthenticated and token to dependencies
+  }, [quotation, toast, isAuthenticated, token, initialQuotationDate]); // Added isAuthenticated and token to dependencies
 
   // --- useEffect to fetch customer suggestions based on debounced search query ---
   useEffect(() => {
@@ -247,7 +270,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
       setIsSearchingCustomers(true);
       setShowCustomerSuggestions(true); // Show suggestions when searching
       try {
-        const res = await fetch(`${API_BASE_URL}/api/customers/search?query=${debouncedCustomerSearchQuery}`, {
+        const res = await fetch(`${API_BASE_URL}/api/customers/search?query=${encodeURIComponent(debouncedCustomerSearchQuery)}`, {
           headers: {
             'Authorization': `Bearer ${token}`, // Use the retrieved token
           },
@@ -271,7 +294,13 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
       }
     };
 
-    fetchCustomerSuggestions();
+    if (isAuthenticated && token) {
+        fetchCustomerSuggestions();
+    } else {
+        setCustomerSuggestions([]);
+        setIsSearchingCustomers(false);
+        setShowCustomerSuggestions(false);
+    }
   }, [debouncedCustomerSearchQuery, toast, isAuthenticated, token]); // Added isAuthenticated and token to dependencies
 
 
@@ -303,12 +332,13 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
 
   const handleCustomerSuggestionClick = (customer: Customer | 'free-text-entry') => {
     if (customer === 'free-text-entry') {
+      const trimmedQuery = customerSearchQuery.trim();
       setFormData(prev => ({
         ...prev,
         customer_id: null,
-        customer_name_manual: customerSearchQuery.trim(),
+        customer_name_manual: trimmedQuery,
       }));
-      setCustomerSearchQuery(customerSearchQuery.trim());
+      setCustomerSearchQuery(trimmedQuery);
     } else {
       const selected = customerSuggestions.find(c => c.id === customer.id);
       if (selected) {
@@ -357,7 +387,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
     const taxRate = itemToUpdate.tax_rate;
 
     // Ensure all components for calculation are numbers
-    const calculatedLineTotal = qty * price * (1 + taxRate);
+    const calculatedLineTotal = qty * price * (1 + taxRate); // Line total includes VAT
     itemToUpdate.line_total = parseFloat(calculatedLineTotal.toFixed(2)); // Ensure 2 decimal places
 
     updatedItems[index] = itemToUpdate;
@@ -376,7 +406,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
       item.quantity = item.quantity || 1; // Default to 1 if not set
       item.tax_rate = product.vatRate ?? 0.00; // Use product's vatRate if available, else 0
 
-      // Recalculate line_total after product selection
+      // Recalculate line_total after product selection (including VAT)
       item.line_total = parseFloat((item.quantity * item.unit_price * (1 + item.tax_rate)).toFixed(2));
     } else {
       // This is for "Custom Item" where no product is selected
@@ -405,7 +435,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
           quantity: 0,
           unit_price: 0,
           line_total: 0,
-          tax_rate: 0.00, // Default to 0% VAT
+          tax_rate: 0.15, // Default to 15% VAT for consistency with Invoices
         },
       ],
     }));
@@ -473,9 +503,10 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
       return;
     }
 
-    const payload: any = { // Use 'any' temporarily for payload construction
-      ...formData,
-      total_amount: totalAmount,
+    // Prepare payload
+    const payload: Omit<QuotationFormData, 'customer_name_manual'> & { customer_name?: string; total_amount: number; } = {
+        ...formData,
+        total_amount: totalAmount,
     };
 
     // Corrected logic for customer_id vs customer_name
@@ -549,6 +580,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
               size="icon"
               onClick={onClose}
               className="rounded-full"
+              disabled={isLoading}
             >
               <ChevronLeft className="h-6 w-6" />
             </Button>
@@ -602,7 +634,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
                           <div
                             key={customer.id}
                             className="px-4 py-2 cursor-pointer hover:bg-gray-100"
-                            onMouseDown={() => handleCustomerSuggestionClick(customer)}
+                            onMouseDown={(e) => { e.preventDefault(); handleCustomerSuggestionClick(customer); }} // Prevent blurring on click
                           >
                             {customer.name}
                           </div>
@@ -611,7 +643,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
                           !customerSuggestions.some(c => c.name.toLowerCase() === customerSearchQuery.toLowerCase()) && (
                             <div
                               className="px-4 py-2 cursor-pointer hover:bg-gray-100 border-t"
-                              onMouseDown={() => handleCustomerSuggestionClick('free-text-entry')}
+                              onMouseDown={(e) => { e.preventDefault(); handleCustomerSuggestionClick('free-text-entry'); }} // Prevent blurring on click
                             >
                               Use "{customerSearchQuery}" (New Customer)
                             </div>
@@ -621,7 +653,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
                       customerSearchQuery.length >= 2 && !isSearchingCustomers && (
                         <div
                           className="px-4 py-2 cursor-pointer hover:bg-gray-100"
-                          onMouseDown={() => handleCustomerSuggestionClick('free-text-entry')}
+                          onMouseDown={(e) => { e.preventDefault(); handleCustomerSuggestionClick('free-text-entry'); }} // Prevent blurring on click
                         >
                           No existing customers found. Use "{customerSearchQuery}" as a New Customer
                         </div>
@@ -676,18 +708,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label htmlFor='currency'>Currency</Label>
-              <Input
-                id='currency'
-                name='currency'
-                value={formData.currency}
-                onChange={handleInputChange}
-                placeholder='e.g., ZAR'
-                required
-                disabled={!isAuthenticated || isLoading}
-              />
-            </div>
+
           </div>
         </CardContent>
       </Card>
@@ -718,7 +739,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
         </CardHeader>
         <CardContent className='space-y-4'>
           {formData.line_items.map((item, index) => (
-            <div key={index} className='grid grid-cols-1 md:grid-cols-6 gap-3 items-end border-b pb-4 last:border-b-0 last:pb-0'>
+            <div key={item.id || index} className='grid grid-cols-1 md:grid-cols-6 gap-3 items-end border-b pb-4 last:border-b-0 last:pb-0'>
               <div className='md:col-span-2'>
                 <Label htmlFor={`product_service_id-${index}`}>Product/Service</Label>
                 <Select

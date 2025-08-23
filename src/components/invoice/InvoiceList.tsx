@@ -11,7 +11,21 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
-import { Plus, Search, Eye, Edit, FileText, Trash2, Loader2, Mail, Download } from 'lucide-react'; // Added Download icon
+import {
+    Plus,
+    Search,
+    Eye,
+    Edit,
+    FileText,
+    Trash2,
+    Loader2,
+    Mail,
+    Download,
+    CheckCircle, // Added for 'Paid' status
+    XOctagon, // Added for 'Overdue' status
+    Clock, // Added for 'Sent' status (or 'Draft')
+    MoreVertical // Added for dropdown menu trigger
+} from 'lucide-react';
 import {
     Dialog,
     DialogContent,
@@ -33,7 +47,17 @@ import {
 } from '@/components/ui/alert-dialog';
 import { InvoiceForm } from './InvoiceForm';
 import { useToast } from '@/components/ui/use-toast';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea'; 
 import { useAuth } from '../../AuthPage'; // Import useAuth
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'; // Import DropdownMenu components
 
 const API_BASE_URL = 'https://quantnow.onrender.com';
 
@@ -70,6 +94,21 @@ interface Customer {
     email: string;
 }
 
+// NEW: User Profile Interface (copied from QuotationList)
+interface UserProfile {
+    company?: string | null;
+    email?: string | null;
+    address?: string | null;
+    city?: string | null;
+    province?: string | null;
+    postal_code?: string | null;
+    country?: string | null;
+    phone?: string | null;
+    vat_number?: string | null;
+    reg_number?: string | null;
+    contact_person?: string | null;
+}
+
 export function InvoiceList() {
     const { toast } = useToast();
     const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -80,18 +119,58 @@ export function InvoiceList() {
     const [invoiceToDelete, setInvoiceToDelete] = useState<string | null>(null);
     const [isLoadingList, setIsLoadingList] = useState(true);
     const [isFormLoading, setIsFormLoading] = useState(false);
-    
-    // CHANGED: To track the specific invoice ID being emailed/downloaded
+    const [userProfile, setUserProfile] = useState<UserProfile | null>(null); // NEW: State for user profile
+    const [isLoadingProfile, setIsLoadingProfile] = useState(false); // NEW: Loading state for profile
+
+    // To track the specific invoice ID being emailed/downloaded
     const [emailProcessingInvoiceId, setEmailProcessingInvoiceId] = useState<string | null>(null);
     const [downloadProcessingInvoiceId, setDownloadProcessingInvoiceId] = useState<string | null>(null);
 
-    // NEW STATES FOR EMAIL MODAL
+    // NEW STATES FOR EMAIL MODAL (aligned with QuotationList)
     const [showSendEmailModal, setShowSendEmailModal] = useState(false);
     const [emailRecipient, setEmailRecipient] = useState<string>('');
+    const [emailSubject, setEmailSubject] = useState(''); // Added for subject
+    const [emailBody, setEmailBody] = useState('');     // Added for body
     const [invoiceToSendEmail, setInvoiceToSendEmail] = useState<Invoice | null>(null);
 
     const { isAuthenticated } = useAuth(); // Get authentication status
     const token = localStorage.getItem('token'); // Retrieve the token
+
+    // NEW: Function to fetch user profile (Company details for PDF/Email) (copied from QuotationList)
+    const fetchUserProfile = useCallback(async () => {
+        if (!token) {
+            console.warn('No token found. User is not authenticated for profile.');
+            setUserProfile(null);
+            setIsLoadingProfile(false);
+            return;
+        }
+
+        setIsLoadingProfile(true);
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/profile`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.message || 'Failed to fetch user profile');
+            }
+            const data: UserProfile = await response.json();
+            console.log('Fetched User Profile:', data); // Log the fetched data
+            setUserProfile(data);
+        } catch (error: any) {
+            console.error('Error fetching user profile:', error);
+            toast({
+                title: 'Profile Load Error',
+                description: error.message || 'Failed to load company profile. PDF and email features may be limited.',
+                variant: 'destructive',
+            });
+        } finally {
+            setIsLoadingProfile(false);
+        }
+    }, [toast, token]);
 
     const fetchInvoices = useCallback(async () => {
         if (!token) {
@@ -135,13 +214,41 @@ export function InvoiceList() {
     useEffect(() => {
         if (isAuthenticated && token) {
             fetchInvoices();
+            fetchUserProfile(); // NEW: Fetch profile on mount
         } else {
             setInvoices([]);
+            setUserProfile(null); // Clear profile if not authenticated
             setIsLoadingList(false);
+            setIsLoadingProfile(false); // Also reset profile loading
         }
-    }, [fetchInvoices, isAuthenticated, token]); // Add isAuthenticated and token to dependencies
+    }, [fetchInvoices, fetchUserProfile, isAuthenticated, token]); // Add isAuthenticated and token to dependencies
 
-    const getStatusColor = (status: string) => {
+    // NEW useEffect for automatic "Overdue" status check
+    useEffect(() => {
+        const checkOverdueDates = async () => {
+            if (!isAuthenticated || !token) return;
+
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // Normalize to start of day
+
+            for (const invoice of invoices) {
+                const dueDate = new Date(invoice.due_date);
+                const dueDay = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate()); // Normalize to start of day
+
+                // If due date has passed and status is not already 'Paid' or 'Overdue'
+                if (dueDay < today && invoice.status !== 'Paid' && invoice.status !== 'Overdue') {
+                    console.log(`Invoice ${invoice.invoice_number} is overdue. Updating status...`);
+                    await handleManualStatusUpdate(invoice.id, 'Overdue', false); // Update without showing toast
+                }
+            }
+        };
+
+        const timer = setTimeout(checkOverdueDates, 5000); // Run after a short delay
+        return () => clearTimeout(timer);
+    }, [invoices, isAuthenticated, token]);
+
+
+    const getStatusColor = (status: Invoice['status']) => { // Use Invoice['status'] for type safety
         switch (status) {
             case 'Paid':
                 return 'bg-green-100 text-green-800';
@@ -291,6 +398,9 @@ export function InvoiceList() {
             }
 
             setEmailRecipient(customerEmail || '');
+            // Pre-fill subject and body, similar to QuotationList
+            setEmailSubject(`Invoice #${invoice.invoice_number} from ${userProfile?.company || 'Your Company'}`);
+            setEmailBody(`Dear ${invoice.customer_name},\n\nPlease find attached your invoice (Invoice ID: #${invoice.invoice_number}).\n\nTotal amount: ${invoice.currency} ${invoice.total_amount.toFixed(2)}\nDue Date: ${new Date(invoice.due_date || '').toLocaleDateString('en-ZA')}\n\nThank you for your business!\n\nSincerely,\n${userProfile?.company || 'Your Company'}\n${userProfile?.contact_person || ''}`);
             setShowSendEmailModal(true);
         } catch (error: any) {
             console.error('Error preparing email:', error);
@@ -305,10 +415,10 @@ export function InvoiceList() {
     };
 
     const confirmSendInvoiceEmail = async () => {
-        if (!invoiceToSendEmail || !emailRecipient) {
+        if (!invoiceToSendEmail || !emailRecipient || !emailSubject || !emailBody) {
             toast({
-                title: 'Error',
-                description: 'No invoice selected or recipient email is missing.',
+                title: 'Missing Information',
+                description: 'Please ensure recipient email, subject, and body are filled.',
                 variant: 'destructive',
             });
             return;
@@ -331,7 +441,11 @@ export function InvoiceList() {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`, // Include the JWT token
                 },
-                body: JSON.stringify({ customerEmail: emailRecipient }),
+                body: JSON.stringify({
+                    recipientEmail: emailRecipient,
+                    subject: emailSubject,
+                    body: emailBody
+                }),
             });
 
             if (!response.ok) {
@@ -345,9 +459,14 @@ export function InvoiceList() {
                 variant: 'default',
             });
 
+            // Automatically update status to 'Sent' after successful email
+            await handleManualStatusUpdate(invoiceToSendEmail.id, 'Sent', false); // Update without showing toast again
+
             fetchInvoices();
             setShowSendEmailModal(false);
             setEmailRecipient('');
+            setEmailSubject('');
+            setEmailBody('');
             setInvoiceToSendEmail(null);
 
         } catch (error: any) {
@@ -362,7 +481,76 @@ export function InvoiceList() {
         }
     };
 
-    // NEW FUNCTION: Handle PDF Download
+    // NEW FUNCTION: Manual status update, fetches full invoice before updating (similar to QuotationList)
+    const handleManualStatusUpdate = useCallback(async (invoiceId: string, newStatus: Invoice['status'], showToast: boolean = true) => {
+        if (!token) {
+            console.warn('No token found. Cannot update status.');
+            if (showToast) {
+                toast({
+                    title: 'Authentication Error',
+                    description: 'You are not authenticated. Please log in to update invoice status.',
+                    variant: 'destructive',
+                });
+            }
+            return false;
+        }
+
+        try {
+            // First, fetch the full invoice details to ensure all required fields are present
+            const fetchResponse = await fetch(`${API_BASE_URL}/api/invoices/${invoiceId}`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+            if (!fetchResponse.ok) {
+                const errorData = await fetchResponse.json();
+                throw new Error(errorData.error || 'Failed to fetch invoice details for status update.');
+            }
+            const detailedInvoice: Invoice = await fetchResponse.json();
+
+            // Now, update the status on the fetched object
+            const updatedInvoice = { ...detailedInvoice, status: newStatus };
+
+            // Send the complete, updated invoice object
+            const response = await fetch(`${API_BASE_URL}/api/invoices/${invoiceId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify(updatedInvoice), // Send the full updated object
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to update invoice status.');
+            }
+
+            if (showToast) {
+                toast({
+                    title: 'Status Updated',
+                    description: `Invoice status updated to ${newStatus}.`,
+                    variant: 'default',
+                });
+            }
+            fetchInvoices(); // Refresh the list
+            return true;
+        } catch (error: any) {
+            console.error('Error updating invoice status:', error);
+            if (showToast) {
+                toast({
+                    title: 'Status Update Failed',
+                    description: error.message || `Failed to update status to ${newStatus}. Please try again.`,
+                    variant: 'destructive',
+                });
+            }
+            return false;
+        }
+    }, [fetchInvoices, toast, token]);
+
+
+    // NEW FUNCTION: Handle PDF Download (copied from QuotationList)
     const handleDownloadInvoice = async (invoiceId: string, invoiceNumber: string) => {
         if (!token) {
             console.warn('No token found. Cannot download PDF.');
@@ -537,14 +725,14 @@ export function InvoiceList() {
                                     <TableHead>Date</TableHead>
                                     <TableHead>Due Date</TableHead>
                                     <TableHead>Amount</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead>Actions</TableHead>
+                                    {/* Removed Status TableHead */}
+                                    <TableHead className='text-left'>Actions</TableHead> {/* Adjusted alignment */}
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {filteredInvoices.length === 0 ? (
                                     <TableRow>
-                                        <TableCell colSpan={7} className='text-center py-8 text-muted-foreground'>
+                                        <TableCell colSpan={6} className='text-center py-8 text-muted-foreground'> {/* Adjusted colSpan */}
                                             No invoices found.
                                         </TableCell>
                                     </TableRow>
@@ -561,12 +749,8 @@ export function InvoiceList() {
                                                     minimumFractionDigits: 2,
                                                 })}
                                             </TableCell>
-                                            <TableCell>
-                                                <Badge variant='secondary' className={getStatusColor(invoice.status)}>
-                                                    {invoice.status.toUpperCase()}
-                                                </Badge>
-                                            </TableCell>
-                                            <TableCell>
+                                            {/* Removed Status TableCell */}
+                                            <TableCell className='text-left'> {/* Adjusted alignment to left */}
                                                 <div className='flex items-center gap-2'>
                                                     <Button variant='ghost' size='sm' onClick={() => handleViewInvoiceClick(invoice)}>
                                                         <Eye className='h-4 w-4' />
@@ -575,12 +759,11 @@ export function InvoiceList() {
                                                         <Edit className='h-4 w-4' />
                                                     </Button>
 
-                                                    {/* UPDATED Send Email Button */}
                                                     <Button
                                                         variant='ghost'
                                                         size='sm'
                                                         onClick={() => promptSendInvoiceEmail(invoice)}
-                                                        disabled={emailProcessingInvoiceId === invoice.id} // Only disable this specific button
+                                                        disabled={isLoadingProfile || emailProcessingInvoiceId === invoice.id}
                                                     >
                                                         {emailProcessingInvoiceId === invoice.id ? (
                                                             <Loader2 className='h-4 w-4 animate-spin' />
@@ -589,10 +772,40 @@ export function InvoiceList() {
                                                         )}
                                                     </Button>
 
+                                                    {/* NEW: Manual Status Dropdown Trigger now displays status and color */}
+                                                    <DropdownMenu>
+                                                        <DropdownMenuTrigger asChild>
+                                                            {/* Apply the status color class directly to the button */}
+                                                            <Button
+                                                                variant='outline'
+                                                                size='sm'
+                                                                className={`flex items-center gap-1 ${getStatusColor(invoice.status)}`}
+                                                            >
+                                                                {invoice.status.toUpperCase()} <MoreVertical className='h-4 w-4' />
+                                                            </Button>
+                                                        </DropdownMenuTrigger>
+                                                        <DropdownMenuContent align='end'>
+                                                            <DropdownMenuLabel>Change Status</DropdownMenuLabel>
+                                                            <DropdownMenuSeparator />
+                                                            <DropdownMenuItem onClick={() => handleManualStatusUpdate(invoice.id, 'Draft')}>
+                                                                <FileText className='mr-2 h-4 w-4' /> Draft
+                                                            </DropdownMenuItem>
+                                                            <DropdownMenuItem onClick={() => handleManualStatusUpdate(invoice.id, 'Sent')}>
+                                                                <Mail className='mr-2 h-4 w-4' /> Sent
+                                                            </DropdownMenuItem>
+                                                            <DropdownMenuItem onClick={() => handleManualStatusUpdate(invoice.id, 'Paid')}>
+                                                                <CheckCircle className='mr-2 h-4 w-4 text-green-600' /> Paid
+                                                            </DropdownMenuItem>
+                                                            <DropdownMenuItem onClick={() => handleManualStatusUpdate(invoice.id, 'Overdue')}>
+                                                                <XOctagon className='mr-2 h-4 w-4 text-red-600' /> Overdue
+                                                            </DropdownMenuItem>
+                                                        </DropdownMenuContent>
+                                                    </DropdownMenu>
+
                                                     <AlertDialog>
                                                         <AlertDialogTrigger asChild>
                                                             <Button variant='ghost' size='sm' onClick={() => confirmDeleteInvoice(invoice.id)}>
-                                                                <Trash2 className='h-4 w-4' />
+                                                                <Trash2 className='h-4 w-4 text-red-500' />
                                                             </Button>
                                                         </AlertDialogTrigger>
                                                         <AlertDialogContent>
@@ -635,6 +848,7 @@ export function InvoiceList() {
                                     <p>
                                         <strong>Customer:</strong> {selectedInvoice.customer_name}
                                     </p>
+                                    {selectedInvoice.customer_email && <p><strong>Customer Email:</strong> {selectedInvoice.customer_email}</p>}
                                     <p>
                                         <strong>Invoice Date:</strong> {new Date(selectedInvoice.invoice_date).toLocaleDateString('en-ZA')}
                                     </p>
@@ -703,7 +917,7 @@ export function InvoiceList() {
                             Select an invoice to view its details.
                         </div>
                     )}
-                    {/* NEW: Download Button in DialogFooter */}
+                    {/* Download Button in DialogFooter */}
                     <DialogFooter>
                         <Button
                             variant="outline"
@@ -713,7 +927,7 @@ export function InvoiceList() {
                         </Button>
                         <Button
                             onClick={() => selectedInvoice && handleDownloadInvoice(selectedInvoice.id, selectedInvoice.invoice_number)}
-                            disabled={!selectedInvoice || downloadProcessingInvoiceId === selectedInvoice?.id} // Disable if no invoice selected or currently downloading
+                            disabled={!selectedInvoice || downloadProcessingInvoiceId === selectedInvoice?.id}
                         >
                             {downloadProcessingInvoiceId === selectedInvoice?.id ? (
                                 <Loader2 className='h-4 w-4 animate-spin mr-2' />
@@ -726,42 +940,71 @@ export function InvoiceList() {
                 </DialogContent>
             </Dialog>
 
-            {/* NEW: Send Email Confirmation Modal */}
+            {/* Send Email Confirmation Modal */}
             <Dialog open={showSendEmailModal} onOpenChange={(open) => {
                 setShowSendEmailModal(open);
                 if (!open) {
                     setEmailRecipient('');
+                    setEmailSubject('');
+                    setEmailBody('');
                     setInvoiceToSendEmail(null);
                 }
             }}>
-                <DialogContent>
+                <DialogContent className='sm:max-w-[425px]'>
                     <DialogHeader>
                         <DialogTitle>Send Invoice #{invoiceToSendEmail?.invoice_number}</DialogTitle>
                         <DialogDescription>
-                            Enter the email address to send this invoice to.
+                            Compose and send this invoice via email.
                         </DialogDescription>
                     </DialogHeader>
-                    <div className="py-4">
-                        <Input
-                            id="email"
-                            type="email"
-                            placeholder="recipient@example.com"
-                            value={emailRecipient}
-                            onChange={(e) => setEmailRecipient(e.target.value)}
-                            className="col-span-3"
-                        />
+                    <div className="grid gap-4 py-4">
+                        <div className='grid grid-cols-4 items-center gap-4'>
+                            <Label htmlFor="recipient" className='text-right'>
+                                Recipient
+                            </Label>
+                            <Input
+                                id="recipient"
+                                type="email"
+                                placeholder="recipient@example.com"
+                                value={emailRecipient}
+                                onChange={(e) => setEmailRecipient(e.target.value)}
+                                className="col-span-3"
+                            />
+                        </div>
+                        <div className='grid grid-cols-4 items-center gap-4'>
+                            <Label htmlFor="subject" className='text-right'>
+                                Subject
+                            </Label>
+                            <Input
+                                id="subject"
+                                value={emailSubject}
+                                onChange={(e) => setEmailSubject(e.target.value)}
+                                className="col-span-3"
+                            />
+                        </div>
+                        <div className='grid grid-cols-4 items-center gap-4'>
+                            <Label htmlFor="body" className='text-right'>
+                                Body
+                            </Label>
+                            <Textarea
+                                id="body"
+                                value={emailBody}
+                                onChange={(e) => setEmailBody(e.target.value)}
+                                className="col-span-3 min-h-[150px]"
+                            />
+                        </div>
                     </div>
                     <DialogFooter>
                         <Button
                             variant="outline"
                             onClick={() => setShowSendEmailModal(false)}
-                            disabled={emailProcessingInvoiceId !== null} // Disable if any email operation is in progress
+                            disabled={emailProcessingInvoiceId !== null}
                         >
                             Cancel
                         </Button>
                         <Button
                             onClick={confirmSendInvoiceEmail}
-                            disabled={emailProcessingInvoiceId !== null || !emailRecipient || !invoiceToSendEmail} // Disable if any email operation in progress or input missing
+                            disabled={emailProcessingInvoiceId !== null || !emailRecipient || !emailSubject || !emailBody || !invoiceToSendEmail}
                         >
                             {emailProcessingInvoiceId !== null ? (
                                 <Loader2 className='h-4 w-4 animate-spin mr-2' />
