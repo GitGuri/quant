@@ -107,6 +107,7 @@ interface UserProfile {
     vat_number?: string | null;
     reg_number?: string | null;
     contact_person?: string | null;
+     company_logo_url?: string | null;
 }
 
 export function InvoiceList() {
@@ -366,120 +367,129 @@ export function InvoiceList() {
         }
     };
 
-    const promptSendInvoiceEmail = async (invoice: Invoice) => {
-        if (!token) {
-            console.warn('No token found. Cannot prepare email.');
-            toast({
-                title: 'Authentication Error',
-                description: 'You are not authenticated. Please log in to send emails.',
-                variant: 'destructive',
-            });
-            return;
-        }
+const promptSendInvoiceEmail = async (invoice: Invoice) => {
+    if (!token) {
+        console.warn('No token found. Cannot prepare email.');
+        toast({
+            title: 'Authentication Error',
+            description: 'You are not authenticated. Please log in to send emails.',
+            variant: 'destructive',
+        });
+        return;
+    }
 
-        setInvoiceToSendEmail(invoice);
-        setEmailProcessingInvoiceId(invoice.id); // Set the specific ID for processing
-        try {
-            let customerEmail = invoice.customer_email;
+    setInvoiceToSendEmail(invoice);
+    setEmailProcessingInvoiceId(invoice.id);
+    try {
+        let customerEmail = invoice.customer_email;
 
-            if (!customerEmail) {
-                const customerResponse = await fetch(`${API_BASE_URL}/api/customers/${invoice.customer_id}`, {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`, // Include the JWT token
-                    },
-                });
-                if (!customerResponse.ok) {
-                    const errorData = await customerResponse.json();
-                    throw new Error(errorData.error || `Failed to fetch customer details for ${invoice.customer_name}`);
-                }
-                const customerData: Customer = await customerResponse.json();
-                customerEmail = customerData.email;
-            }
-
-            setEmailRecipient(customerEmail || '');
-            // Pre-fill subject and body, similar to QuotationList
-            setEmailSubject(`Invoice #${invoice.invoice_number} from ${userProfile?.company || 'Your Company'}`);
-            setEmailBody(`Dear ${invoice.customer_name},\n\nPlease find attached your invoice (Invoice ID: #${invoice.invoice_number}).\n\nTotal amount: ${invoice.currency} ${invoice.total_amount.toFixed(2)}\nDue Date: ${new Date(invoice.due_date || '').toLocaleDateString('en-ZA')}\n\nThank you for your business!\n\nSincerely,\n${userProfile?.company || 'Your Company'}\n${userProfile?.contact_person || ''}`);
-            setShowSendEmailModal(true);
-        } catch (error: any) {
-            console.error('Error preparing email:', error);
-            toast({
-                title: 'Error',
-                description: error.message || 'Failed to prepare email. Please try again.',
-                variant: 'destructive',
-            });
-        } finally {
-            setEmailProcessingInvoiceId(null); // Reset the specific ID
-        }
-    };
-
-    const confirmSendInvoiceEmail = async () => {
-        if (!invoiceToSendEmail || !emailRecipient || !emailSubject || !emailBody) {
-            toast({
-                title: 'Missing Information',
-                description: 'Please ensure recipient email, subject, and body are filled.',
-                variant: 'destructive',
-            });
-            return;
-        }
-        if (!token) {
-            console.warn('No token found. Cannot send email.');
-            toast({
-                title: 'Authentication Error',
-                description: 'You are not authenticated. Please log in to send emails.',
-                variant: 'destructive',
-            });
-            return;
-        }
-
-        setEmailProcessingInvoiceId(invoiceToSendEmail.id); // Set the ID for the sending process
-        try {
-            const response = await fetch(`${API_BASE_URL}/api/invoices/${invoiceToSendEmail.id}/send-pdf-email`, {
-                method: 'POST',
+        if (!customerEmail) {
+            const customerResponse = await fetch(`${API_BASE_URL}/api/customers/${invoice.customer_id}`, {
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`, // Include the JWT token
+                    'Authorization': `Bearer ${token}`,
                 },
-                body: JSON.stringify({
-                    recipientEmail: emailRecipient,
-                    subject: emailSubject,
-                    body: emailBody
-                }),
             });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Failed to send invoice email.');
+            if (!customerResponse.ok) {
+                const errorData = await customerResponse.json();
+                throw new Error(errorData.error || `Failed to fetch customer details for ${invoice.customer_name}`);
             }
-
-            toast({
-                title: 'Email Sent!',
-                description: `Invoice #${invoiceToSendEmail.invoice_number} sent successfully to ${emailRecipient}.`,
-                variant: 'default',
-            });
-
-            // Automatically update status to 'Sent' after successful email
-            await handleManualStatusUpdate(invoiceToSendEmail.id, 'Sent', false); // Update without showing toast again
-
-            fetchInvoices();
-            setShowSendEmailModal(false);
-            setEmailRecipient('');
-            setEmailSubject('');
-            setEmailBody('');
-            setInvoiceToSendEmail(null);
-
-        } catch (error: any) {
-            console.error('Error sending invoice email:', error);
-            toast({
-                title: 'Email Failed',
-                description: error.message || `Failed to send invoice #${invoiceToSendEmail.invoice_number}. Please try again.`,
-                variant: 'destructive',
-            });
-        } finally {
-            setEmailProcessingInvoiceId(null); // Clear the specific ID after send attempt
+            const customerData: Customer = await customerResponse.json();
+            customerEmail = customerData.email;
         }
-    };
+
+        if (!customerEmail) {
+            // New specific error for missing customer email
+            throw new Error(`Customer email not found for ${invoice.customer_name}. Please add it before sending the invoice.`);
+        }
+
+        setEmailRecipient(customerEmail || '');
+        setEmailSubject(`Invoice #${invoice.invoice_number} from ${userProfile?.company || 'Your Company'}`);
+        setEmailBody(`Dear ${invoice.customer_name},\n\nPlease find attached your invoice (Invoice ID: #${invoice.invoice_number}).\n\nTotal amount: ${invoice.currency} ${invoice.total_amount.toFixed(2)}\nDue Date: ${new Date(invoice.due_date || '').toLocaleDateString('en-ZA')}\n\nThank you for your business!\n\nSincerely,\n${userProfile?.company || 'Your Company'}\n${userProfile?.contact_person || ''}`);
+        setShowSendEmailModal(true);
+    } catch (error: any) {
+        console.error('Error preparing email:', error);
+        toast({
+            title: 'Error',
+            description: error.message || 'Failed to prepare email. Please try again.',
+            variant: 'destructive',
+        });
+    } finally {
+        setEmailProcessingInvoiceId(null);
+    }
+};
+
+const confirmSendInvoiceEmail = async () => {
+    // This new validation block prevents the API call if required fields are missing.
+    // This is the key fix that prevents the 400 Bad Request error.
+    if (!invoiceToSendEmail || !emailRecipient || !emailSubject || !emailBody) {
+        toast({
+            title: 'Missing Information',
+            description: 'Please ensure recipient email, subject, and body are filled.',
+            variant: 'destructive',
+        });
+        return;
+    }
+
+    if (!token) {
+        console.warn('No token found. Cannot send email.');
+        toast({
+            title: 'Authentication Error',
+            description: 'You are not authenticated. Please log in to send emails.',
+            variant: 'destructive',
+        });
+        return;
+    }
+
+    setEmailProcessingInvoiceId(invoiceToSendEmail.id);
+    try {
+    const response = await fetch(`${API_BASE_URL}/api/invoices/${invoiceToSendEmail.id}/send-pdf-email`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            customerEmail: emailRecipient, // <-- Corrected name here
+            subject: emailSubject,
+            body: emailBody,
+        }),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to send invoice email.');
+    }
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to send invoice email.');
+        }
+
+        toast({
+            title: 'Email Sent!',
+            description: `Invoice #${invoiceToSendEmail.invoice_number} sent successfully to ${emailRecipient}.`,
+            variant: 'default',
+        });
+
+        await handleManualStatusUpdate(invoiceToSendEmail.id, 'Sent', false);
+
+        fetchInvoices();
+        setShowSendEmailModal(false);
+        setEmailRecipient('');
+        setEmailSubject('');
+        setEmailBody('');
+        setInvoiceToSendEmail(null);
+    } catch (error: any) {
+        console.error('Error sending invoice email:', error);
+        toast({
+            title: 'Email Failed',
+            description: error.message || `Failed to send invoice #${invoiceToSendEmail.invoice_number}. Please try again.`,
+            variant: 'destructive',
+        });
+    } finally {
+        setEmailProcessingInvoiceId(null);
+    }
+};
 
     // NEW FUNCTION: Manual status update, fetches full invoice before updating (similar to QuotationList)
     const handleManualStatusUpdate = useCallback(async (invoiceId: string, newStatus: Invoice['status'], showToast: boolean = true) => {
@@ -564,11 +574,16 @@ export function InvoiceList() {
 
         setDownloadProcessingInvoiceId(invoiceId); // Set the ID for the download process
         try {
-            const response = await fetch(`${API_BASE_URL}/api/invoices/${invoiceId}/pdf`, {
-                headers: {
-                    'Authorization': `Bearer ${token}`, // Include the JWT token
-                },
-            });
+        const response = await fetch(`${API_BASE_URL}/api/invoices/${invoiceId}/pdf`, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json', // Set Content-Type for the body
+            },
+            method: 'POST', // Change to POST to send the body
+            body: JSON.stringify({
+                userProfile, // Pass the entire user profile object
+            }),
+        });
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.error || 'Failed to download invoice PDF.');
