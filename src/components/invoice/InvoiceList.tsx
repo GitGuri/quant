@@ -561,61 +561,60 @@ const confirmSendInvoiceEmail = async () => {
 
 
     // NEW FUNCTION: Handle PDF Download (copied from QuotationList)
-    const handleDownloadInvoice = async (invoiceId: string, invoiceNumber: string) => {
-        if (!token) {
-            console.warn('No token found. Cannot download PDF.');
-            toast({
-                title: 'Authentication Error',
-                description: 'You are not authenticated. Please log in to download PDFs.',
-                variant: 'destructive',
-            });
-            return;
-        }
+const handleDownloadInvoice = async (invoiceId: string, invoiceNumber: string) => {
+  if (!token) {
+    console.warn('No token found. Cannot download PDF.');
+    toast({
+      title: 'Authentication Error',
+      description: 'You are not authenticated. Please log in to download PDFs.',
+      variant: 'destructive',
+    });
+    return;
+  }
 
-        setDownloadProcessingInvoiceId(invoiceId); // Set the ID for the download process
-        try {
-        const response = await fetch(`${API_BASE_URL}/api/invoices/${invoiceId}/pdf`, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json', // Set Content-Type for the body
-            },
-            method: 'POST', // Change to POST to send the body
-            body: JSON.stringify({
-                userProfile, // Pass the entire user profile object
-            }),
-        });
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Failed to download invoice PDF.');
-            }
+  setDownloadProcessingInvoiceId(invoiceId);
+  try {
+    // NOTE: Server expects GET /api/:documentType/:id/pdf
+    // Using 'invoices' for :documentType matches your server route.
+    const response = await fetch(`${API_BASE_URL}/api/invoices/${invoiceId}/pdf`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
 
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `invoice_${invoiceNumber}.pdf`; // Dynamic filename
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(url); // Clean up the URL
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(errText || 'Failed to download invoice PDF.');
+    }
 
-            toast({
-                title: 'Download Started',
-                description: `Invoice #${invoiceNumber} is downloading...`,
-                variant: 'default',
-            });
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `invoice_${invoiceNumber}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
 
-        } catch (error: any) {
-            console.error('Error downloading invoice:', error);
-            toast({
-                title: 'Download Failed',
-                description: error.message || 'Failed to download invoice. Please try again.',
-                variant: 'destructive',
-            });
-        } finally {
-            setDownloadProcessingInvoiceId(null); // Clear the specific ID after download attempt
-        }
-    };
+    toast({
+      title: 'Download Started',
+      description: `Invoice #${invoiceNumber} is downloading...`,
+      variant: 'default',
+    });
+  } catch (error: any) {
+    console.error('Error downloading invoice:', error);
+    toast({
+      title: 'Download Failed',
+      description: error.message || 'Failed to download invoice. Please try again.',
+      variant: 'destructive',
+    });
+  } finally {
+    setDownloadProcessingInvoiceId(null);
+  }
+};
+
 
     const confirmDeleteInvoice = (invoiceId: string) => {
         setInvoiceToDelete(invoiceId);
