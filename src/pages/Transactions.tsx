@@ -25,13 +25,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Edit, Printer, FileText, Trash2, AlertTriangle } from 'lucide-react'; // Import AlertTriangle for duplicate icon
+import { Edit, Printer, FileText, Trash2, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../AuthPage';
 
 // Define an interface for your transaction data
 interface Transaction {
   id: string;
-  type: string; // 'income' or 'expense'
+  type: string;
   amount: number | string;
   description: string;
   date: string; // Stored as YYYY-MM-DD
@@ -39,8 +39,8 @@ interface Transaction {
   account_id: string | null;
   account_name: string | null;
   created_at: string;
-  // Optional: Add fields that might help in duplicate detection if available from backend
-  // potential_duplicate?: boolean; // This could be set by backend or frontend logic
+  // Optional flag for potential duplicates
+  potential_duplicate?: boolean;
 }
 
 // Interface for Account
@@ -48,7 +48,7 @@ interface Account {
   id: string;
   code: string;
   name: string;
-  type: string; // e.g., 'Asset', 'Liability', 'Equity', 'Revenue', 'Expense'
+  type: string;
 }
 
 const Transactions = () => {
@@ -63,17 +63,19 @@ const Transactions = () => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [editFormData, setEditFormData] = useState<any>({});
-  
-  // NEW: State for the search term within the edit modal's account list
-  const [editAccountSearchTerm, setEditAccountSearchTerm] = useState('');
 
-  // NEW: State for duplicate filter
+  const [editAccountSearchTerm, setEditAccountSearchTerm] = useState('');
   const [duplicateFilter, setDuplicateFilter] = useState<'all' | 'potential'>('all');
+
+  // --- STATE FOR MULTI-SELECT ---
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<string>>(new Set());
+  // --- States for "Select All" checkbox ---
+  const [isSelectAllChecked, setIsSelectAllChecked] = useState(false);
+  const [isSelectAllIndeterminate, setIsSelectAllIndeterminate] = useState(false);
 
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
 
-  // Callback to fetch transactions
   const fetchTransactions = useCallback(async () => {
     if (!token) {
       console.warn('No token found. User is not authenticated.');
@@ -85,7 +87,6 @@ const Transactions = () => {
     setLoading(true);
     let queryParams = new URLSearchParams();
 
-    // Handle account filter
     if (selectedAccountFilter !== 'all') {
       if (selectedAccountFilter === 'revenue_accounts') {
         queryParams.append('accountType', 'Revenue');
@@ -115,12 +116,11 @@ const Transactions = () => {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       const data: Transaction[] = await response.json();
-      
-      // NEW: Add potential duplicate flag based on simple frontend logic
-      // This is a basic example. You might want more sophisticated logic or backend support.
       const transactionsWithDuplicatesFlag = addPotentialDuplicateFlags(data);
-      
       setTransactions(transactionsWithDuplicatesFlag);
+
+      // --- Clear selection when transactions change ---
+      setSelectedTransactionIds(new Set());
     } catch (error) {
       console.error('Error fetching transactions:', error);
     } finally {
@@ -128,14 +128,10 @@ const Transactions = () => {
     }
   }, [selectedAccountFilter, searchTerm, fromDate, toDate, token]);
 
-  // NEW: Function to add potential duplicate flags
   const addPotentialDuplicateFlags = (transactions: Transaction[]): Transaction[] => {
-    // Create a map to group transactions by date and amount
     const transactionGroups: Record<string, Transaction[]> = {};
 
     transactions.forEach(transaction => {
-      // Create a key based on date and amount (rounded to 2 decimal places)
-      // You can adjust the key to include other factors like description similarity
       const key = `${transaction.date}_${parseFloat(transaction.amount as string).toFixed(2)}`;
       if (!transactionGroups[key]) {
         transactionGroups[key] = [];
@@ -143,11 +139,9 @@ const Transactions = () => {
       transactionGroups[key].push(transaction);
     });
 
-    // Add potential_duplicate flag to transactions that appear more than once in a group
     return transactions.map(transaction => {
       const key = `${transaction.date}_${parseFloat(transaction.amount as string).toFixed(2)}`;
       const group = transactionGroups[key];
-      // Mark as potential duplicate if there's more than one transaction in the group
       const isPotentialDuplicate = group && group.length > 1;
       return { ...transaction, potential_duplicate: isPotentialDuplicate };
     });
@@ -169,6 +163,7 @@ const Transactions = () => {
         return;
       }
       try {
+        // Note: Fixed extra spaces in the URL
         const response = await fetch('https://quantnow.onrender.com/accounts', {
           headers: {
             'Content-Type': 'application/json',
@@ -206,31 +201,80 @@ const Transactions = () => {
     setIsEditModalOpen(true);
     setEditAccountSearchTerm('');
   };
-  
+
   const handleDeleteClick = async (transactionId: string) => {
     if (!token) {
       alert('You are not authenticated. Please log in.');
       return;
     }
-  
+
     if (window.confirm('Are you sure you want to delete this transaction? This action cannot be undone.')) {
       try {
+        // Note: Fixed extra spaces in the URL
         const response = await fetch(`https://quantnow.onrender.com/transactions/${transactionId}`, {
           method: 'DELETE',
           headers: {
             'Authorization': `Bearer ${token}`,
           },
         });
-  
+
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
-  
+
         alert('Transaction deleted successfully!');
-        fetchTransactions();
+        fetchTransactions(); // Refresh the list
       } catch (error) {
         console.error('Error deleting transaction:', error);
         alert(`Failed to delete transaction: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  };
+
+  // --- NEW: Bulk Delete Handler ---
+  const handleBulkDeleteClick = async () => {
+    if (!token) {
+      alert('You are not authenticated. Please log in.');
+      return;
+    }
+
+    const idsToDelete = Array.from(selectedTransactionIds);
+    if (idsToDelete.length === 0) {
+      alert('No transactions selected for deletion.');
+      return;
+    }
+
+    const confirmMessage = `Are you sure you want to delete ${idsToDelete.length} transaction(s)? This action cannot be undone.`;
+    if (window.confirm(confirmMessage)) {
+      try {
+        setLoading(true); // Indicate processing
+        const deletePromises = idsToDelete.map(id =>
+          fetch(`https://quantnow.onrender.com/transactions/${id}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          })
+        );
+
+        const responses = await Promise.all(deletePromises);
+        const failedDeletes = responses.filter(res => !res.ok);
+
+        if (failedDeletes.length > 0) {
+             console.error('Some deletions failed:', failedDeletes);
+             alert(`Failed to delete ${failedDeletes.length} transaction(s). Please check the console for details.`);
+        } else {
+             alert(`${idsToDelete.length} transaction(s) deleted successfully!`);
+        }
+
+        // Refresh the list and clear selection
+        fetchTransactions();
+        setSelectedTransactionIds(new Set());
+      } catch (error) {
+        console.error('Error during bulk deletion:', error);
+        alert(`An error occurred during bulk deletion: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+         setLoading(false);
       }
     }
   };
@@ -260,8 +304,10 @@ const Transactions = () => {
     }
 
     try {
+      // Note: Endpoint URL seems unusual for an update. Typically PUT/PATCH to /transactions/{id}.
+      // Assuming it's correct as per your backend.
       const response = await fetch(`https://quantnow.onrender.com/transactions/manual`, {
-        method: 'POST',
+        method: 'POST', // Or PUT/PATCH if that's what your backend expects
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
@@ -286,7 +332,6 @@ const Transactions = () => {
       setIsEditModalOpen(false);
       setEditingTransaction(null);
       setEditFormData({});
-
     } catch (error) {
       console.error('Error updating transaction:', error);
       alert(`Failed to update transaction: ${error instanceof Error ? error.message : String(error)}`);
@@ -340,8 +385,7 @@ const Transactions = () => {
   const handlePrint = () => {
     window.print();
   };
-  
-  // NEW: Memoized filtering of accounts for search
+
   const filteredAccounts = useMemo(() => {
     if (!editAccountSearchTerm) {
       return accounts;
@@ -353,13 +397,73 @@ const Transactions = () => {
     );
   }, [accounts, editAccountSearchTerm]);
 
-  // NEW: Filter transactions based on duplicate filter
-  const filteredTransactions = useMemo(() => {
+  // --- MODIFIED: useMemo for filteredTransactions and Select All state ---
+  const { filteredTransactions, isSelectAllChecked: memoizedSelectAllChecked, isSelectAllIndeterminate: memoizedSelectAllIndeterminate } = useMemo(() => {
+    let filtered = transactions;
     if (duplicateFilter === 'potential') {
-      return transactions.filter(t => t.potential_duplicate);
+      filtered = filtered.filter(t => t.potential_duplicate);
     }
-    return transactions;
-  }, [transactions, duplicateFilter]);
+
+    // --- Logic for Select All state based on filtered transactions ---
+    const visibleIds = new Set(filtered.map(t => t.id));
+    const visibleSelectedIds = Array.from(selectedTransactionIds).filter(id => visibleIds.has(id));
+
+    let selectAllChecked = false;
+    let selectAllIndeterminate = false;
+    if (filtered.length > 0 && visibleSelectedIds.length === filtered.length) {
+      selectAllChecked = true;
+    } else if (visibleSelectedIds.length > 0) {
+      selectAllIndeterminate = true; // Some, but not all, are selected
+    }
+    // If visibleSelectedIds.length is 0, both checked and indeterminate remain false
+
+    return {
+      filteredTransactions: filtered,
+      isSelectAllChecked: selectAllChecked,
+      isSelectAllIndeterminate: selectAllIndeterminate
+    };
+  }, [transactions, duplicateFilter, selectedTransactionIds]); // Depend on transactions, filter, and selection
+
+  // Update the main state variables when memoized values change
+  useEffect(() => {
+    setIsSelectAllChecked(memoizedSelectAllChecked);
+    setIsSelectAllIndeterminate(memoizedSelectAllIndeterminate);
+  }, [memoizedSelectAllChecked, memoizedSelectAllIndeterminate]);
+
+  // --- NEW: Handler for individual checkbox change ---
+  const handleTransactionSelect = (transactionId: string) => {
+    setSelectedTransactionIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(transactionId)) {
+        newSet.delete(transactionId);
+      } else {
+        newSet.add(transactionId);
+      }
+      return newSet;
+    });
+  };
+
+  // --- NEW: Handler for "Select All" checkbox change ---
+  const handleSelectAllChange = () => {
+    if (isSelectAllChecked) {
+      // If currently checked, uncheck all visible transactions
+      const visibleIds = new Set(filteredTransactions.map(t => t.id));
+      setSelectedTransactionIds(prev => {
+        const newSet = new Set(prev);
+        visibleIds.forEach(id => newSet.delete(id));
+        return newSet;
+      });
+    } else {
+      // If currently unchecked or indeterminate, check all visible transactions
+      setSelectedTransactionIds(prev => {
+        const newSet = new Set(prev);
+        filteredTransactions.forEach(t => newSet.add(t.id));
+        return newSet;
+      });
+    }
+    // setIsSelectAllChecked and setIsSelectAllIndeterminate will be updated by the useEffect above
+    // which reacts to changes in selectedTransactionIds and filteredTransactions
+  };
 
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
@@ -379,7 +483,6 @@ const Transactions = () => {
           </CardHeader>
           <CardContent>
             <div className="flex flex-wrap gap-4">
-              {/* Account Filter */}
               <div className="flex-1 min-w-[200px]">
                 <Label className='mb-2 block font-medium'>Filter by Account</Label>
                 <Select
@@ -401,7 +504,6 @@ const Transactions = () => {
                 </Select>
               </div>
 
-              {/* NEW: Duplicate Filter */}
               <div className="flex-1 min-w-[200px]">
                 <Label className='mb-2 block font-medium'>Filter by Duplicates</Label>
                 <Select
@@ -447,7 +549,18 @@ const Transactions = () => {
               />
             </div>
           </div>
-          <div className='flex gap-2'>
+          <div className='flex gap-2 items-center'>
+            {/* --- NEW: Bulk Delete Button --- */}
+            {selectedTransactionIds.size > 0 && (
+              <Button
+                variant='destructive'
+                onClick={handleBulkDeleteClick}
+                disabled={loading} // Disable while processing
+              >
+                <Trash2 className='h-4 w-4 mr-2' />
+                Delete Selected ({selectedTransactionIds.size})
+              </Button>
+            )}
             <Button variant='outline' onClick={handleExportCsv}>
               <FileText className='h-4 w-4 mr-2' /> Export CSV
             </Button>
@@ -467,6 +580,21 @@ const Transactions = () => {
               <table className='w-full'>
                 <thead>
                   <tr className='border-b'>
+                    {/* --- NEW: Select All Checkbox Header --- */}
+                    <th className='text-left p-3 w-12'>
+                       <input
+                         type="checkbox"
+                         checked={isSelectAllChecked}
+                         ref={el => {
+                           if (el) {
+                             // Set indeterminate state using the dedicated state variable
+                             el.indeterminate = isSelectAllIndeterminate;
+                           }
+                         }}
+                         onChange={handleSelectAllChange}
+                         aria-label="Select all transactions"
+                       />
+                    </th>
                     <th className='text-left p-3'>Transaction Type</th>
                     <th className='text-left p-3'>Description</th>
                     <th className='text-left p-3'>Date</th>
@@ -479,24 +607,33 @@ const Transactions = () => {
                 <tbody>
                   {loading ? (
                     <tr>
-                      <td colSpan={7} className='text-center py-12 text-muted-foreground'>
+                      <td colSpan={8} className='text-center py-12 text-muted-foreground'> {/* Updated colspan */}
                         Loading transactions...
                       </td>
                     </tr>
-                  ) : filteredTransactions.length === 0 ? ( // Use filteredTransactions
+                  ) : filteredTransactions.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className='text-center py-12 text-muted-foreground'>
+                      <td colSpan={8} className='text-center py-12 text-muted-foreground'> {/* Updated colspan */}
                         No transactions found for the selected criteria
                       </td>
                     </tr>
                   ) : (
-                    filteredTransactions.map(transaction => ( // Use filteredTransactions
-                      <tr 
-                        key={transaction.id} 
+                    filteredTransactions.map(transaction => (
+                      <tr
+                        key={transaction.id}
                         className={`border-b last:border-b-0 hover:bg-muted/50 ${
                           transaction.potential_duplicate ? 'bg-yellow-50 dark:bg-yellow-900/20' : ''
                         }`}
                       >
+                        {/* --- NEW: Individual Transaction Checkbox --- */}
+                        <td className='p-3'>
+                          <input
+                            type="checkbox"
+                            checked={selectedTransactionIds.has(transaction.id)}
+                            onChange={() => handleTransactionSelect(transaction.id)}
+                            aria-label={`Select transaction ${transaction.description}`}
+                          />
+                        </td>
                         <td className='p-3'>
                           <div className="flex items-center gap-2">
                             <Badge variant={transaction.type === 'income' ? 'default' : 'secondary'}>
@@ -620,7 +757,7 @@ const Transactions = () => {
                   <SelectValue placeholder='Select account' />
                 </SelectTrigger>
                 <SelectContent>
-                   <div className="p-2 sticky top-0 bg-background z-10">
+                  <div className="p-2 sticky top-0 bg-background z-10">
                     <Input
                       placeholder="Search accounts..."
                       value={editAccountSearchTerm}

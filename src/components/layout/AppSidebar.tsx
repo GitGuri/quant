@@ -108,7 +108,7 @@ const setupItems: NavigationItem[] = [
   // Added 'user' role
   { title: 'User Management', url: '/user-management', icon: Users, allowedRoles: ['admin', 'ceo', 'user-management', 'user'] },
   // Added 'ceo' and 'user' roles
-  { title: 'Personel Setup', url: '/personel-setup', icon: Users, allowedRoles: ['admin', 'manager', 'personel-setup', 'user', 'ceo'] },
+  { title: 'CRM', url: '/personel-setup', icon: Users, allowedRoles: ['admin', 'manager', 'personel-setup', 'user', 'ceo'] },
   // Added 'ceo' role
   { title: 'Profile Setup', url: '/profile-setup', icon: Settings, allowedRoles: ['admin', 'user', 'profile-setup', 'ceo'] },
 ];
