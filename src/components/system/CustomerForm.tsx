@@ -399,7 +399,7 @@ function CustomerForm({
                                             { label: "Beneficiary Name", span: 3, name: "beneficiary_name", defaultValue: application?.beneficiary_name },
                                             { label: "Surname", span: 3, name: "beneficiary_surname", defaultValue: application?.beneficiary_surname },
                                             { label: "Contact", span: 3, name: "beneficiary_contact", defaultValue: application?.beneficiary_contact },
-                                            { custom: <PayOptions checkedOptions={application?.pay_options} />, span: 3, label: "Premium", name: "premium_block" },
+                                           // { custom: <PayOptions checkedOptions={application?.pay_options} />, span: 3, label: "Premium", name: "premium_block" },
                                         ],
                                         [
                                             { label: "Total Amount (R)", span: 3, name: "total_amount", defaultValue: application?.total_amount?.toString() },
@@ -416,6 +416,9 @@ function CustomerForm({
                                     ]}
                                 />
                             </Section>
+                            <Section title="PAYMENT OPTIONS">
+    <PayOptions checkedOptions={application?.pay_options} />
+</Section>
 
                             {/* Declaration */}
                             <Section title="DECLARATION">
@@ -534,7 +537,7 @@ function CheckRow({ labelLeft, valueRight, name, checked }: { labelLeft: string;
 }
 
 function PayOptions({ checkedOptions }: { checkedOptions?: Record<string, boolean> }) {
-    const payOptions = ["Pay @", "Stop Order", "Cash", "EFT"];
+    const payOptions = ["Pay @", "Debit Order"];
     return (
         <div className="px-1 py-[2px]">
             <div className="text-[9px] text-gray-600 mb-[2px]">Debit Order</div>
