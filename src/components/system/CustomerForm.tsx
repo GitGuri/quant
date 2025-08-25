@@ -254,9 +254,7 @@ function CustomerForm({
                 <Button type="button" variant="outline" onClick={() => (onCancel ? onCancel() : window.history.back())}>
                     Cancel
                 </Button>
-                <Button type="button" variant="outline" onClick={() => window.print()}>
-                    Print / Download PDF
-                </Button>
+
                 <Button type="submit">{application ? "Update" : "Create"} Application</Button>
             </div>
 
