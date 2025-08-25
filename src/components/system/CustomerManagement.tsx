@@ -106,10 +106,14 @@ interface ExtendedFamilyMember {
     premium: number;
 }
 
+// NOTE: The Application interface now includes firstName and lastName for compatibility
+// when passing to CustomerForm, which uses these fields for the main applicant.
 interface Application {
     id: string;
-    name: string;
-    surname: string;
+    name: string; // From backend
+    surname: string; // From backend
+    firstName: string; // Mapped for CustomerForm
+    lastName: string; // Mapped for CustomerForm
     phone: string;
     email: string;
     address?: string;
@@ -265,7 +269,13 @@ export function CustomerManagement() {
             }
             
             const data: Application[] = await response.json();
-            setApplications(data);
+            // Map 'name' and 'surname' from backend to 'firstName' and 'lastName' for CustomerForm compatibility
+            const mappedData = data.map(app => ({
+                ...app,
+                firstName: app.name, // Direct mapping, assuming name holds the first name equivalent
+                lastName: app.surname, // Direct mapping, assuming surname holds the last name equivalent
+            }));
+            setApplications(mappedData);
         } catch (err) {
             console.error('Failed to fetch applications:', err);
             setError('Failed to load applications. Please try again.');
@@ -314,12 +324,12 @@ export function CustomerManagement() {
             }
         } else { // view === 'applications'
             const applicationData = data as Application;
+            // Map firstName/lastName from CustomerForm back to name/surname for ApplicationSaveData
             const payload: ApplicationSaveData = {
-                name: applicationData.name,
-                surname: applicationData.surname,
+                name: applicationData.firstName, // Map from CustomerForm's firstName
+                surname: applicationData.lastName, // Map from CustomerForm's lastName
                 phone: applicationData.phone,
                 email: applicationData.email,
-                // Map other application fields here
                 address: applicationData.address,
                 nationality: applicationData.nationality,
                 gender: applicationData.gender,
@@ -327,7 +337,7 @@ export function CustomerManagement() {
                 id_number: applicationData.id_number,
                 alt_name: applicationData.alt_name,
                 relation_to_member: applicationData.relation_to_member,
-                relation_dob: applicationData.relation_dob,
+                gen_date_of_birth: applicationData.relation_dob, // Renamed to avoid clash, assuming this is relation_dob
                 family_members: applicationData.family_members,
                 extended_family: applicationData.extended_family,
                 plan_options: applicationData.plan_options,
@@ -480,7 +490,12 @@ export function CustomerManagement() {
     };
 
     const handleEditApplication = (application: Application) => {
-        setCurrentApplication(application);
+        // Map backend 'name' and 'surname' to 'firstName' and 'lastName' for CustomerForm
+        setCurrentApplication({
+            ...application,
+            firstName: application.name,
+            lastName: application.surname,
+        });
         setIsFormOpen(true);
     };
 
@@ -528,23 +543,16 @@ export function CustomerManagement() {
 
     // --- Conditional Form Rendering ---
     if (isFormOpen) {
-        if (view === 'customers') {
-            return (
-                <CustomerForm
-                    customer={currentCustomer}
-                    onSave={handleFormSave}
-                    onCancel={handleFormCancel}
-                />
-            );
-        } else { // 'applications'
-            return (
-                <CustomerForm
-                    application={currentApplication}
-                    onSave={handleFormSave}
-                    onCancel={handleFormCancel}
-                />
-            );
-        }
+        // The CustomerForm is now generic enough to handle both customer and application data
+        // We pass 'application' prop if it's an application, otherwise 'customer'
+        return (
+            <CustomerForm
+                application={view === 'applications' ? currentApplication : undefined}
+                customer={view === 'customers' ? currentCustomer : undefined}
+                onSave={handleFormSave}
+                onCancel={handleFormCancel}
+            />
+        );
     }
 
     // --- Main View Rendering ---
@@ -667,7 +675,7 @@ export function CustomerManagement() {
                                                 <TableCell>{app.email}</TableCell>
                                                 <TableCell>{app.phone}</TableCell>
                                                 <TableCell>{app.id_number || 'N/A'}</TableCell>
-                                                <TableCell><Badge>{app.status || 'N/A'}</Badge></TableCell>
+                                                <TableCell><Badge>{app.status || 'Active'}</Badge></TableCell>
                                                 <TableCell className='text-right'>
                                                     <div className='flex justify-end space-x-2'>
                                                         <Button variant='ghost' size='sm' onClick={() => handleEditApplication(app)}><Edit className='h-4 w-4' /></Button>
