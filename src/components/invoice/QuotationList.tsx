@@ -62,7 +62,7 @@ import {
 
 
 // Define API Base URL
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 // --- Interfaces to match backend API responses for Quotations ---
 interface QuotationLineItem {

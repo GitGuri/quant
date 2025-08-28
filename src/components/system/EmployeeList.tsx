@@ -35,7 +35,7 @@ interface EmployeeListProps {
   onEmployeeActionSuccess: () => Promise<void>; // To refresh list after add/edit/delete
 }
 
-const API_BASE_URL = 'https://quantnow.onrender.com'; // Define your API base URL
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // Define your API base URL
 
 export const EmployeeList: React.FC<EmployeeListProps> = ({
   employees, // Receive employees from props

@@ -21,7 +21,24 @@ import 'jspdf-autotable';
 if (typeof HighchartsMore === 'function') HighchartsMore(Highcharts);
 
 // IMPORTANT: Replace with your actual backend API URL
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+
+// Define types for projection data
+interface ProjectionDataPoint {
+  period: string;
+  sales: number;
+  costs: number;
+  expenses: number;
+  grossProfit: number;
+  netProfit: number;
+}
+
+// Define type for custom overrides
+interface CustomOverrides {
+  [periodKey: string]: {
+    [metricKey: string]: number | string; // Can be a number for direct override or string for percentage adjustment (e.g., "+5%")
+  };
+}
 
 const Projections = () => {
   const { toast } = useToast();
@@ -35,12 +52,23 @@ const Projections = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('12-months');
-  
+
   // State for custom period dates and download selection
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
-  const [customProjectionData, setCustomProjectionData] = useState<any[]>([]);
+  const [customProjectionData, setCustomProjectionData] = useState<ProjectionDataPoint[]>([]);
   const [downloadPeriod, setDownloadPeriod] = useState('12-months');
+
+  // --- NEW STATE FOR CUSTOM OVERRIDES ---
+  const [customOverrides, setCustomOverrides] = useState<CustomOverrides>({});
+  // State to track which cell is currently being edited
+  const [editingCell, setEditingCell] = useState<{
+    tab: string;
+    periodKey: string;
+    metricKey: string;
+  } | null>(null);
+  const [editValue, setEditValue] = useState<string>('');
+  // --- END NEW STATE ---
 
   // Memoized function to get authentication headers
   const getAuthHeaders = useCallback(() => {
@@ -115,7 +143,7 @@ const Projections = () => {
     }
     await fetchBaselineData(customStartDate, customEndDate);
   };
-  
+
   // Use useEffect to generate custom projections whenever baselineData changes after a custom fetch
   useEffect(() => {
     if (activeTab === 'custom' && baselineData) {
@@ -123,62 +151,100 @@ const Projections = () => {
         const startDate = new Date(customStartDate);
         const endDate = new Date(customEndDate);
         const numberOfMonths = differenceInMonths(endDate, startDate) + 1;
-        
-        const customProjections = generateProjectionData(numberOfMonths);
+
+        const customProjections = generateProjectionData(numberOfMonths, false, 'custom'); // Pass 'custom' tab identifier
         setCustomProjectionData(customProjections);
-        
+
       } catch (error) {
         console.error("Error generating custom projection data:", error);
         setCustomProjectionData([]);
       }
     }
-  }, [baselineData, activeTab, customStartDate, customEndDate]);
+  }, [baselineData, activeTab, customStartDate, customEndDate, customOverrides]); // Add customOverrides to dependencies
 
 
-  const generateProjectionData = (periods: number, isYearly = false) => {
+  // --- UPDATED: generateProjectionData to incorporate custom overrides ---
+  const generateProjectionData = (periods: number, isYearly = false, tabId: string = '12-months') => {
     if (!baselineData) return [];
 
-    const data = [];
+    const data: ProjectionDataPoint[] = [];
     const periodLabel = isYearly ? 'Year' : 'Month';
 
-    for (let i = 0; i <= periods; i++) {
-      if (i === 0) {
-        const grossProfit = baselineData.sales - baselineData.costOfGoods;
-        const netProfit = grossProfit - baselineData.totalExpenses;
-        data.push({
-          period: 'Baseline',
-          sales: Math.round(baselineData.sales),
-          costs: Math.round(baselineData.costOfGoods),
-          expenses: Math.round(baselineData.totalExpenses),
-          grossProfit: Math.round(grossProfit),
-          netProfit: Math.round(netProfit),
-        });
-        continue;
+    // Baseline (period 0)
+    const baselineGrossProfit = baselineData.sales - baselineData.costOfGoods;
+    const baselineNetProfit = baselineGrossProfit - baselineData.totalExpenses;
+    data.push({
+      period: 'Baseline',
+      sales: Math.round(baselineData.sales),
+      costs: Math.round(baselineData.costOfGoods),
+      expenses: Math.round(baselineData.totalExpenses),
+      grossProfit: Math.round(baselineGrossProfit),
+      netProfit: Math.round(baselineNetProfit),
+    });
+
+    for (let i = 1; i <= periods; i++) { // Start from 1 for projected periods
+      const multiplier = isYearly ? i : i / 12; // Adjusted to align with periods
+      const currentPeriodKey = `${tabId}-${i}`;
+
+      let currentSales = baselineData.sales * Math.pow(1 + revenueGrowthRate / 100, multiplier);
+      let currentCosts = baselineData.costOfGoods * Math.pow(1 + costGrowthRate / 100, multiplier);
+      let currentExpenses = baselineData.totalExpenses * Math.pow(1 + expenseGrowthRate / 100, multiplier);
+
+      // Apply custom overrides if they exist for this period and metric
+      const periodOverrides = customOverrides[currentPeriodKey];
+
+      if (periodOverrides) {
+        // Sales override
+        if (periodOverrides.sales !== undefined) {
+          if (typeof periodOverrides.sales === 'number') {
+            currentSales = periodOverrides.sales;
+          } else if (typeof periodOverrides.sales === 'string' && periodOverrides.sales.endsWith('%')) {
+            const percent = parseFloat(periodOverrides.sales) / 100;
+            currentSales = currentSales * (1 + percent);
+          }
+        }
+
+        // Costs override
+        if (periodOverrides.costs !== undefined) {
+          if (typeof periodOverrides.costs === 'number') {
+            currentCosts = periodOverrides.costs;
+          } else if (typeof periodOverrides.costs === 'string' && periodOverrides.costs.endsWith('%')) {
+            const percent = parseFloat(periodOverrides.costs) / 100;
+            currentCosts = currentCosts * (1 + percent);
+          }
+        }
+
+        // Expenses override
+        if (periodOverrides.expenses !== undefined) {
+          if (typeof periodOverrides.expenses === 'number') {
+            currentExpenses = periodOverrides.expenses;
+          } else if (typeof periodOverrides.expenses === 'string' && periodOverrides.expenses.endsWith('%')) {
+            const percent = parseFloat(periodOverrides.expenses) / 100;
+            currentExpenses = currentExpenses * (1 + percent);
+          }
+        }
       }
 
-      const multiplier = isYearly ? i : i / 12;
-      const sales = baselineData.sales * Math.pow(1 + revenueGrowthRate / 100, multiplier);
-      const costs =
-        baselineData.costOfGoods * Math.pow(1 + costGrowthRate / 100, multiplier);
-      const expenses =
-        baselineData.totalExpenses * Math.pow(1 + expenseGrowthRate / 100, multiplier);
-      const grossProfit = sales - costs;
-      const netProfit = grossProfit - expenses;
+      // Recalculate gross and net profit based on potentially overridden values
+      const grossProfit = currentSales - currentCosts;
+      const netProfit = grossProfit - currentExpenses;
 
       data.push({
         period: `${periodLabel} ${i}`,
-        sales: Math.round(sales),
-        costs: Math.round(costs),
-        expenses: Math.round(expenses),
+        sales: Math.round(currentSales),
+        costs: Math.round(currentCosts),
+        expenses: Math.round(currentExpenses),
         grossProfit: Math.round(grossProfit),
         netProfit: Math.round(netProfit),
       });
     }
     return data;
   };
+  // --- END UPDATED: generateProjectionData ---
+
 
   // Helper to transform data for the inverted table (metrics as rows, periods as columns)
-  const transformToInvertedTableData = (projectionData: any[]) => {
+  const transformToInvertedTableData = (projectionData: ProjectionDataPoint[]) => {
     if (!projectionData || projectionData.length === 0)
       return { headers: [], rows: [] };
 
@@ -194,7 +260,7 @@ const Projections = () => {
     const rows = metrics.map((metric) => {
       const rowData = {
         metric: metric.label,
-        values: projectionData.map((d) => d[metric.key]),
+        values: projectionData.map((d) => d[metric.key as keyof ProjectionDataPoint]),
       };
       return rowData;
     });
@@ -202,7 +268,7 @@ const Projections = () => {
     return { headers, rows };
   };
 
-  const createChartOptions = (data: any[], title: string) => {
+  const createChartOptions = (data: ProjectionDataPoint[], title: string) => {
     if (!data || data.length === 0) {
       return {
         title: { text: title },
@@ -272,7 +338,7 @@ const Projections = () => {
     };
   };
 
-  const createWaterfallOptions = (data: any[]) => {
+  const createWaterfallOptions = (data: ProjectionDataPoint[]) => {
     if (!data || data.length === 0) {
       return {
         title: { text: 'Profit & Loss Waterfall - Latest Projection' },
@@ -353,27 +419,35 @@ const Projections = () => {
     };
   };
 
+  // --- UPDATED: Memoized projection data to re-generate when customOverrides change ---
+  const projectionData12Months = useMemo(() =>
+    baselineData ? generateProjectionData(12, false, '12-months') : [],
+    [baselineData, revenueGrowthRate, costGrowthRate, expenseGrowthRate, customOverrides]
+  );
+  const projectionData5Years = useMemo(() =>
+    baselineData ? generateProjectionData(5, true, '5-years') : [],
+    [baselineData, revenueGrowthRate, costGrowthRate, expenseGrowthRate, customOverrides]
+  );
+  // Custom projection data is already handled by its own useEffect, which depends on customOverrides
+
   const getProjectionData = useMemo(() => {
     switch (downloadPeriod) {
       case '12-months':
-        return baselineData ? generateProjectionData(12) : [];
+        return projectionData12Months;
       case '5-years':
-        return baselineData ? generateProjectionData(5, true) : [];
+        return projectionData5Years;
       case 'custom':
         return customProjectionData;
       default:
         return [];
     }
-  }, [downloadPeriod, baselineData, customProjectionData]);
-  
-  const projectionData12Months = useMemo(() => baselineData ? generateProjectionData(12) : [], [baselineData]);
-  const projectionData5Years = useMemo(() => baselineData ? generateProjectionData(5, true) : [], [baselineData]);
+  }, [downloadPeriod, projectionData12Months, projectionData5Years, customProjectionData]);
 
   const inverted12MonthData = transformToInvertedTableData(projectionData12Months);
   const inverted5YearData = transformToInvertedTableData(projectionData5Years);
   const invertedCustomData = transformToInvertedTableData(customProjectionData);
 
-  const downloadCSV = useCallback((data: any[], filename: string) => {
+  const downloadCSV = useCallback((data: ProjectionDataPoint[], filename: string) => {
     if (!data || data.length === 0) {
       toast({
         title: 'No Data',
@@ -404,9 +478,9 @@ const Projections = () => {
       link.click();
       document.body.removeChild(link);
     }
-  }, [toast]);
-  
-  const downloadPDF = useCallback((data: any[], title: string, filename: string) => {
+  }, [toast, transformToInvertedTableData]); // Added transformToInvertedTableData to dependencies
+
+  const downloadPDF = useCallback((data: ProjectionDataPoint[], title: string, filename: string) => {
     if (!data || data.length === 0) {
       toast({
         title: 'No Data',
@@ -415,20 +489,20 @@ const Projections = () => {
       });
       return;
     }
-  
+
     const doc = new jsPDF();
-    
+
     // --- Add a title page or header ---
     doc.setFontSize(22);
     doc.text(title, 14, 20);
     doc.setFontSize(12);
     doc.text('Financial Report Generated: ' + new Date().toLocaleDateString(), 14, 30);
-  
+
     // --- Add Projections Table ---
     const invertedData = transformToInvertedTableData(data);
     const tableHeaders = invertedData.headers;
     const tableRows = invertedData.rows.map(row => [row.metric, ...row.values.map(val => 'R' + val.toLocaleString('en-ZA'))]);
-  
+
     (doc as any).autoTable({
       startY: 40,
       head: [['Metric', ...tableHeaders]],
@@ -437,7 +511,7 @@ const Projections = () => {
       headStyles: { fillColor: '#f1f5f9' },
       styles: { fontSize: 10, cellPadding: 2, overflow: 'linebreak' },
     });
-  
+
     // --- Add Profit Analysis Waterfall Table ---
     if (data.length > 0) {
       const latestData = data[data.length - 1];
@@ -448,7 +522,7 @@ const Projections = () => {
         ['Expenses', 'R' + (-latestData.expenses).toLocaleString('en-ZA')],
         ['Net Profit', 'R' + (latestData.netProfit).toLocaleString('en-ZA')],
       ];
-      
+
       const startY = (doc as any).autoTable.previous.finalY + 10;
       doc.addPage();
       doc.setFontSize(16);
@@ -463,9 +537,154 @@ const Projections = () => {
         styles: { fontSize: 10, cellPadding: 2, overflow: 'linebreak' },
       });
     }
-  
+
     doc.save(filename);
-  }, [transformToInvertedTableData, toast]);
+  }, [transformToInvertedTableData, toast]); // Added transformToInvertedTableData to dependencies
+
+
+  // --- NEW: Handlers for inline editing ---
+  const handleCellClick = (tab: string, periodKey: string, metricKey: string, currentValue: number | string) => {
+    // Only allow editing for non-baseline rows and specific metrics
+    if (periodKey === 'Baseline' || metricKey === 'grossProfit' || metricKey === 'netProfit') {
+      return;
+    }
+    setEditingCell({ tab, periodKey, metricKey });
+    // If there's an existing override, use that value, otherwise use the displayed number
+    const overrideValue = customOverrides[periodKey]?.[metricKey];
+    setEditValue(overrideValue !== undefined ? String(overrideValue) : String(currentValue));
+  };
+
+  const handleEditChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEditValue(e.target.value);
+  };
+
+  const handleEditSave = () => {
+    if (!editingCell) return;
+
+    const { tab, periodKey, metricKey } = editingCell;
+    let newValue: number | string = editValue.trim();
+
+    // Validate and parse input
+    if (newValue === '') { // Clear override if input is empty
+      setCustomOverrides(prev => {
+        const newOverrides = { ...prev };
+        if (newOverrides[periodKey]) {
+          delete newOverrides[periodKey][metricKey];
+          // If no more overrides for this period, remove the period entry
+          if (Object.keys(newOverrides[periodKey]).length === 0) {
+            delete newOverrides[periodKey];
+          }
+        }
+        return newOverrides;
+      });
+    } else if (newValue.endsWith('%')) {
+      const parsedPercent = parseFloat(newValue.slice(0, -1));
+      if (!isNaN(parsedPercent)) {
+        newValue = (parsedPercent > 0 ? `+${parsedPercent}%` : `${parsedPercent}%`); // Store as "+X%" or "-X%"
+      } else {
+        toast({ title: "Invalid Input", description: "Percentage must be a number followed by '%'.", variant: "destructive" });
+        setEditingCell(null);
+        return;
+      }
+    } else {
+      const parsedNumber = parseFloat(newValue);
+      if (!isNaN(parsedNumber)) {
+        newValue = parsedNumber;
+      } else {
+        toast({ title: "Invalid Input", description: "Please enter a number or a percentage (e.g., '5%' or '+5%').", variant: "destructive" });
+        setEditingCell(null);
+        return;
+      }
+    }
+
+    setCustomOverrides(prev => ({
+      ...prev,
+      [periodKey]: {
+        ...prev[periodKey],
+        [metricKey]: newValue,
+      },
+    }));
+    setEditingCell(null);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleEditSave();
+    } else if (e.key === 'Escape') {
+      setEditingCell(null);
+    }
+  };
+
+  const isCellEditable = (periodKey: string, metricKey: string) => {
+    // Prevent editing for 'Baseline' and calculated metrics
+    return periodKey !== 'Baseline' && metricKey !== 'grossProfit' && metricKey !== 'netProfit';
+  };
+  // --- END NEW: Handlers for inline editing ---
+
+
+  // Helper function to render table rows with editable cells
+  const renderTableRows = (data: { metric: string; values: (string | number)[]; }[], currentTab: string) => {
+    // Map metric labels to their respective keys for easier lookup
+    const metricKeyMap: { [label: string]: string } = {
+      'Sales': 'sales',
+      'Cost of Goods': 'costs',
+      'Gross Profit': 'grossProfit',
+      'Total Expenses': 'expenses',
+      'Net Profit': 'netProfit',
+    };
+
+    return data.map((row, rowIndex) => (
+      <tr
+        key={row.metric}
+        className={row.metric === 'Baseline' ? 'bg-blue-50' : ''}
+      >
+        <td className='border border-border p-3 font-medium'>
+          {row.metric}
+        </td>
+        {row.values.map((value, colIndex) => {
+          const periodName = inverted12MonthData.headers[colIndex] || inverted5YearData.headers[colIndex] || invertedCustomData.headers[colIndex];
+          const periodKey = periodName === 'Baseline' ? 'Baseline' : `${currentTab}-${colIndex}`; // Use colIndex for periodKey in custom
+          const metricKey = metricKeyMap[row.metric];
+
+          // Determine if this cell is currently being edited
+          const isCurrentlyEditing = editingCell?.tab === currentTab &&
+            editingCell?.periodKey === periodKey &&
+            editingCell?.metricKey === metricKey;
+
+          // Check if there's an override for this specific cell
+          const hasOverride = customOverrides[periodKey]?.[metricKey] !== undefined;
+
+          // Display value based on override or calculated, formatted
+          const displayValue = `R${Number(value).toLocaleString('en-ZA')}`;
+
+          return (
+            <td
+              key={colIndex}
+              className={`border border-border p-3 text-right relative ${isCellEditable(periodKey, metricKey) ? 'cursor-pointer hover:bg-gray-100' : ''} ${hasOverride ? 'bg-yellow-50' : ''}`}
+              onClick={() => isCellEditable(periodKey, metricKey) && handleCellClick(currentTab, periodKey, metricKey, value)}
+            >
+              {isCurrentlyEditing ? (
+                <Input
+                  type="text" // Allow text to support percentage input
+                  value={editValue}
+                  onChange={handleEditChange}
+                  onBlur={handleEditSave}
+                  onKeyDown={handleKeyDown}
+                  autoFocus
+                  className="w-full text-right h-8 p-1 text-sm bg-white"
+                />
+              ) : (
+                <span className={hasOverride ? 'font-semibold text-yellow-800' : ''}>
+                  {displayValue}
+                </span>
+              )}
+            </td>
+          );
+        })}
+      </tr>
+    ));
+  };
+
 
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
@@ -486,7 +705,7 @@ const Projections = () => {
               </span>
               <Button
                 onClick={() => fetchBaselineData()}
-                disabled={isRefreshing || !isAuthenticated || !token || activeTab !== '12-months'}
+                disabled={isRefreshing || !isAuthenticated || !token || (activeTab !== '12-months' && activeTab !== '5-years')}
               >
                 {isRefreshing ? (
                   <>
@@ -640,21 +859,7 @@ const Projections = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {inverted12MonthData.rows.map((row, rowIndex) => (
-                          <tr
-                            key={row.metric}
-                            className={row.metric === 'Baseline' ? 'bg-blue-50' : ''}
-                          >
-                            <td className='border border-border p-3 font-medium'>
-                              {row.metric}
-                            </td>
-                            {row.values.map((value, colIndex) => (
-                              <td key={colIndex} className='border border-border p-3 text-right'>
-                                R{value.toLocaleString('en-ZA')}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
+                        {renderTableRows(inverted12MonthData.rows, '12-months')}
                       </tbody>
                     </table>
                   </div>
@@ -710,21 +915,7 @@ const Projections = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {inverted5YearData.rows.map((row, rowIndex) => (
-                          <tr
-                            key={row.metric}
-                            className={row.metric === 'Baseline' ? 'bg-blue-50' : ''}
-                          >
-                            <td className='border border-border p-3 font-medium'>
-                              {row.metric}
-                            </td>
-                            {row.values.map((value, colIndex) => (
-                              <td key={colIndex} className='border border-border p-3 text-right'>
-                                R{value.toLocaleString('en-ZA')}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
+                        {renderTableRows(inverted5YearData.rows, '5-years')}
                       </tbody>
                     </table>
                   </div>
@@ -826,24 +1017,7 @@ const Projections = () => {
                             </tr>
                           </thead>
                           <tbody>
-                            {invertedCustomData.rows.map((row, rowIndex) => (
-                              <tr
-                                key={row.metric}
-                                className={row.metric === 'Baseline' ? 'bg-blue-50' : ''}
-                              >
-                                <td className='border border-border p-3 font-medium'>
-                                  {row.metric}
-                                </td>
-                                {row.values.map((value, colIndex) => (
-                                  <td
-                                    key={colIndex}
-                                    className='border border-border p-3 text-right'
-                                  >
-                                    R{value.toLocaleString('en-ZA')}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
+                            {renderTableRows(invertedCustomData.rows, 'custom')}
                           </tbody>
                         </table>
                       </div>

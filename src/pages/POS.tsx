@@ -26,7 +26,7 @@ import { useAuth } from '../AuthPage'; // We'll still use this for isAuthenticat
 
 const useBreakpoint = Grid.useBreakpoint;
 const { Title, Text } = Typography;
-const { Option = Select.Option } = Select; // Default to Select.Option for safety
+const { Option } = Select; // Destructure Option from Select
 
 // --- START: MODIFIED TYPES TO MATCH BACKEND API ---
 interface ProductDB {
@@ -62,7 +62,7 @@ type CartItem = ProductDB & { quantity: number; subtotal: number };
 type PaymentType = 'Cash' | 'Bank' | 'Credit';
 // --- END: MODIFIED TYPES TO MATCH BACKEND API ---
 
-const API_BASE_URL = 'https://quantnow.onrender.com'; // <-- set your API URL
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // <-- set your API URL
 
 // ===== Credit Score (frontend-only, flag not block) =====
 type ScoreColor = 'green' | 'blue' | 'orange' | 'red' | 'default';
@@ -118,12 +118,7 @@ const computeCreditScoreFromHistory = (
 };
 
 // --- Helper to get user name from localStorage (similar to AuthPage) ---
-// We can either import this from AuthPage if it's exported, or define it here.
-// Assuming it's exported from AuthPage as getUserName:
-// import { getUserName } from '../AuthPage';
-// If not exported, define it here:
 const getUserNameFromLocalStorage = () => {
-  // Mimic the logic from AuthPage
   const storedName = localStorage.getItem('userName');
   return storedName || 'Unknown User (Local Storage)';
 };
@@ -147,6 +142,8 @@ export default function POSScreen() {
   // Custom product state
   const [showCustomProductForm, setShowCustomProductForm] = useState(false);
   const [customProductForm] = Form.useForm(); // New Form instance for custom product
+  // New state for custom product type (product or service)
+  const [customProductIsService, setCustomProductIsService] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [paymentType, setPaymentType] = useState<PaymentType>('Cash');
   const [amountPaid, setAmountPaid] = useState(0);
@@ -154,7 +151,6 @@ export default function POSScreen() {
   // --- State for Bank Name ---
   const [bankName, setBankName] = useState<string | null>(null);
   // --- End State for Bank Name ---
-  // --- Removed loggedInUserInfo state ---
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   // Global loading state for the screen
@@ -169,8 +165,6 @@ export default function POSScreen() {
   const getAuthHeaders = useCallback(() => {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
-
-  // --- Removed the useEffect hook for fetching user info ---
 
   // Fetch score & cache when customer is selected
   const fetchAndCacheCustomerScore = useCallback(
@@ -280,6 +274,7 @@ export default function POSScreen() {
         const customProductUnitPrice = values.customProductUnitPrice;
         const customProductDescription = values.customProductDescription;
         const customProductTaxRate = parseFloat(values.customProductTaxRate);
+        const isService = values.isService; // Get the 'isService' value from the form
         setIsAddingCustomProduct(true);
         try {
           const existingProduct = products.find(p => p.name.toLowerCase() === customProductName.toLowerCase());
@@ -291,11 +286,11 @@ export default function POSScreen() {
               name: customProductName,
               description: customProductDescription || null,
               unit_price: customProductUnitPrice,
-              is_service: false,
-              stock_quantity: 0,
+              is_service: isService, // Use the value from the form
+              stock_quantity: isService ? 0 : 0, // Set stock to 0 for services, default 0 for products
               tax_rate_value: customProductTaxRate,
               category: null,
-              unit: 'unit',
+              unit: isService ? 'service' : 'unit', // Set unit based on type
               cost_price: null,
             };
             const createProductResponse = await fetch(`${API_BASE_URL}/products-services`, {
@@ -317,7 +312,7 @@ export default function POSScreen() {
             }
             finalProduct.stock_quantity = parseInt(finalProduct.stock_quantity as any, 10);
             setProducts(prev => [...prev, finalProduct!]);
-            messageApi.success(`New product "${finalProduct!.name}" created and added to product list.`);
+            messageApi.success(`New ${isService ? 'service' : 'product'} "${finalProduct!.name}" created and added to product list.`);
           }
           itemToAdd = {
             ...finalProduct!,
@@ -465,15 +460,10 @@ export default function POSScreen() {
                       setProductQty(1);
                       setProductModal(false);
                       setShowCustomProductForm(false);
-                      // customProductForm.resetFields(); // Not needed for existing product
                       messageApi.success(`"${selectedProduct.name}" added to cart.`);
                   },
                   onCancel: () => { // <-- Use onCancel callback
                       messageApi.info('Adding item to cart cancelled.');
-                      // Optionally reset some states if needed specifically on cancel
-                      // setProductQty(1); // Keep current quantity if user wants to try again
-                      // setSelectedProduct(null); // Keep product selected if user wants to try again
-                      // setProductModal(false); // Keep modal open if user wants to try again
                   },
               });
               // Crucial: Return here so the rest of addToCart doesn't execute until modal callback.
@@ -653,7 +643,6 @@ export default function POSScreen() {
     // --- End Validation for Bank Name ---
 
     // --- Get Teller Name from localStorage (similar to AuthPage) ---
-    // const tellerName = getUserName(); // If exported from AuthPage
     const tellerName = getUserNameFromLocalStorage(); // Using local helper
     // --- End Get Teller Name ---
 
@@ -661,7 +650,6 @@ export default function POSScreen() {
     try {
       const salePayload = {
         cart: cart.map((item) => {
-          // All items in cart are now ProductDB type, so no need for isRealProduct check here
           return {
             id: item.id, // Use the actual product ID
             name: item.name,
@@ -685,7 +673,6 @@ export default function POSScreen() {
         // --- End include bankName ---
         // --- Use the fetched user's name instead of the dummy one ---
         tellerName: tellerName, // Use name from localStorage
-        // tellerName: 'Dummy Teller', // <-- Removed or commented out this line
         // --- End change ---
         branch: '', // You might want to make this dynamic too
         companyName: '', // You might want to make this dynamic too
@@ -790,6 +777,7 @@ export default function POSScreen() {
             setProductModal(true);
             customProductForm.resetFields(); // Reset form fields on opening modal
             setProductQty(1); // Ensure qty is reset for new product selection
+            setCustomProductIsService(false); // Reset custom product type
           }}
           bodyStyle={{
             display: 'flex',
@@ -895,7 +883,7 @@ export default function POSScreen() {
                 { title: 'Product', dataIndex: 'name' },
                 { title: 'Qty', dataIndex: 'quantity' },
                 {
-                  title: 'Unit Price',
+                  title: 'Price',
                   dataIndex: 'unit_price',
                   render: (price: number) => `R${price.toFixed(2)}`,
                 },
@@ -1074,9 +1062,6 @@ export default function POSScreen() {
               cart.length === 0 ||
               (paymentType === 'Cash' && amountPaid < total) ||
               (paymentType === 'Credit' && !selectedCustomer)
-              // Optional: Add check for bank name if required
-              // || (paymentType === 'Bank' && !bankName?.trim())
-              // Removed check for loggedInUserInfo as it's no longer used
             }
           >
             Submit Sale
@@ -1114,7 +1099,6 @@ export default function POSScreen() {
                   onClick={() => {
                     setSelectedCustomer(c);
                     setCustomerModal(false);
-                    // score will auto-load via useEffect
                   }}
                   size="small"
                   bodyStyle={{
@@ -1189,6 +1173,7 @@ export default function POSScreen() {
             setSelectedProduct(null);
             setProductQty(1);
             customProductForm.resetFields(); // Reset custom product form when modal closes
+            setCustomProductIsService(false); // Reset custom product type on modal close
           }}
           footer={null}
           title="Select Product"
@@ -1249,7 +1234,11 @@ export default function POSScreen() {
                 block
                 type="dashed"
                 icon={<PlusOutlined />}
-                onClick={() => setShowCustomProductForm(true)}
+                onClick={() => {
+                  setShowCustomProductForm(true);
+                  // Set default for custom product as 'product'
+                  customProductForm.setFieldsValue({ isService: false });
+                }}
                 disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
               >
                 Add Custom Product/Service
@@ -1291,6 +1280,22 @@ export default function POSScreen() {
                   disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 />
               </Form.Item>
+              {/* New: Select for Product/Service Type */}
+              <Form.Item
+                name="isService"
+                label="Type"
+                rules={[{ required: true, message: 'Please select item type!' }]}
+                initialValue={false} // Default to Product
+              >
+                <Select
+                  style={{ width: '100%' }}
+                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
+                  onChange={(value: boolean) => setCustomProductIsService(value)}
+                >
+                  <Option value={false}>Product</Option>
+                  <Option value={true}>Service</Option>
+                </Select>
+              </Form.Item>
               <Form.Item
                 name="customProductTaxRate"
                 label="Tax Rate"
@@ -1325,6 +1330,7 @@ export default function POSScreen() {
                 onClick={() => {
                   setShowCustomProductForm(false);
                   customProductForm.resetFields();
+                  setCustomProductIsService(false); // Reset custom product type
                 }}
                 disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
               >

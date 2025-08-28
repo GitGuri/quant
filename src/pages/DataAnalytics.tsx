@@ -26,7 +26,7 @@ export interface ChartData {
   error: string | null;
 }
 
-const API = 'https://quantnow.onrender.com';
+const API = 'https://quantnow-cu1v.onrender.com';
 
 const DataAnalytics = () => {
   const [selectedChart, setSelectedChart] = useState<ChartData | null>(null);

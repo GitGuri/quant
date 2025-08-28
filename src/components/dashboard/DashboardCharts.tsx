@@ -9,15 +9,17 @@ import {
 import HighchartsReact from 'highcharts-react-official';
 import Highcharts from 'highcharts';
 import HighchartsSunburst from 'highcharts/modules/sunburst'; // Import sunburst module
+import HighchartsPareto from 'highcharts/modules/pareto'; // Import pareto module
 import { motion } from 'framer-motion';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useAuth } from '../../AuthPage'; // Import useAuth
+import { useAuth } from '../../AuthPage';
 
-// Initialize the sunburst module for Highcharts
+// Initialize Highcharts modules
 HighchartsSunburst(Highcharts);
+HighchartsPareto(Highcharts);
 
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 interface RevenueDataPoint {
   month: string;
@@ -26,38 +28,45 @@ interface RevenueDataPoint {
   revenue: number;
 }
 
-// Data structure for the Sunburst Chart (example, adjust based on actual backend data)
+// Data structure for the Sunburst Chart
 interface SunburstDataPoint {
   id: string;
   parent?: string;
   name: string;
   value?: number;
-  color?: string; // Optional: for custom colors if needed
+  color?: string;
 }
 
-// Update component props to accept a date range
+// Data structure for Pareto chart (Revenue by Product)
+interface ParetoDataPoint {
+  id: string;
+  name: string;
+  value: number;
+}
+
 export function DashboardCharts({ startDate, endDate }: { startDate: Date | null, endDate: Date | null }) {
   const [revenueData, setRevenueData] = useState<RevenueDataPoint[]>([]);
-  const [sunburstData, setSunburstData] = useState<SunburstDataPoint[]>([]); // New state for sunburst
+  const [sunburstData, setSunburstData] = useState<SunburstDataPoint[]>([]); // State for Sunburst
+  const [paretoData, setParetoData] = useState<ParetoDataPoint[]>([]); // New state for Pareto
   const [isLoadingRevenue, setIsLoadingRevenue] = useState(true);
-  const [isLoadingSunburst, setIsLoadingSunburst] = useState(true); // New loading state
+  const [isLoadingSunburst, setIsLoadingSunburst] = useState(true); // Loading state for Sunburst
+  const [isLoadingPareto, setIsLoadingPareto] = useState(true); // New loading state for Pareto
   const [revenueError, setRevenueError] = useState<string | null>(null);
-  const [sunburstError, setSunburstError] = useState<string | null>(null); // New error state
+  const [sunburstError, setSunburstError] = useState<string | null>(null); // Error state for Sunburst
+  const [paretoError, setParetoError] = useState<string | null>(null); // New error state for Pareto
 
-  const { isAuthenticated } = useAuth(); // Get authentication status
-  const token = localStorage.getItem('token'); // Retrieve the token as specified
+  const { isAuthenticated } = useAuth();
+  const token = localStorage.getItem('token');
 
-  // Helper function to format date for API
   const formatDateForApi = (date: Date | null): string | null => {
     if (!date) return null;
     if (isNaN(date.getTime())) {
       console.warn("Invalid Date object provided:", date);
       return null;
     }
-    return date.toISOString().split('T')[0]; // Format as YYYY-MM-DD
+    return date.toISOString().split('T')[0];
   };
 
-  // Construct query parameters for the date range
   const getPeriodQueryParams = useCallback(() => {
     const params = new URLSearchParams();
     const formattedStartDate = formatDateForApi(startDate);
@@ -72,7 +81,6 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
     return params.toString() ? `?${params.toString()}` : '';
   }, [startDate, endDate]);
 
-  // Fetch Revenue Trend Data
   const fetchRevenueData = useCallback(async () => {
     if (!token) {
       console.warn('No token found. User is not authenticated for revenue data.');
@@ -108,7 +116,7 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
     }
   }, [getPeriodQueryParams, token]);
 
-  // Fetch Sunburst Data (New)
+  // Fetch Sunburst Data (Re-introduced)
   const fetchSunburstData = useCallback(async () => {
     if (!token) {
       console.warn('No token found. User is not authenticated for sunburst data.');
@@ -121,7 +129,7 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
     setSunburstError(null);
     try {
       const queryParams = getPeriodQueryParams();
-      // You'll need to create this API endpoint on your backend
+      // This endpoint needs to be implemented in your backend if it doesn't exist
       const url = `${API_BASE_URL}/api/charts/sales-expenses-sunburst${queryParams}`;
       console.log('Fetching sunburst data from URL:', url);
 
@@ -132,8 +140,8 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
         },
       });
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+        // Fallback or error if endpoint not implemented
+        throw new Error(`Endpoint not implemented or HTTP error! status: ${response.status}`);
       }
       const data: SunburstDataPoint[] = await response.json();
       setSunburstData(data);
@@ -145,21 +153,60 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
     }
   }, [getPeriodQueryParams, token]);
 
+  // Fetch Pareto Data (New function)
+  const fetchParetoData = useCallback(async () => {
+    if (!token) {
+      console.warn('No token found. User is not authenticated for pareto data.');
+      setParetoData([]);
+      setIsLoadingPareto(false);
+      return;
+    }
+
+    setIsLoadingPareto(true);
+    setParetoError(null);
+    try {
+      const queryParams = getPeriodQueryParams();
+      const url = `${API_BASE_URL}/api/charts/revenue-by-product${queryParams}`; // Using existing endpoint
+      console.log('Fetching pareto data from URL:', url);
+
+      const response = await fetch(url, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+      }
+      const data: ParetoDataPoint[] = await response.json();
+      setParetoData(data);
+    } catch (err: any) {
+      console.error('Error fetching pareto data:', err);
+      setParetoError(err.message || 'Failed to load revenue by product data.');
+    } finally {
+      setIsLoadingPareto(false);
+    }
+  }, [getPeriodQueryParams, token]);
+
   useEffect(() => {
     if (isAuthenticated && token) {
       fetchRevenueData();
-      fetchSunburstData(); // Call the new fetch function
+      fetchSunburstData(); // Fetch Sunburst data
+      fetchParetoData(); // Fetch Pareto data
     } else {
       setRevenueData([]);
-      setSunburstData([]); // Clear sunburst data as well
+      setSunburstData([]); // Clear Sunburst data
+      setParetoData([]); // Clear Pareto data
       setIsLoadingRevenue(false);
-      setIsLoadingSunburst(false); // Set sunburst loading to false
+      setIsLoadingSunburst(false); // Set Sunburst loading to false
+      setIsLoadingPareto(false); // Set Pareto loading to false
       setRevenueError('Please log in to view charts.');
-      setSunburstError('Please log in to view charts.'); // Set sunburst error
+      setSunburstError('Please log in to view charts.'); // Set Sunburst error
+      setParetoError('Please log in to view charts.'); // Set Pareto error
     }
-  }, [fetchRevenueData, fetchSunburstData, isAuthenticated, token, startDate, endDate]);
+  }, [fetchRevenueData, fetchSunburstData, fetchParetoData, isAuthenticated, token, startDate, endDate]);
 
-  // Generate date range string for titles
   const getDateRangeString = () => {
     const start = startDate ? startDate.toLocaleDateString() : '';
     const end = endDate ? endDate.toLocaleDateString() : '';
@@ -168,11 +215,13 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
     if (start && end) return `from ${start} to ${end}`;
     if (start) return `from ${start}`;
     if (end) return `until ${end}`;
-    return ''; // No date range selected
+    return '';
   };
 
-  // Highcharts options for Revenue Trend (unchanged)
   const revenueOptions = {
+    chart: {
+      height: '100%', // Set a fixed height for the revenue trend chart
+    },
     title: { text: `Revenue Trend (Profit vs Expenses) ${getDateRangeString()}` },
     xAxis: { categories: revenueData.map(item => item.month) },
     yAxis: { title: { text: 'Amount (ZAR)' } },
@@ -199,14 +248,14 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
     ]
   };
 
-  // Highcharts options for the new Sunburst Chart
+  // Highcharts options for the Sunburst Chart (Re-introduced)
   const sunburstOptions = {
     chart: {
-      height: '100%', // Make it fill the card height
-      type: 'sunburst' // Set chart type to sunburst
+      height: '100%', // Set a fixed height for the sunburst chart
+      type: 'sunburst'
     },
     title: {
-      text: `Sales and Expenses ${getDateRangeString()}` // Dynamic title
+      text: `Sales and Expenses ${getDateRangeString()}`
     },
     subtitle: {
       text: 'Hierarchical view of financial categories'
@@ -229,8 +278,8 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
       },
       levels: [{
         level: 1,
-        levelIs: 'custom', // Corrected syntax here
-        colorByPoint: true // Ensures top-level nodes have distinct colors
+        levelIs: 'custom',
+        colorByPoint: true
       }, {
         level: 2,
         colorByPoint: true,
@@ -247,67 +296,166 @@ export function DashboardCharts({ startDate, endDate }: { startDate: Date | null
     }],
     tooltip: {
       headerFormat: '',
-      pointFormat: '<b>{point.name}</b>: {point.value}' // Customize tooltip
+      pointFormat: '<b>{point.name}</b>: {point.value}'
+    }
+  };
+
+
+  // Highcharts options for the new Pareto Chart
+  const paretoOptions = {
+    chart: {
+      type: 'column',
+      height: 700, // Set a fixed height for the pareto chart
+    },
+    title: {
+      text: `Revenue by Product/Service (Pareto Chart) ${getDateRangeString()}`
+    },
+    subtitle: {
+      text: 'Identifying key revenue contributors'
+    },
+    xAxis: {
+      categories: paretoData.map(item => item.name),
+      crosshair: true,
+      title: {
+        text: 'Products/Services'
+      }
+    },
+    yAxis: [{
+      title: {
+        text: 'Revenue (ZAR)'
+      }
+    }, {
+      title: {
+        text: 'Cumulative Percentage'
+      },
+      min: 0,
+      max: 100,
+      opposite: true,
+      labels: {
+        format: '{value}%'
+      }
+    }],
+    tooltip: {
+      shared: true,
+      valuePrefix: 'R'
+    },
+    series: [{
+      name: 'Revenue',
+      type: 'column',
+      data: paretoData.map(item => item.value),
+      color: '#4CAF50', // Green for revenue bars
+      zIndex: 1, // Ensure columns are below the line
+    }, {
+      name: 'Cumulative Percentage',
+      type: 'pareto',
+      yAxis: 1,
+      linkedTo: 'revenue-series', // Link to the first series by ID
+      color: '#FF9800', // Orange for the Pareto line
+      dataLabels: {
+        enabled: true,
+        format: '{point.y:.1f}%'
+      },
+      tooltip: {
+        valueSuffix: '%'
+      }
+    }],
+    // Assign an ID to the first series for linking with Pareto series
+    plotOptions: {
+        series: {
+            id: 'revenue-series' // This ID links the Pareto series to this column series
+        }
     }
   };
 
 
   return (
-    <div className='grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6'>
+    <div className='grid grid-cols-1 gap-6 mb-6'> {/* Main grid for stacking sections */}
+      <div className='grid grid-cols-1 lg:grid-cols-2 gap-6'> {/* First row for line and sunburst */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+        >
+          <Card>
+            <CardHeader>
+              <CardTitle>Revenue Trend (Profit vs Expenses)</CardTitle>
+              <CardDescription>
+                Monthly financial performance overview
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {isLoadingRevenue ? (
+                <div className='flex justify-center items-center h-60'>
+                  <Loader2 className='h-8 w-8 animate-spin text-gray-500' />
+                  <span className='ml-2 text-gray-600'>Loading revenue chart...</span>
+                </div>
+              ) : revenueError ? (
+                <div className='text-center text-red-500 p-4 border border-red-300 rounded-md h-60 flex flex-col justify-center items-center'>
+                  <p>Error: {revenueError}</p>
+                  <Button onClick={fetchRevenueData} className='mt-2'>Retry</Button>
+                </div>
+              ) : (
+                <HighchartsReact highcharts={Highcharts} options={revenueOptions} />
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* SUNBURST CHART (Re-introduced as the second chart) */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.2 }}
+        >
+          <Card>
+            <CardHeader>
+              <CardTitle>Sales and Expenses</CardTitle>
+              <CardDescription>Hierarchical view of financial breakdown</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {isLoadingSunburst ? (
+                <div className='flex justify-center items-center h-60'>
+                  <Loader2 className='h-8 w-8 animate-spin text-gray-500' />
+                  <span className='ml-2 text-gray-600'>Loading sales and expenses data...</span>
+                </div>
+              ) : sunburstError ? (
+                <div className='text-center text-red-500 p-4 border border-red-300 rounded-md h-60 flex flex-col justify-center items-center'>
+                  <p>Error: {sunburstError}</p>
+                  <Button onClick={fetchSunburstData} className='mt-2'>Retry</Button>
+                </div>
+              ) : (
+                <HighchartsReact highcharts={Highcharts} options={sunburstOptions} />
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+      </div>
+
+      {/* NEW PARETO CHART FOR REVENUE BY PRODUCT (as a third chart, spanning full width below) */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
+        transition={{ duration: 0.5, delay: 0.4 }}
+        className='lg:col-span-2' // Make it span full width in a new row
       >
         <Card>
           <CardHeader>
-            <CardTitle>Revenue Trend (Profit vs Expenses)</CardTitle>
-            <CardDescription>
-              Monthly financial performance overview
-            </CardDescription>
+            <CardTitle>Revenue by Product/Service (Pareto Chart)</CardTitle>
+            <CardDescription>Visualizing major revenue contributors</CardDescription>
           </CardHeader>
           <CardContent>
-            {isLoadingRevenue ? (
+            {isLoadingPareto ? (
               <div className='flex justify-center items-center h-60'>
                 <Loader2 className='h-8 w-8 animate-spin text-gray-500' />
-                <span className='ml-2 text-gray-600'>Loading revenue chart...</span>
+                <span className='ml-2 text-gray-600'>Loading revenue by product data...</span>
               </div>
-            ) : revenueError ? (
+            ) : paretoError ? (
               <div className='text-center text-red-500 p-4 border border-red-300 rounded-md h-60 flex flex-col justify-center items-center'>
-                <p>Error: {revenueError}</p>
-                <Button onClick={fetchRevenueData} className='mt-2'>Retry</Button>
+                <p>Error: {paretoError}</p>
+                <Button onClick={fetchParetoData} className='mt-2'>Retry</Button>
               </div>
             ) : (
-              <HighchartsReact highcharts={Highcharts} options={revenueOptions} />
-            )}
-          </CardContent>
-        </Card>
-      </motion.div>
-
-      {/* NEW SUNBURST CHART */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.2 }}
-      >
-        <Card>
-          <CardHeader>
-            <CardTitle>Sales and Expenses</CardTitle>
-            <CardDescription>Hierarchical view of financial breakdown</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {isLoadingSunburst ? (
-              <div className='flex justify-center items-align-center h-60'>
-                <Loader2 className='h-8 w-8 animate-spin text-gray-500' />
-                <span className='ml-2 text-gray-600'>Loading sales and expenses data...</span>
-              </div>
-            ) : sunburstError ? (
-              <div className='text-center text-red-500 p-4 border border-red-300 rounded-md h-60 flex flex-col justify-center items-center'>
-                <p>Error: {sunburstError}</p>
-                <Button onClick={fetchSunburstData} className='mt-2'>Retry</Button>
-              </div>
-            ) : (
-              <HighchartsReact highcharts={Highcharts} options={sunburstOptions} />
+              <HighchartsReact highcharts={Highcharts} options={paretoOptions} />
             )}
           </CardContent>
         </Card>

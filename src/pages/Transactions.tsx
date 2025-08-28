@@ -106,7 +106,7 @@ const Transactions = () => {
     }
 
     try {
-      const response = await fetch(`https://quantnow.onrender.com/transactions?${queryParams.toString()}`, {
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/transactions?${queryParams.toString()}`, {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
@@ -164,7 +164,7 @@ const Transactions = () => {
       }
       try {
         // Note: Fixed extra spaces in the URL
-        const response = await fetch('https://quantnow.onrender.com/accounts', {
+        const response = await fetch('https://quantnow-cu1v.onrender.com/accounts', {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`,
@@ -211,7 +211,7 @@ const Transactions = () => {
     if (window.confirm('Are you sure you want to delete this transaction? This action cannot be undone.')) {
       try {
         // Note: Fixed extra spaces in the URL
-        const response = await fetch(`https://quantnow.onrender.com/transactions/${transactionId}`, {
+        const response = await fetch(`https://quantnow-cu1v.onrender.com/transactions/${transactionId}`, {
           method: 'DELETE',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -249,7 +249,7 @@ const Transactions = () => {
       try {
         setLoading(true); // Indicate processing
         const deletePromises = idsToDelete.map(id =>
-          fetch(`https://quantnow.onrender.com/transactions/${id}`, {
+          fetch(`https://quantnow-cu1v.onrender.com/transactions/${id}`, {
             method: 'DELETE',
             headers: {
               'Authorization': `Bearer ${token}`,
@@ -306,7 +306,7 @@ const Transactions = () => {
     try {
       // Note: Endpoint URL seems unusual for an update. Typically PUT/PATCH to /transactions/{id}.
       // Assuming it's correct as per your backend.
-      const response = await fetch(`https://quantnow.onrender.com/transactions/manual`, {
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/transactions/manual`, {
         method: 'POST', // Or PUT/PATCH if that's what your backend expects
         headers: {
           'Content-Type': 'application/json',

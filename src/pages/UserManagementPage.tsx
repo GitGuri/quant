@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/components/ui/use-toast';
 
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 // Define an interface for the user data
 interface User {
@@ -162,8 +162,9 @@ export default function UserManagementPage() {
       displayName: user.displayName,
       email: user.email,
     });
-    // Set the initial roles for the edit modal
-    setEditUserRoles(user.roles);
+    // --- FIX START: Deduplicate roles when setting initial state for the edit modal ---
+    setEditUserRoles(Array.from(new Set(user.roles))); // Ensure initial roles are unique
+    // --- FIX END ---
     setIsEditModalOpen(true);
   };
 
@@ -203,15 +204,17 @@ export default function UserManagementPage() {
         throw new Error(errorData.error || `HTTP error! status: ${updateDetailsResponse.status}`);
       }
 
+      // Ensure roles are unique before sending to backend (redundant if openEditModal is fixed, but good for robustness)
+      const uniqueRoles = Array.from(new Set(editUserRoles));
+
       // Assuming a separate endpoint exists to handle role updates.
-      // This is a necessary addition based on your backend structure.
       const updateRolesResponse = await fetch(`${API_BASE_URL}/users/${userToEdit.id}/roles`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ roles: editUserRoles }),
+        body: JSON.stringify({ roles: uniqueRoles }), // Send deduplicated roles
       });
 
       if (!updateRolesResponse.ok) {

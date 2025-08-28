@@ -7,44 +7,42 @@ import {
     CardTitle
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Users, DollarSign, Divide, Loader2 } from 'lucide-react'; // Added DollarSign, Divide for icons
+import { Users, DollarSign, Divide, TrendingUp, TrendingDown, Coins, Loader2 } from 'lucide-react'; // Added new icons
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { useAuth } from '../../AuthPage'; // Corrected import path for useAuth
+import { useAuth } from '../../AuthPage';
 
-const API_BASE_URL = 'https://quantnow.onrender.com'; // Changed to localhost:3000 based on previous context
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 interface StatResponse {
-    count?: number; // For count-based stats like clients
-    value?: number; // For value-based stats like revenue/expenses
+    count?: number;
+    value?: number;
     previousCount?: number;
     previousValue?: number;
     changePercentage?: number;
     changeType?: 'increase' | 'decrease' | 'neutral';
 }
 
-// Update component props to accept a date range
 export function StatsCards({ startDate, endDate }: { startDate: Date | null, endDate: Date | null }) {
     const [clientStats, setClientStats] = useState<StatResponse | null>(null);
-    const [revenueStats, setRevenueStats] = useState<StatResponse | null>(null); // New state for Revenue
-    const [expenseStats, setExpenseStats] = useState<StatResponse | null>(null); // New state for Expenses
+    const [revenueStats, setRevenueStats] = useState<StatResponse | null>(null);
+    const [expenseStats, setExpenseStats] = useState<StatResponse | null>(null);
+    const [profitabilityStats, setProfitabilityStats] = useState<StatResponse | null>(null); // New state for profitability
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    const { isAuthenticated } = useAuth(); // Get authentication status
-    const token = localStorage.getItem('token'); // Retrieve the token
+    const { isAuthenticated } = useAuth();
+    const token = localStorage.getItem('token');
 
-    // Helper function to format date for API
     const formatDateForApi = (date: Date | null): string | null => {
         if (!date) return null;
         if (isNaN(date.getTime())) {
             console.warn("Invalid Date object provided:", date);
             return null;
         }
-        return date.toISOString().split('T')[0]; // Format as YYYY-MM-DD
+        return date.toISOString().split('T')[0];
     };
 
-    // Construct query parameters for the date range
     const getPeriodQueryParams = useCallback(() => {
         const params = new URLSearchParams();
         const formattedStartDate = formatDateForApi(startDate);
@@ -65,6 +63,7 @@ export function StatsCards({ startDate, endDate }: { startDate: Date | null, end
             setClientStats(null);
             setRevenueStats(null);
             setExpenseStats(null);
+            setProfitabilityStats(null); // Clear profitability stats
             setIsLoading(false);
             setError('Please log in to view statistics.');
             return;
@@ -73,23 +72,24 @@ export function StatsCards({ startDate, endDate }: { startDate: Date | null, end
         setIsLoading(true);
         setError(null);
         try {
-            const queryParams = getPeriodQueryParams(); // Use the new helper
+            const queryParams = getPeriodQueryParams();
             const headers = {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`, // Include the JWT token
+                'Authorization': `Bearer ${token}`,
             };
 
             const [
                 clientsRes,
-                revenueRes, // New fetch for Revenue
-                expensesRes, // New fetch for Expenses
+                revenueRes,
+                expensesRes,
+                profitabilityRes, // New fetch for Profitability
             ] = await Promise.all([
                 fetch(`${API_BASE_URL}/api/stats/clients${queryParams}`, { headers }),
-                fetch(`${API_BASE_URL}/api/stats/revenue${queryParams}`, { headers }), // New API call
-                fetch(`${API_BASE_URL}/api/stats/expenses${queryParams}`, { headers }), // New API call
+                fetch(`${API_BASE_URL}/api/stats/revenue${queryParams}`, { headers }),
+                fetch(`${API_BASE_URL}/api/stats/expenses${queryParams}`, { headers }),
+                fetch(`${API_BASE_URL}/api/stats/profitability${queryParams}`, { headers }), // New API call
             ]);
 
-            // Check each response individually
             if (!clientsRes.ok) {
                 const errorData = await clientsRes.json();
                 throw new Error(errorData.error || `Failed to fetch clients stats: ${clientsRes.status}`);
@@ -102,21 +102,28 @@ export function StatsCards({ startDate, endDate }: { startDate: Date | null, end
                 const errorData = await expensesRes.json();
                 throw new Error(errorData.error || `Failed to fetch expenses stats: ${expensesRes.status}`);
             }
+            if (!profitabilityRes.ok) { // Check for new profitability response
+                const errorData = await profitabilityRes.json();
+                throw new Error(errorData.error || `Failed to fetch profitability stats: ${profitabilityRes.status}`);
+            }
 
             const clientData: StatResponse = await clientsRes.json();
             const revenueData: StatResponse = await revenueRes.json();
             const expensesData: StatResponse = await expensesRes.json();
+            const profitabilityData: StatResponse = await profitabilityRes.json(); // New data
 
             setClientStats(clientData);
             setRevenueStats(revenueData);
             setExpenseStats(expensesData);
+            setProfitabilityStats(profitabilityData); // Set new state
 
         } catch (err: any) {
             console.error('Error fetching stats:', err);
             setError(err.message || 'Failed to load dashboard statistics.');
-            setClientStats(null); // Clear stats on error
+            setClientStats(null);
             setRevenueStats(null);
             setExpenseStats(null);
+            setProfitabilityStats(null); // Clear on error
         } finally {
             setIsLoading(false);
         }
@@ -129,12 +136,12 @@ export function StatsCards({ startDate, endDate }: { startDate: Date | null, end
             setClientStats(null);
             setRevenueStats(null);
             setExpenseStats(null);
+            setProfitabilityStats(null); // Clear on no authentication
             setIsLoading(false);
             setError('Please log in to view statistics.');
         }
     }, [fetchStats, isAuthenticated, token]);
 
-    // Helper to format change string
     const formatChange = (percentage: number | undefined, type: 'increase' | 'decrease' | 'neutral' | undefined) => {
         if (percentage === undefined || type === undefined) {
             return '→ 0.00%';
@@ -157,17 +164,24 @@ export function StatsCards({ startDate, endDate }: { startDate: Date | null, end
             value: revenueStats?.value !== undefined ? `R${revenueStats.value.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}` : 'Loading...',
             change: formatChange(revenueStats?.changePercentage, revenueStats?.changeType),
             changeType: revenueStats?.changeType || 'neutral',
-            icon: DollarSign, // Using DollarSign for revenue
+            icon: DollarSign,
             color: 'text-green-600'
         },
         {
             title: 'Expenses',
             value: expenseStats?.value !== undefined ? `R${expenseStats.value.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}` : 'Loading...',
             change: formatChange(expenseStats?.changePercentage, expenseStats?.changeType),
-            // For expenses, an 'increase' in value usually means a negative trend, so we can adjust the badge color logic here
             changeType: expenseStats?.changeType === 'increase' ? 'decrease' : expenseStats?.changeType === 'decrease' ? 'increase' : 'neutral',
-            icon: Divide, // Using Divide for expenses
-            color: 'text-red-600' // Red for expenses
+            icon: Divide,
+            color: 'text-red-600'
+        },
+        {
+            title: 'Profitability',
+            value: profitabilityStats?.value !== undefined ? `R${profitabilityStats.value.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}` : 'Loading...',
+            change: formatChange(profitabilityStats?.changePercentage, profitabilityStats?.changeType),
+            changeType: profitabilityStats?.changeType || 'neutral',
+            icon: Coins,
+            color: profitabilityStats?.changeType === 'increase' ? 'text-green-600' : profitabilityStats?.changeType === 'decrease' ? 'text-red-600' : 'text-gray-600'
         }
     ];
 
@@ -190,7 +204,7 @@ export function StatsCards({ startDate, endDate }: { startDate: Date | null, end
     }
 
     return (
-        <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6'> {/* Adjusted grid columns */}
+        <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6'>
             {stats.map((stat, index) => (
                 <motion.div
                     key={stat.title}

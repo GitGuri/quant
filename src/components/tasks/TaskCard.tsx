@@ -25,7 +25,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
-import { MoreHorizontal, Edit, Trash2, Calendar, User, Folder, Target, ListChecks, Plus, Minus } from 'lucide-react';
+import { MoreHorizontal, Edit, Trash2, Calendar, User, Folder, Target, ListChecks, Plus, Minus, Percent } from 'lucide-react';
 import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useSortable } from '@dnd-kit/sortable';
@@ -73,53 +73,47 @@ const priorityColors = {
 
 interface TaskCardProps {
   task: Task; // Updated type
-  onEdit: (task: Task) => void;
+  onEdit: (task: Task) => void; // This will still open the full edit dialog from KanbanBoard
   onDelete: (taskId: string) => void;
   priority: Task['priority'];
   progressPercentage: number;
   project_name?: string | null;
   projects: { id: string; name: string; }[];
-  // --- NEW: Pass users if needed for assignee display (already in props, just clarifying) ---
-  // users?: { id: string; name: string; }[]; // Uncomment if needed in this component directly
-  // --- NEW: Function to trigger a refetch of tasks from parent ---
+  users?: { id: string; name: string; }[]; // Pass users if needed by TaskCard directly
   onTaskUpdate?: () => void; // Add this to props to refresh data after API calls
 }
 
 // --- NEW: Placeholder hooks for API calls ---
-// You need to implement these based on your data fetching strategy (e.g., fetch, axios, React Query)
 const useIncrementProgress = () => {
-  // Example using fetch:
-  return useCallback(async (taskId: string) => {
+  return useCallback(async (taskId: string, incrementValue: number) => { // Added incrementValue
     try {
-      const token = localStorage.getItem('token'); // Or get from your auth context
-      const response = await fetch(`https://quantnow.onrender.com/api/tasks/${taskId}/progress/increment`, {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/tasks/${taskId}/progress/increment`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
+        body: JSON.stringify({ increment: incrementValue }) // Send increment value
       });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      // Handle success (e.g., return updated task data or just signal success)
-      console.log(`Progress incremented for task ${taskId}`);
-      return await response.json(); // Or return true/success message
+      console.log(`Progress incremented for task ${taskId} by ${incrementValue}`);
+      return await response.json();
     } catch (error) {
       console.error('Failed to increment progress:', error);
-      // Handle error (e.g., show toast notification)
-      throw error; // Re-throw to let caller handle
+      throw error;
     }
   }, []);
 };
 
 const useUpdateTaskProgress = () => {
-  // Example using fetch:
-  return useCallback(async (taskId: string, progressData: Partial<Pick<Task, 'progress_mode' | 'progress_goal' | 'progress_current' | 'steps'>>) => {
+  return useCallback(async (taskId: string, progressData: Partial<Pick<Task, 'progress_mode' | 'progress_goal' | 'progress_current' | 'steps' | 'progress_percentage'>>) => {
     try {
-      const token = localStorage.getItem('token'); // Or get from your auth context
-      const response = await fetch(`https://quantnow.onrender.com/api/tasks/${taskId}/progress`, {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/tasks/${taskId}/progress`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -131,12 +125,10 @@ const useUpdateTaskProgress = () => {
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      // Handle success
       console.log(`Progress updated for task ${taskId}`);
-      return await response.json(); // Return updated task data
+      return await response.json();
     } catch (error) {
       console.error('Failed to update task progress:', error);
-      // Handle error
       throw error;
     }
   }, []);
@@ -391,22 +383,150 @@ const StepsDialog = ({ task, isOpen, onClose, onUpdateProgress, onTaskUpdate }: 
 };
 // --- END NEW: Steps Dialog ---
 
+// --- NEW: Progress Options Dialog Component ---
+const ProgressOptionsDialog = ({ task, isOpen, onClose, onUpdateProgress, onIncrementProgress, onTaskUpdate, setShowTargetDialog, setShowStepsDialog }: {
+  task: Task;
+  isOpen: boolean;
+  onClose: () => void;
+  onUpdateProgress: ReturnType<typeof useUpdateTaskProgress>;
+  onIncrementProgress: ReturnType<typeof useIncrementProgress>;
+  onTaskUpdate?: () => void;
+  setShowTargetDialog: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowStepsDialog: React.Dispatch<React.SetStateAction<boolean>>;
+}) => {
+  const [manualProgress, setManualProgress] = useState<number>(task.progress_percentage);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleManualSave = async () => {
+    setIsSaving(true);
+    try {
+      await onUpdateProgress(task.id, {
+        progress_mode: 'manual',
+        progress_percentage: manualProgress,
+      });
+      onTaskUpdate?.();
+      onClose();
+    } catch (error) {
+      console.error("Error saving manual progress:", error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleIncrement = async (incrementValue: number) => {
+    setIsSaving(true); // Indicate saving
+    try {
+      await onIncrementProgress(task.id, incrementValue); // Use the increment hook
+      onTaskUpdate?.();
+      onClose();
+    } catch (error) {
+      console.error("Error incrementing progress:", error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Edit className="h-5 w-5" /> Edit Progress for "{task.title}"
+          </DialogTitle>
+          <DialogDescription>
+            Choose how you want to update the progress for this task.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-4">
+          {task.progress_mode === 'manual' && (
+            <div className="space-y-2">
+              <Label htmlFor="manual-progress">Manual Progress Percentage</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="manual-progress"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={manualProgress}
+                  onChange={(e) => setManualProgress(Number(e.target.value))}
+                  className="flex-1"
+                />
+                <Button onClick={handleManualSave} disabled={isSaving}>
+                  {isSaving ? 'Saving...' : 'Update'}
+                </Button>
+              </div>
+              <p className="text-xs text-gray-500">Current: {task.progress_percentage}%</p>
+            </div>
+          )}
+
+          {task.progress_mode === 'target' && (
+            <div className="space-y-2">
+              <Label>Target-Based Progress</Label>
+              <div className="flex flex-col gap-2">
+                <Button variant="outline" onClick={() => setShowTargetDialog(true)} disabled={isSaving}>
+                  <Target className="h-4 w-4 mr-2" /> Adjust Target/Current
+                </Button>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={1}
+                    value={1} // Default increment value
+                    onChange={() => {}} // Not directly editable here, just displays increment
+                    className="w-20"
+                    readOnly
+                  />
+                  <Button onClick={() => handleIncrement(1)} disabled={isSaving}>
+                    Increment Current
+                  </Button>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Current: {task.progress_current ?? 0} / {task.progress_goal ?? 'Not Set'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {task.progress_mode === 'steps' && (
+            <div className="space-y-2">
+              <Label>Step-Based Progress</Label>
+              <Button variant="outline" onClick={() => setShowStepsDialog(true)} disabled={isSaving}>
+                <ListChecks className="h-4 w-4 mr-2" /> Manage Steps
+              </Button>
+              <p className="text-xs text-gray-500">
+                Completed {task.steps.filter(s => s.is_done).length} of {task.steps.length} steps.
+              </p>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={isSaving}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+// --- END NEW: Progress Options Dialog ---
+
 export function TaskCard({
   task,
-  onEdit,
+  onEdit, // This will now be used by KanbanBoard for a *separate* full edit button if desired
   onDelete,
   priority,
   progressPercentage,
   project_name,
   projects,
+  users, // Pass users if needed by TaskCard directly
   onTaskUpdate // Receive the refresh function
 }: TaskCardProps) {
-  const [showEditForm, setShowEditForm] = useState(false);
+  const [showEditForm, setShowEditForm] = useState(false); // This will no longer be used by the main edit button
   const [alertOpen, setAlertOpen] = useState(false);
   const [showOverviewDialog, setShowOverviewDialog] = useState(false);
-  // --- NEW: State for new dialogs ---
+  // --- NEW: State for progress specific dialogs ---
   const [showTargetDialog, setShowTargetDialog] = useState(false);
   const [showStepsDialog, setShowStepsDialog] = useState(false);
+  const [showProgressOptionsDialog, setShowProgressOptionsDialog] = useState(false); // New state for progress options dialog
   // --- END NEW ---
 
   // --- NEW: Initialize hooks ---
@@ -431,6 +551,8 @@ export function TaskCard({
   };
 
   const handleEditSave = (updatedFormTask: TaskFormData) => {
+    // This function will still be called by the TaskForm if used elsewhere
+    // but the main "Edit" button on TaskCard will no longer directly trigger the TaskForm.
     onEdit({
       ...task,
       title: updatedFormTask.title,
@@ -440,10 +562,11 @@ export function TaskCard({
       due_date: updatedFormTask.due_date,
       progress_percentage: updatedFormTask.progress_percentage,
       project_id: updatedFormTask.project_id ?? null,
-      // Note: progress_mode, progress_goal, progress_current, steps are not handled by TaskForm directly
-      // They are managed by their respective dialogs
+      progress_mode: updatedFormTask.progress_mode, // Make sure these are updated if TaskForm ever handles them
+      progress_goal: updatedFormTask.progress_goal,
+      progress_current: updatedFormTask.progress_current,
     });
-    setShowEditForm(false);
+    setShowEditForm(false); // Ensure this is closed if still relevant
   };
 
   const handleDeleteConfirm = () => {
@@ -456,9 +579,10 @@ export function TaskCard({
     e.stopPropagation();
   };
 
+  // --- MODIFIED: handleEditButtonClick to open ProgressOptionsDialog ---
   const handleEditButtonClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setShowEditForm(true);
+    setShowProgressOptionsDialog(true); // Open the new dialog
   };
 
   const handleOverviewClick = (e: React.MouseEvent) => {
@@ -466,27 +590,17 @@ export function TaskCard({
     setShowOverviewDialog(true);
   };
 
-  // --- NEW: Handlers for new features ---
-  const handleIncrementProgress = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (task.progress_mode === 'target' && task.progress_goal !== null) {
+  // --- NEW: Handlers for new features (now mostly called from ProgressOptionsDialog) ---
+  // Keeping these here as they are passed to the new dialog
+  const handleIncrementProgress = async (incrementValue: number) => { // Updated to accept increment value
+    if (task.progress_mode === 'target' || task.progress_mode === 'manual') { // Allow increment for manual too if desired
       try {
-        await incrementProgress(task.id);
+        await incrementProgress(task.id, incrementValue);
         onTaskUpdate?.(); // Refresh task list
       } catch (error) {
         // Error handled in hook, maybe show UI feedback
       }
     }
-  };
-
-  const handleOpenTargetDialog = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setShowTargetDialog(true);
-  };
-
-  const handleOpenStepsDialog = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setShowStepsDialog(true);
   };
   // --- END NEW HANDLERS ---
 
@@ -736,7 +850,7 @@ export function TaskCard({
                   variant="outline"
                   size="sm"
                   className="h-6 px-2 text-xs"
-                  onClick={handleIncrementProgress}
+                  onClick={(e) => { e.stopPropagation(); handleIncrementProgress(1); }} // Increment by 1
                   disabled={task.progress_current !== null && task.progress_current >= task.progress_goal}
                 >
                   +1
@@ -753,7 +867,7 @@ export function TaskCard({
                   variant="outline"
                   size="sm"
                   className="h-6 px-2 text-xs"
-                  onClick={handleOpenStepsDialog}
+                  onClick={(e) => { e.stopPropagation(); setShowStepsDialog(true); }}
                 >
                   Manage
                 </Button>
@@ -762,21 +876,14 @@ export function TaskCard({
 
             {task.progress_mode === 'manual' && (
               <div className="flex justify-end pt-1">
+                {/* No direct action here, handled by ProgressOptionsDialog */}
                 <Button
                   variant="outline"
                   size="sm"
                   className="h-6 px-2 text-xs"
-                  onClick={handleOpenTargetDialog}
+                  onClick={(e) => { e.stopPropagation(); setShowProgressOptionsDialog(true); }}
                 >
-                  Set Target
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-6 px-2 text-xs ml-1"
-                  onClick={handleOpenStepsDialog}
-                >
-                  Add Steps
+                  Update Progress
                 </Button>
               </div>
             )}
@@ -785,33 +892,13 @@ export function TaskCard({
           {/* --- END UPDATED --- */}
 
           <div className="flex items-center justify-end gap-1 pt-1 border-t border-gray-100">
+            {/* This button now opens the ProgressOptionsDialog */}
             <Button variant="ghost" size="sm" className="h-7 w-7 p-0 hover:bg-blue-50 hover:text-blue-600" onClick={handleEditButtonClick}>
               <Edit className="h-3 w-3" />
             </Button>
 
-            <Dialog open={showEditForm} onOpenChange={setShowEditForm}>
-              <DialogContent className="max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Edit Task</DialogTitle>
-                  <DialogDescription>Update your task details.</DialogDescription>
-                </DialogHeader>
-                <TaskForm
-                  task={{
-                    title: task.title,
-                    description: task.description || '',
-                    priority: task.priority,
-                    assignee_id: task.assignee_id ?? null,
-                    due_date: task.due_date,
-                    progress_percentage: task.progress_percentage,
-                    project_id: task.project_id ?? null,
-                  }}
-                  onSave={handleEditSave}
-                  onCancel={() => setShowEditForm(false)}
-                  projects={projects}
-                  users={[]} // Will be replaced by parent in edit dialog (KanbanBoard supplies users there)
-                />
-              </DialogContent>
-            </Dialog>
+            {/* The TaskForm Dialog is removed from here as it's not the primary "Edit Progress" flow */}
+            {/* If you need a full edit, it should be triggered from KanbanBoard's taskToEdit dialog */}
 
             <AlertDialog open={alertOpen} onOpenChange={setAlertOpen}>
               <AlertDialogTrigger asChild>
@@ -858,6 +945,17 @@ export function TaskCard({
         onClose={() => setShowStepsDialog(false)}
         onUpdateProgress={updateTaskProgress}
         onTaskUpdate={onTaskUpdate}
+      />
+      {/* New Progress Options Dialog */}
+      <ProgressOptionsDialog
+        task={task}
+        isOpen={showProgressOptionsDialog}
+        onClose={() => setShowProgressOptionsDialog(false)}
+        onUpdateProgress={updateTaskProgress}
+        onIncrementProgress={incrementProgress}
+        onTaskUpdate={onTaskUpdate}
+        setShowTargetDialog={setShowTargetDialog}
+        setShowStepsDialog={setShowStepsDialog}
       />
       {/* --- END NEW --- */}
     </motion.div>

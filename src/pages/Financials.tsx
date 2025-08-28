@@ -63,7 +63,7 @@ interface BalanceSheetData {
   equity: BalanceSheetLineItem[];
 }
 
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 const openBlobInNewTab = (blob: Blob, filename: string) => {
   const url = URL.createObjectURL(blob);

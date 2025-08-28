@@ -67,7 +67,7 @@ interface DocumentFormData {
 }
 
 // API_BASE_URL to connect to your backend
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 function DocumentForm({ document, onSave, onCancel }: any) {
   const [formData, setFormData] = useState<DocumentFormData>({
