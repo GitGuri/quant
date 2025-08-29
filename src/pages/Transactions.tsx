@@ -18,6 +18,7 @@ import {
 import { Edit, Printer, FileText, Trash2, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../AuthPage';
 import { Separator } from '@/components/ui/separator';
+
 // ---------------- Types ----------------
 interface Account {
   id: number;
@@ -60,22 +61,29 @@ interface DupView {
   score: number; // 0..1
 }
 
-interface TxViewRow {
-  id: number;
+// --- NEW: Unified Transaction View Type ---
+type TransactionSourceType = 'journal_entry' | 'manual_transaction';
+
+interface UnifiedTxViewRow {
+  id: string; // Unified ID (e.g., "je-123" or "mt-abc-def")
+  sourceType: TransactionSourceType;
+  sourceId: number | string; // Original ID from respective table
   date: string;
-  memo: string;
-  amount: number;                 // Largest of total_debit/total_credit (positive)
-  lineCount: number;
-  debitAccountId?: number;
-  creditAccountId?: number;
+  description: string;
+  amount: number;
   debitAccountName?: string;
   creditAccountName?: string;
-  complex?: boolean;
-
-  // duplicates UI
+  category?: string; // Primarily for manual transactions
+  type?: 'income' | 'expense' | 'transfer' | 'adjustment'; // Primarily for manual transactions
+  accountId?: number; // Account ID for manual transactions if applicable
+  accountName?: string; // Account name for manual transactions
+  complex?: boolean; // Flag if it's a complex journal entry
+  lineCount?: number; // Number of lines for journal entries
   dupCount?: number;
   dupMatches?: DupView[];
+  // Add any other fields you want to display consistently
 }
+// --- END NEW TYPE ---
 
 // -------------- Helpers --------------
 const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
@@ -121,7 +129,7 @@ const daysBetween = (d1: string, d2: string) =>
   Math.abs((new Date(d1).getTime() - new Date(d2).getTime()) / 86_400_000);
 
 // similar rule as you used during import preview
-const isPotentialDuplicate = (aRow: TxViewRow, bRow: TxViewRow) => {
+const isPotentialDuplicate = (aRow: UnifiedTxViewRow, bRow: UnifiedTxViewRow) => {
   if (aRow.id === bRow.id) return { isDup: false, score: 0 };
   // amounts must match exactly to be “strong dup” for posted journals
   const amountMatch = Math.abs(Number(aRow.amount) - Number(bRow.amount)) <= 0.01;
@@ -129,12 +137,12 @@ const isPotentialDuplicate = (aRow: TxViewRow, bRow: TxViewRow) => {
 
   const dateClose = daysBetween(aRow.date, bRow.date) <= 2;
 
-  const A = tokenSet(aRow.memo);
-  const B = tokenSet(bRow.memo);
+  const A = tokenSet(aRow.description);
+  const B = tokenSet(bRow.description);
   const jac = jaccard(A, B);
   const substring =
-    normalize(aRow.memo).includes(normalize(bRow.memo)) ||
-    normalize(bRow.memo).includes(normalize(aRow.memo));
+    normalize(aRow.description).includes(normalize(bRow.description)) ||
+    normalize(bRow.description).includes(normalize(aRow.description));
   const similarDesc = jac >= 0.55 || substring;
 
   const score = (amountMatch ? 0.5 : 0) + (dateClose ? 0.2 : 0) + (similarDesc ? 0.3 : 0);
@@ -180,10 +188,11 @@ const Transactions: React.FC = () => {
   // Data
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [summaries, setSummaries] = useState<JournalEntrySummary[]>([]);
-  const [rows, setRows] = useState<TxViewRow[]>([]);
+  const [manualTransactions, setManualTransactions] = useState<any[]>([]); // State for manual transactions
+  const [unifiedRows, setUnifiedRows] = useState<UnifiedTxViewRow[]>([]); // NEW STATE for unified rows
 
   // Selection
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set()); // Changed to string for unified IDs
 
   // Loading
   const [loading, setLoading] = useState(false);
@@ -191,13 +200,22 @@ const Transactions: React.FC = () => {
 
   // Edit modal
   const [editOpen, setEditOpen] = useState(false);
-  const [editDetail, setEditDetail] = useState<JournalEntryDetail | null>(null);
-  const [editDate, setEditDate] = useState('');
-  const [editMemo, setEditMemo] = useState('');
-  // editable only when exactly 2 lines
-  const [editDebitAccountId, setEditDebitAccountId] = useState<number | ''>('');
-  const [editCreditAccountId, setEditCreditAccountId] = useState<number | ''>('');
-  const [editAmount, setEditAmount] = useState<number | ''>('');
+  const [editingSourceType, setEditingSourceType] = useState<TransactionSourceType | null>(null); // Track which source is being edited
+  const [editJEDetail, setEditJEDetail] = useState<JournalEntryDetail | null>(null); // JE detail
+  const [editMTDetail, setEditMTDetail] = useState<any | null>(null); // MT detail (use proper interface)
+  // JE edit fields
+  const [editJEDate, setEditJEDate] = useState('');
+  const [editJEMemo, setEditJEMemo] = useState('');
+  const [editJEDebitAccountId, setEditJEDebitAccountId] = useState<number | ''>('');
+  const [editJECreditAccountId, setEditJECreditAccountId] = useState<number | ''>('');
+  const [editJEAmount, setEditJEAmount] = useState<number | ''>('');
+  // MT edit fields
+  const [editMTDate, setEditMTDate] = useState('');
+  const [editMTDescription, setEditMTDescription] = useState('');
+  const [editMTType, setEditMTType] = useState<'income' | 'expense' | 'transfer' | 'adjustment'>('expense'); // Default
+  const [editMTCategory, setEditMTCategory] = useState('');
+  const [editMTAmount, setEditMTAmount] = useState<number | ''>('');
+  const [editMTAccountId, setEditMTAccountId] = useState<number | ''>('');
 
   // Accounts map
   const accountName = useCallback(
@@ -233,171 +251,247 @@ const Transactions: React.FC = () => {
   }, [isAuthenticated, token, authHeaders]);
 
   // ---------- Fetch Journal Entry Summaries ----------
-  // ---------- Fetch Journal Entry Summaries (auto-fetch all pages) ----------
-const fetchSummaries = useCallback(async () => {
-  if (!isAuthenticated || !token) {
-    setSummaries([]);
-    setRows([]);
-    return;
-  }
-
-  setLoading(true);
-  try {
-    const pageSize = 200; // ask for the server max to reduce round-trips
-    let page = 1;
-    const all: JournalEntrySummary[] = [];
-
-    // build the static query bits once
-    const baseQS = new URLSearchParams();
-    if (fromDate) baseQS.append('start', fromDate);
-    if (toDate)   baseQS.append('end', toDate);
-    if (searchTerm) baseQS.append('q', searchTerm);
-
-    // pull pages until the server returns less than a full page
-    // or we hit a hard safety cap to avoid accidental infinite loops
-    const MAX_PAGES = 200; 
-    // (200 pages × 200 rows = 40k rows—way more than you’ll need in UI)
-    while (page <= MAX_PAGES) {
-      const qs = new URLSearchParams(baseQS);
-      qs.set('page', String(page));
-      qs.set('pageSize', String(pageSize));
-
-      const res = await fetch(`${API_BASE_URL}/journal-entries?${qs.toString()}`, {
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json();
-      const items: JournalEntrySummary[] = (data?.items || []).map((r: any) => ({
-        id: Number(r.id),
-        entry_date: String(r.entry_date),
-        memo: r.memo ?? null,
-        total_debit: r.total_debit,
-        total_credit: r.total_credit,
-        line_count: Number(r.line_count || 0),
-      }));
-
-      all.push(...items);
-
-      // stop if we got a short page or empty
-      if (items.length < pageSize) break;
-      page += 1;
+  const fetchSummaries = useCallback(async () => {
+    if (!isAuthenticated || !token) {
+      setSummaries([]);
+      return;
     }
 
-    setSummaries(all);
-  } catch (e) {
-    console.error('Failed to load journal-entries', e);
-    setSummaries([]);
-  } finally {
-    setLoading(false);
-  }
-}, [isAuthenticated, token, authHeaders, fromDate, toDate, searchTerm]);
+    setLoading(true);
+    try {
+      const pageSize = 200;
+      let page = 1;
+      const all: JournalEntrySummary[] = [];
 
+      const baseQS = new URLSearchParams();
+      if (fromDate) baseQS.append('start', fromDate);
+      if (toDate) baseQS.append('end', toDate);
+      if (searchTerm) baseQS.append('q', searchTerm);
+
+      const MAX_PAGES = 200;
+      while (page <= MAX_PAGES) {
+        const qs = new URLSearchParams(baseQS);
+        qs.set('page', String(page));
+        qs.set('pageSize', String(pageSize));
+
+        const res = await fetch(`${API_BASE_URL}/journal-entries?${qs.toString()}`, {
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        const items: JournalEntrySummary[] = (data?.items || []).map((r: any) => ({
+          id: Number(r.id),
+          entry_date: String(r.entry_date),
+          memo: r.memo ?? null,
+          total_debit: r.total_debit,
+          total_credit: r.total_credit,
+          line_count: Number(r.line_count || 0),
+        }));
+
+        all.push(...items);
+        if (items.length < pageSize) break;
+        page += 1;
+      }
+
+      setSummaries(all);
+    } catch (e) {
+      console.error('Failed to load journal-entries', e);
+      setSummaries([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [isAuthenticated, token, authHeaders, fromDate, toDate, searchTerm]);
 
   useEffect(() => {
     fetchSummaries();
   }, [fetchSummaries]);
 
-  // ---------- Fetch details → build friendly rows ----------
+  // ---------- Fetch Manual Transactions ----------
+  const fetchManualTransactions = useCallback(async () => {
+    if (!isAuthenticated || !token) {
+      setManualTransactions([]);
+      return;
+    }
+    try {
+      // Build query string for manual transactions
+      const mtQS = new URLSearchParams();
+      if (fromDate) mtQS.append('fromDate', fromDate);
+      if (toDate) mtQS.append('toDate', toDate);
+      // Note: searchTerm filtering for MT might need backend support or client-side filtering
+
+      const res = await fetch(`${API_BASE_URL}/transactions?${mtQS.toString()}`, {
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      console.log('[DEBUG] Fetched manual transactions:', data); // Debug log
+      setManualTransactions(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error('Failed to load manual transactions', e);
+      setManualTransactions([]);
+    }
+  }, [isAuthenticated, token, authHeaders, fromDate, toDate]); // Refetch when dates change
+
+  useEffect(() => {
+    fetchManualTransactions();
+  }, [fetchManualTransactions]);
+
+  // ---------- Fetch details → build friendly rows (MODIFIED for unified view) ----------
   useEffect(() => {
     if (!isAuthenticated || !token) {
-      setRows([]);
+      setUnifiedRows([]);
       return;
     }
     (async () => {
-      if (!summaries.length) {
-        setRows([]);
-        return;
+      // --- 1. Process Journal Entries ---
+      let journalRows: UnifiedTxViewRow[] = [];
+      if (summaries.length > 0) {
+        setLoadingDetails(true);
+        try {
+          const details = await mapWithConcurrency(
+            summaries,
+            async (s) => {
+              const res = await fetch(`${API_BASE_URL}/journal-entries/${s.id}`, {
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+              });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const detail: JournalEntryDetail = await res.json();
+
+              const lines = detail.lines || [];
+              const bd = biggestDebit(lines);
+              const bc = biggestCredit(lines);
+
+              const amount = Math.max(
+                parseNumber(s.total_debit),
+                parseNumber(s.total_credit)
+              );
+
+              // --- Create Unified Row for Journal Entry ---
+              const row: UnifiedTxViewRow = {
+                id: `je-${s.id}`, // Prefix to ensure uniqueness
+                sourceType: 'journal_entry',
+                sourceId: s.id,
+                date: s.entry_date,
+                description: detail.entry.memo || '',
+                amount,
+                debitAccountName: accounts.find(a => a.id === bd?.account_id)?.name,
+                creditAccountName: accounts.find(a => a.id === bc?.account_id)?.name,
+                complex: lines.length > 2,
+                lineCount: s.line_count,
+              };
+              return row;
+              // --- End Create Unified Row ---
+            },
+            8
+          );
+          journalRows = details;
+        } catch (e) {
+          console.error('Failed to load journal-entries details', e);
+          journalRows = [];
+        } finally {
+          // Don't reset loadingDetails yet, MT might still be loading
+        }
       }
-      setLoadingDetails(true);
-      try {
-        const details = await mapWithConcurrency(
-          summaries,
-          async (s) => {
-            const res = await fetch(`${API_BASE_URL}/journal-entries/${s.id}`, {
-              headers: { 'Content-Type': 'application/json', ...authHeaders },
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const detail: JournalEntryDetail = await res.json();
 
-            const lines = detail.lines || [];
-            const bd = biggestDebit(lines);
-            const bc = biggestCredit(lines);
+      // --- 2. Process Manual Transactions ---
+      // Map manual transactions to the unified structure
+      const manualRows: UnifiedTxViewRow[] = manualTransactions.map(tx => {
+        // Find account name if account_id exists
+        let accountName = '';
+        if (tx.account_id) {
+          const account = accounts.find(a => a.id === Number(tx.account_id));
+          accountName = account ? account.name : `Account ${tx.account_id}`;
+        } else if (tx.account_name) {
+          accountName = tx.account_name;
+        }
 
-            const amount = Math.max(
-              parseNumber(s.total_debit),
-              parseNumber(s.total_credit)
-            );
+        // --- Create Unified Row for Manual Transaction ---
+        return {
+          id: `mt-${tx.id}`, // Prefix to ensure uniqueness
+          sourceType: 'manual_transaction',
+          sourceId: tx.id,
+          date: tx.date,
+          description: tx.description || tx.original_text || 'Manual Transaction',
+          amount: Number(tx.amount) || 0,
+          debitAccountName: accountName || tx.category || 'Uncategorized', // Show account or category
+          creditAccountName: '', // Not used for manual transactions in this view
+          category: tx.category || 'Uncategorized',
+          type: tx.type || 'expense', // Default assumption
+          accountId: tx.account_id ? Number(tx.account_id) : undefined,
+          accountName: accountName,
+        };
+        // --- End Create Unified Row ---
+      });
+      // --- End Process Manual Transactions ---
 
-            const row: TxViewRow = {
-              id: s.id,
-              date: s.entry_date,
-              memo: detail.entry.memo || '',
-              amount,
-              lineCount: s.line_count,
-              debitAccountId: bd?.account_id,
-              creditAccountId: bc?.account_id,
-              complex: lines.length > 2,
-            };
-            return row;
-          },
-          8
-        );
+      // --- 3. Combine and Compute Duplicates ---
+      const combinedRows = [...journalRows, ...manualRows];
 
-        // attach names
-        const withNames: TxViewRow[] = details.map(r => ({
-          ...r,
-          debitAccountName: accountName(r.debitAccountId),
-          creditAccountName: accountName(r.creditAccountId),
-        }));
-
-        // compute duplicates across current result set
-        const withDupFlags: TxViewRow[] = withNames.map((row, idx) => {
-          const matches: DupView[] = [];
-          for (let j = 0; j < withNames.length; j++) {
-            if (j === idx) continue;
-            const other = withNames[j];
+      // Compute duplicates across the combined result set
+      const withDupFlags: UnifiedTxViewRow[] = combinedRows.map((row, idx) => {
+        const matches: DupView[] = [];
+        for (let j = 0; j < combinedRows.length; j++) {
+          if (j === idx) continue;
+          const other = combinedRows[j];
+          // Simplified: only check within the same source type for now
+          if (other.sourceType === row.sourceType) {
             const { isDup, score } = isPotentialDuplicate(row, other);
             if (isDup) {
               matches.push({
-                id: other.id,
+                id: Number(other.sourceId), // Use sourceId for DupView
                 date: other.date,
-                memo: other.memo,
+                memo: other.description, // Use description for MT
                 amount: other.amount,
                 score,
               });
             }
           }
-          matches.sort((a, b) => b.score - a.score);
-          return { ...row, dupCount: matches.length, dupMatches: matches };
-        });
+          // TODO: Add logic to compare JE amounts/memos to MT descriptions if needed
+        }
+        matches.sort((a, b) => b.score - a.score);
+        return { ...row, dupCount: matches.length, dupMatches: matches };
+      });
+      // --- End Combine and Compute Duplicates ---
 
-        setRows(withDupFlags);
-        setSelectedIds(new Set()); // clear selection on refresh
-      } catch (e) {
-        console.error('Failed to load journal-entries details', e);
-        setRows([]);
-      } finally {
-        setLoadingDetails(false);
-      }
+      setUnifiedRows(withDupFlags);
+      setSelectedIds(new Set()); // clear selection on refresh
+      setLoadingDetails(false); // Done loading both JE and MT details
     })();
-  }, [summaries, isAuthenticated, token, authHeaders, accountName]);
+  }, [summaries, manualTransactions, isAuthenticated, token, authHeaders, accounts]); // Add accounts dependency
 
   // ---------- Filter in UI by account / dup ----------
   const filteredRows = useMemo(() => {
-    let r = rows;
+    let r = unifiedRows;
     if (selectedAccountFilter !== 'all' && selectedAccountFilter) {
-      const id = Number(selectedAccountFilter);
-      r = r.filter(x => x.debitAccountId === id || x.creditAccountId === id);
+      const filterId = Number(selectedAccountFilter);
+      r = r.filter(x => {
+        if (x.sourceType === 'journal_entry') {
+          return x.debitAccountId === filterId || x.creditAccountId === filterId;
+        } else if (x.sourceType === 'manual_transaction') {
+          return x.accountId === filterId;
+        }
+        return false;
+      });
     }
     if (showDupOnly) {
       r = r.filter(x => (x.dupCount || 0) > 0);
     }
+    // Add search term filtering
+    if (searchTerm) {
+        const term = searchTerm.toLowerCase();
+        r = r.filter(x =>
+            (x.description && x.description.toLowerCase().includes(term)) ||
+            (x.debitAccountName && x.debitAccountName.toLowerCase().includes(term)) ||
+            (x.creditAccountName && x.creditAccountName.toLowerCase().includes(term)) ||
+            (x.category && x.category.toLowerCase().includes(term))
+        );
+    }
     return r;
-  }, [rows, selectedAccountFilter, showDupOnly]);
+  }, [unifiedRows, selectedAccountFilter, showDupOnly, searchTerm]); // Add searchTerm dependency
 
   // ---------- Select / Bulk delete ----------
-  const toggleSelect = (id: number) => {
+  const toggleSelect = (id: string) => { // Change type to string
     setSelectedIds(prev => {
       const n = new Set(prev);
       if (n.has(id)) n.delete(id);
@@ -415,7 +509,6 @@ const fetchSummaries = useCallback(async () => {
 
   const toggleSelectAll = () => {
     if (allVisibleSelected) {
-      // clear visible
       const visibleIds = new Set(filteredRows.map(r => r.id));
       setSelectedIds(prev => {
         const n = new Set(prev);
@@ -423,7 +516,6 @@ const fetchSummaries = useCallback(async () => {
         return n;
       });
     } else {
-      // select all visible
       setSelectedIds(prev => {
         const n = new Set(prev);
         filteredRows.forEach(r => n.add(r.id));
@@ -432,17 +524,28 @@ const fetchSummaries = useCallback(async () => {
     }
   };
 
-  const deleteOne = async (id: number) => {
+  // ---------- Delete ----------
+  const deleteOne = async (unifiedId: string, sourceType: TransactionSourceType) => { // Updated signature
     if (!token) return alert('Not authenticated.');
-    if (!confirm('Delete this journal entry? This cannot be undone.')) return;
+    const confirmMsg = sourceType === 'journal_entry'
+      ? 'Delete this journal entry? This cannot be undone.'
+      : 'Delete this manual transaction? This cannot be undone.';
+    if (!confirm(confirmMsg)) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/journal-entries/${id}`, {
+      let url = '';
+      if (sourceType === 'journal_entry') {
+        url = `${API_BASE_URL}/journal-entries/${unifiedId.split('-')[1]}`; // Extract numeric ID
+      } else {
+        url = `${API_BASE_URL}/transactions/${unifiedId.split('-')[1]}`; // Extract string ID
+      }
+      const res = await fetch(url, {
         method: 'DELETE',
         headers: { ...authHeaders },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // refresh
+      // refresh both data sources
       fetchSummaries();
+      fetchManualTransactions(); // Refresh MT list
     } catch (e: any) {
       console.error('Delete failed', e);
       alert(`Delete failed: ${e?.message || e}`);
@@ -457,11 +560,27 @@ const fetchSummaries = useCallback(async () => {
 
     try {
       setLoading(true);
-      for (const id of ids) {
-        const res = await fetch(`${API_BASE_URL}/journal-entries/${id}`, { method: 'DELETE', headers: { ...authHeaders } });
-        if (!res.ok) throw new Error(`Delete ${id} failed: HTTP ${res.status}`);
+      for (const unifiedId of ids) {
+        // Parse the unified ID to determine source and actual ID
+        const parts = unifiedId.split('-');
+        const sourceType: TransactionSourceType = parts[0] === 'je' ? 'journal_entry' : 'manual_transaction';
+        const actualId = parts.slice(1).join('-'); // Re-join in case the original ID had dashes
+
+        let url = '';
+        if (sourceType === 'journal_entry') {
+          url = `${API_BASE_URL}/journal-entries/${actualId}`;
+        } else {
+          url = `${API_BASE_URL}/transactions/${actualId}`;
+        }
+        const res = await fetch(url, { method: 'DELETE', headers: { ...authHeaders } });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`Delete ${unifiedId} failed: ${res.status} ${errText}`);
+        }
       }
+      // refresh
       fetchSummaries();
+      fetchManualTransactions(); // Refresh MT list
       setSelectedIds(new Set());
     } catch (e: any) {
       console.error('Bulk delete failed', e);
@@ -472,32 +591,53 @@ const fetchSummaries = useCallback(async () => {
   };
 
   // ---------- Edit ----------
-  const openEdit = async (id: number) => {
+  const openEdit = async (unifiedId: string, sourceType: TransactionSourceType) => { // Updated signature
     if (!token) return alert('Not authenticated.');
     try {
-      const res = await fetch(`${API_BASE_URL}/journal-entries/${id}`, {
+      const parts = unifiedId.split('-');
+      const actualId = parts.slice(1).join('-');
+
+      let url = '';
+      if (sourceType === 'journal_entry') {
+        url = `${API_BASE_URL}/journal-entries/${actualId}`;
+      } else {
+        url = `${API_BASE_URL}/transactions/${actualId}`;
+      }
+
+      const res = await fetch(url, {
         headers: { 'Content-Type': 'application/json', ...authHeaders },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: JournalEntryDetail = await res.json();
-      setEditDetail(data);
-      setEditDate(data.entry.entry_date);
-      setEditMemo(data.entry.memo || '');
 
-      if (data.lines.length === 2) {
-        const dLine = data.lines.find(l => parseNumber(l.debit) > 0);
-        const cLine = data.lines.find(l => parseNumber(l.credit) > 0);
-        const amount = Math.max(parseNumber(dLine?.debit), parseNumber(cLine?.credit));
-        setEditDebitAccountId(dLine?.account_id ?? '');
-        setEditCreditAccountId(cLine?.account_id ?? '');
-        setEditAmount(amount || '');
+      if (sourceType === 'journal_entry') {
+        const data: JournalEntryDetail = await res.json();
+        setEditJEDetail(data);
+        setEditJEDate(data.entry.entry_date);
+        setEditJEMemo(data.entry.memo || '');
+        if (data.lines.length === 2) {
+          const dLine = data.lines.find(l => parseNumber(l.debit) > 0);
+          const cLine = data.lines.find(l => parseNumber(l.credit) > 0);
+          const amount = Math.max(parseNumber(dLine?.debit), parseNumber(cLine?.credit));
+          setEditJEDebitAccountId(dLine?.account_id ?? '');
+          setEditJECreditAccountId(cLine?.account_id ?? '');
+          setEditJEAmount(amount || '');
+        } else {
+          setEditJEDebitAccountId('');
+          setEditJECreditAccountId('');
+          setEditJEAmount('');
+        }
+        setEditingSourceType('journal_entry');
       } else {
-        // complex entry → disable line editing; allow header edits only
-        setEditDebitAccountId('');
-        setEditCreditAccountId('');
-        setEditAmount('');
+        const data: any = await res.json(); // Use your Transaction interface
+        setEditMTDetail(data);
+        setEditMTDate(data.date);
+        setEditMTDescription(data.description || data.original_text || '');
+        setEditMTType(data.type || 'expense');
+        setEditMTCategory(data.category || '');
+        setEditMTAmount(data.amount ? Number(data.amount) : '');
+        setEditMTAccountId(data.account_id ? Number(data.account_id) : '');
+        setEditingSourceType('manual_transaction');
       }
-
       setEditOpen(true);
     } catch (e: any) {
       console.error('Load detail failed', e);
@@ -506,54 +646,82 @@ const fetchSummaries = useCallback(async () => {
   };
 
   const saveEdit = async () => {
-    if (!editDetail) return;
     if (!token) return alert('Not authenticated.');
-    try {
-      // Always update date & memo
-      let payload: any = {
-        entryDate: editDate,
-        memo: editMemo || null,
-        lines: [] as Array<{ accountId: number; debit: number; credit: number }>,
-      };
+    if (editingSourceType === 'journal_entry' && editJEDetail) {
+      try {
+        let payload: any = {
+          entryDate: editJEDate,
+          memo: editJEMemo || null,
+          lines: [] as Array<{ accountId: number; debit: number; credit: number }>,
+        };
 
-      if (editDetail.lines.length === 2) {
-        // two-line edit
-        const amt = typeof editAmount === 'number' ? editAmount : parseFloat(String(editAmount || 0));
-        if (!amt || !editDebitAccountId || !editCreditAccountId) {
-          alert('Please provide debit account, credit account, and a non-zero amount.');
-          return;
+        if (editJEDetail.lines.length === 2) {
+          const amt = typeof editJEAmount === 'number' ? editJEAmount : parseFloat(String(editJEAmount || 0));
+          if (!amt || !editJEDebitAccountId || !editJECreditAccountId) {
+            alert('Please provide debit account, credit account, and a non-zero amount.');
+            return;
+          }
+          payload.lines = [
+            { accountId: Number(editJEDebitAccountId), debit: amt, credit: 0 },
+            { accountId: Number(editJECreditAccountId), debit: 0, credit: amt },
+          ];
+        } else {
+          payload.lines = editJEDetail.lines.map(l => ({
+            accountId: l.account_id,
+            debit: parseNumber(l.debit),
+            credit: parseNumber(l.credit),
+          }));
         }
-        payload.lines = [
-          { accountId: Number(editDebitAccountId), debit: amt, credit: 0 },
-          { accountId: Number(editCreditAccountId), debit: 0, credit: amt },
-        ];
-      } else {
-        // complex: keep old lines, only header changes
-        payload.lines = editDetail.lines.map(l => ({
-          accountId: l.account_id,
-          debit: parseNumber(l.debit),
-          credit: parseNumber(l.credit),
-        }));
-      }
 
-      const res = await fetch(`${API_BASE_URL}/journal-entries/${editDetail.entry.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => null);
-        throw new Error(err?.error || `HTTP ${res.status}`);
+        const res = await fetch(`${API_BASE_URL}/journal-entries/${editJEDetail.entry.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => null);
+          throw new Error(err?.error || `HTTP ${res.status}`);
+        }
+      } catch (e: any) {
+        console.error('Save JE failed', e);
+        alert(`Save failed: ${e?.message || String(e)}`);
+        return; // Stop if JE save fails
       }
+    } else if (editingSourceType === 'manual_transaction' && editMTDetail) {
+      try {
+        const payload = {
+          date: editMTDate,
+          description: editMTDescription,
+          type: editMTType,
+          category: editMTCategory,
+          amount: typeof editMTAmount === 'number' ? editMTAmount : parseFloat(String(editMTAmount || 0)),
+          account_id: editMTAccountId || null,
+        };
 
-      setEditOpen(false);
-      setEditDetail(null);
-      // refresh list
-      fetchSummaries();
-    } catch (e: any) {
-      console.error('Save failed', e);
-      alert(`Save failed: ${e?.message || String(e)}`);
+        const res = await fetch(`${API_BASE_URL}/transactions/${editMTDetail.id}`, {
+          method: 'PUT', // Or PATCH if your backend supports it
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => null);
+          throw new Error(err?.error || `HTTP ${res.status}`);
+        }
+      } catch (e: any) {
+        console.error('Save MT failed', e);
+        alert(`Save failed: ${e?.message || String(e)}`);
+        return; // Stop if MT save fails
+      }
     }
+
+    // If we get here, save was successful
+    setEditOpen(false);
+    setEditJEDetail(null);
+    setEditMTDetail(null);
+    setEditingSourceType(null);
+    // refresh list
+    fetchSummaries();
+    fetchManualTransactions(); // Refresh MT list
   };
 
   // ---------- Export / Print ----------
@@ -565,23 +733,31 @@ const fetchSummaries = useCallback(async () => {
     const headers = [
       'ID',
       'Date',
-      'Memo',
-      'Debit Account',
-      'Credit Account',
+      'Description',
+      'Accounts / Category',
       'Amount',
-      'Lines',
+      'Source',
+      'Type', // Add type for clarity
       'Dup Count',
     ];
-    const csvRows = filteredRows.map(r => ([
-      r.id,
-      r.date,
-      (r.memo || '').replace(/"/g, '""'),
-      (r.debitAccountName || '').replace(/"/g, '""'),
-      (r.creditAccountName || '').replace(/"/g, '""'),
-      r.amount.toFixed(2),
-      r.lineCount,
-      r.dupCount || 0,
-    ].map(x => `"${String(x)}"`).join(',')));
+    const csvRows = filteredRows.map(r => {
+      let accountsOrCategory = '';
+      if (r.sourceType === 'journal_entry') {
+        accountsOrCategory = `${r.debitAccountName || '—'} ↔ ${r.creditAccountName || '—'}`;
+      } else {
+        accountsOrCategory = r.accountName || r.category || 'Uncategorized';
+      }
+      return ([
+        r.id,
+        r.date,
+        (r.description || '').replace(/"/g, '""'),
+        accountsOrCategory.replace(/"/g, '""'),
+        r.amount.toFixed(2),
+        r.sourceType === 'journal_entry' ? 'Journal Entry' : 'Manual Transaction',
+        r.type || '', // For JE, this will be empty
+        r.dupCount || 0,
+      ].map(x => `"${String(x)}"`).join(','));
+    });
     const csvContent = [headers.join(','), ...csvRows].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -604,13 +780,13 @@ const fetchSummaries = useCallback(async () => {
           <CardHeader>
             <CardTitle>Transaction Filters</CardTitle>
             <CardDescription>
-              This view shows journal entries in a transaction-friendly way (debit ↔ credit). It also flags potential duplicates.
+              This view shows both journal entries (double-entry) and manual transactions.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="col-span-1">
-                <Label className="mb-2 block">Search (memo)</Label>
+                <Label className="mb-2 block">Search (description)</Label>
                 <Input
                   placeholder="Type to search…"
                   value={searchTerm}
@@ -656,7 +832,7 @@ const fetchSummaries = useCallback(async () => {
               </div>
             </div>
             <div className="mt-4 flex gap-2">
-              <Button variant="outline" onClick={fetchSummaries} disabled={loading}>Apply</Button>
+              <Button variant="outline" onClick={() => { fetchSummaries(); fetchManualTransactions(); }} disabled={loading}>Apply</Button>
               <Button variant="ghost" onClick={() => { setSearchTerm(''); setFromDate(''); setToDate(''); setSelectedAccountFilter('all'); setShowDupOnly(false); }}>Reset</Button>
             </div>
           </CardContent>
@@ -665,7 +841,7 @@ const fetchSummaries = useCallback(async () => {
         {/* Top actions */}
         <div className="flex flex-wrap gap-2 items-center justify-between">
           <div className="text-sm text-muted-foreground">
-            {loading ? 'Loading…' : `${filteredRows.length} transaction(s)`}{loadingDetails ? ' (resolving accounts…)': ''}
+            {loading || loadingDetails ? 'Loading…' : `${filteredRows.length} transaction(s)`}{loadingDetails ? ' (resolving accounts…)': ''}
           </div>
           <div className="flex gap-2 items-center">
             {selectedIds.size > 0 && (
@@ -686,7 +862,10 @@ const fetchSummaries = useCallback(async () => {
         {/* Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Transaction History</CardTitle>
+            <CardTitle>Unified Transaction History</CardTitle>
+            <CardDescription>
+              Journal Entries (double-entry) and Manual Transactions combined.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
@@ -704,14 +883,14 @@ const fetchSummaries = useCallback(async () => {
                     </th>
                     <th className="text-left p-3">Date</th>
                     <th className="text-left p-3">Description</th>
-                    <th className="text-left p-3">Debit ↔ Credit</th>
+                    <th className="text-left p-3">Accounts / Category</th>
                     <th className="text-left p-3">Amount</th>
-                    <th className="text-left p-3">Lines</th>
+                    <th className="text-left p-3">Source</th> {/* New Column */}
                     <th className="text-left p-3">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {loading ? (
+                  {loading || loadingDetails ? ( // Show loading if either is happening
                     <tr><td colSpan={7} className="text-center py-12">Loading…</td></tr>
                   ) : filteredRows.length === 0 ? (
                     <tr><td colSpan={7} className="text-center py-12 text-muted-foreground">No transactions found</td></tr>
@@ -721,18 +900,23 @@ const fetchSummaries = useCallback(async () => {
                         <td className="p-3">
                           <input
                             type="checkbox"
-                            checked={selectedIds.has(r.id)}
-                            onChange={() => toggleSelect(r.id)}
-                            aria-label={`Select entry ${r.id}`}
+                            checked={selectedIds.has(r.id)} // Use unified ID
+                            onChange={() => toggleSelect(r.id)} // Pass unified ID
+                            aria-label={`Select transaction ${r.id}`}
                           />
                         </td>
                         <td className="p-3">{new Date(r.date).toLocaleDateString()}</td>
                         <td className="p-3">
                           <div className="flex items-center gap-2">
-                            <span>{r.memo || '—'}</span>
+                            <span>{r.description || '—'}</span>
                             {r.complex && (
                               <Badge variant="secondary" className="gap-1">
                                 <AlertTriangle className="h-3 w-3" /> multi-line
+                              </Badge>
+                            )}
+                            {r.lineCount !== undefined && r.lineCount > 2 && (
+                               <Badge variant="secondary" className="gap-1">
+                                <AlertTriangle className="h-3 w-3" /> {r.lineCount} lines
                               </Badge>
                             )}
                             {(r.dupCount || 0) > 0 && (
@@ -744,12 +928,12 @@ const fetchSummaries = useCallback(async () => {
                                 </DialogTrigger>
                                 <DialogContent>
                                   <DialogHeader>
-                                    <DialogTitle>Potential duplicates for entry #{r.id}</DialogTitle>
+                                    <DialogTitle>Potential duplicates for entry {r.id}</DialogTitle>
                                   </DialogHeader>
                                   <div className="space-y-2 mt-2 text-sm">
                                     {(r.dupMatches || []).map(m => (
-                                      <div key={m.id} className="border rounded p-2">
-                                        <div><strong>ID:</strong> {m.id}</div>
+                                      <div key={`${r.sourceType}-${m.id}`} className="border rounded p-2"> {/* Adjust key */}
+                                        <div><strong>ID:</strong> {m.id} ({r.sourceType === 'journal_entry' ? 'JE' : 'MT'})</div> {/* Show source type */}
                                         <div><strong>Date:</strong> {m.date}</div>
                                         <div className="truncate"><strong>Memo:</strong> {m.memo || '—'}</div>
                                         <div><strong>Amount:</strong> {fmtMoney(m.amount)}</div>
@@ -763,16 +947,32 @@ const fetchSummaries = useCallback(async () => {
                           </div>
                         </td>
                         <td className="p-3">
-                          {r.debitAccountName || '—'} <span className="opacity-60">↔</span> {r.creditAccountName || '—'}
+                          {/* Display logic based on source type */}
+                          {r.sourceType === 'journal_entry' ? (
+                            <>
+                              {r.debitAccountName || '—'} <span className="opacity-60">↔</span> {r.creditAccountName || '—'}
+                              {r.complex && <span className="ml-1 text-xs text-muted-foreground">(Complex)</span>}
+                            </>
+                          ) : (
+                            <>
+                              {r.accountName || r.category || r.debitAccountName || 'Uncategorized'} {/* Prioritize account name, then category */}
+                              {r.type && <span className="ml-1 text-xs bg-blue-100 text-blue-800 px-1 rounded">{r.type}</span>}
+                            </>
+                          )}
                         </td>
                         <td className="p-3">{fmtMoney(r.amount)}</td>
-                        <td className="p-3">{r.lineCount}</td>
+                        <td className="p-3">
+                          {/* Show source type */}
+                          <Badge variant={r.sourceType === 'journal_entry' ? 'default' : 'secondary'}>
+                            {r.sourceType === 'journal_entry' ? 'Journal Entry' : 'Manual Transaction'}
+                          </Badge>
+                        </td>
                         <td className="p-3">
                           <div className="flex items-center gap-2">
-                            <Button variant="ghost" size="sm" onClick={() => openEdit(r.id)}>
+                            <Button variant="ghost" size="sm" onClick={() => openEdit(r.id, r.sourceType)}> {/* Pass unified ID and source type */}
                               <Edit className="h-4 w-4" />
                             </Button>
-                            <Button variant="ghost" size="sm" onClick={() => deleteOne(r.id)}>
+                            <Button variant="ghost" size="sm" onClick={() => deleteOne(r.id, r.sourceType)}> {/* Pass unified ID and source type */}
                               <Trash2 className="h-4 w-4 text-red-500" />
                             </Button>
                           </div>
@@ -787,156 +987,228 @@ const fetchSummaries = useCallback(async () => {
         </Card>
       </motion.div>
 
-{/* Edit dialog */}
-<Dialog open={editOpen} onOpenChange={setEditOpen}>
-  <DialogContent
-    className="sm:max-w-[640px] p-0 overflow-hidden"
-    onKeyDown={(e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        saveEdit();
-      }
-    }}
-  >
-    {/* Header */}
-    <div className="bg-muted/30 px-6 py-4 border-b">
-      <DialogHeader>
-        <DialogTitle className="text-lg">Edit Transaction</DialogTitle>
-        <p className="text-sm text-muted-foreground">
-          Update date, memo, and (for 2-line entries) the debit/credit accounts and amount.
-        </p>
-      </DialogHeader>
-    </div>
-
-    {/* Body */}
-    <div className="px-6 py-5 space-y-6">
-      {!editDetail ? (
-        <div className="text-sm text-muted-foreground">Loading…</div>
-      ) : (
-        <>
-          {/* Row 1: Date / Memo */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label className="mb-2 block">Date</Label>
-              <Input
-                type="date"
-                value={editDate}
-                onChange={(e) => setEditDate(e.target.value)}
-                className="h-10"
-              />
-            </div>
-            <div>
-              <Label className="mb-2 block">Memo</Label>
-              <Input
-                value={editMemo}
-                onChange={(e) => setEditMemo(e.target.value)}
-                placeholder="(optional)"
-                className="h-10"
-              />
-            </div>
+      {/* Edit dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent
+          className="sm:max-w-[640px] p-0 overflow-hidden"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              saveEdit();
+            }
+          }}
+        >
+          {/* Header */}
+          <div className="bg-muted/30 px-6 py-4 border-b">
+            <DialogHeader>
+              <DialogTitle className="text-lg">Edit Transaction</DialogTitle>
+              <p className="text-sm text-muted-foreground">
+                Update details for {editingSourceType === 'journal_entry' ? 'Journal Entry' : 'Manual Transaction'}.
+              </p>
+            </DialogHeader>
           </div>
 
-          <Separator />
-
-          {/* Row 2: Accounts / Amount (only for 2-line) */}
-          {editDetail.lines.length === 2 ? (
-            <div className="space-y-4">
-              <div className="flex items-center gap-2">
-                <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px]">
-                  2-line entry (editable)
-                </Badge>
-                <span className="text-xs text-muted-foreground">
-                  We’ll save a balanced Dr/Cr for the amount.
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <Label className="mb-2 block">Debit Account</Label>
-                  <Select
-                    value={editDebitAccountId === '' ? '' : String(editDebitAccountId)}
-                    onValueChange={(v) => setEditDebitAccountId(v ? Number(v) : '')}
-                  >
-                    <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Select debit account" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accounts.map((a) => (
-                        <SelectItem key={a.id} value={String(a.id)}>
-                          {a.name} ({a.code})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div>
-                  <Label className="mb-2 block">Credit Account</Label>
-                  <Select
-                    value={editCreditAccountId === '' ? '' : String(editCreditAccountId)}
-                    onValueChange={(v) => setEditCreditAccountId(v ? Number(v) : '')}
-                  >
-                    <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Select credit account" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accounts.map((a) => (
-                        <SelectItem key={a.id} value={String(a.id)}>
-                          {a.name} ({a.code})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div>
-                  <Label className="mb-2 block">Amount</Label>
-                  <div className="flex">
-                    <span className="inline-flex items-center px-3 border border-r-0 rounded-l-md text-sm text-muted-foreground bg-muted/40">
-                      R
-                    </span>
+          {/* Body */}
+          <div className="px-6 py-5 space-y-6">
+            {!editJEDetail && !editMTDetail ? (
+              <div className="text-sm text-muted-foreground">Loading…</div>
+            ) : (
+              <>
+                {/* Row 1: Date / Memo/Description */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label className="mb-2 block">Date</Label>
                     <Input
-                      type="number"
-                      step="0.01"
-                      value={editAmount}
-                      onChange={(e) =>
-                        setEditAmount(e.target.value === '' ? '' : Number(e.target.value))
-                      }
-                      placeholder="0.00"
-                      className="rounded-l-none h-10 text-right"
+                      type="date"
+                      value={editingSourceType === 'journal_entry' ? editJEDate : editMTDate}
+                      onChange={(e) => editingSourceType === 'journal_entry' ? setEditJEDate(e.target.value) : setEditMTDate(e.target.value)}
+                      className="h-10"
+                    />
+                  </div>
+                  <div>
+                    <Label className="mb-2 block">{editingSourceType === 'journal_entry' ? 'Memo' : 'Description'}</Label>
+                    <Input
+                      value={editingSourceType === 'journal_entry' ? editJEMemo : editMTDescription}
+                      onChange={(e) => editingSourceType === 'journal_entry' ? setEditJEMemo(e.target.value) : setEditMTDescription(e.target.value)}
+                      placeholder="(optional)"
+                      className="h-10"
                     />
                   </div>
                 </div>
-              </div>
-            </div>
-          ) : (
-            <div className="p-3 rounded-md border bg-amber-50/60">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5" />
-                <div className="text-sm">
-                  <div className="font-medium text-amber-900">Multi-line journal</div>
-                  <div className="text-amber-900/90">
-                    This entry has {editDetail.lines.length} lines. You can change the date & memo
-                    here. For line-level edits, use the Journals screen (or split into a two-line
-                    entry).
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </div>
 
-    {/* Footer */}
-    <div className="px-6 py-4 bg-muted/30 border-t flex items-center justify-end gap-2">
-      <Button variant="outline" onClick={() => setEditOpen(false)}>
-        Cancel
-      </Button>
-      <Button onClick={saveEdit}>Save</Button>
-    </div>
-  </DialogContent>
-</Dialog>
+                <Separator />
+
+                {/* Row 2: Source-specific fields */}
+                {editingSourceType === 'journal_entry' && editJEDetail && (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px]">
+                        Journal Entry (Editable)
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        We’ll save a balanced Dr/Cr for the amount.
+                      </span>
+                    </div>
+
+                    {editJEDetail.lines.length === 2 ? (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <Label className="mb-2 block">Debit Account</Label>
+                          <Select
+                            value={editJEDebitAccountId === '' ? '' : String(editJEDebitAccountId)}
+                            onValueChange={(v) => setEditJEDebitAccountId(v ? Number(v) : '')}
+                          >
+                            <SelectTrigger className="h-10">
+                              <SelectValue placeholder="Select debit account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {accounts.map((a) => (
+                                <SelectItem key={a.id} value={String(a.id)}>
+                                  {a.name} ({a.code})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div>
+                          <Label className="mb-2 block">Credit Account</Label>
+                          <Select
+                            value={editJECreditAccountId === '' ? '' : String(editJECreditAccountId)}
+                            onValueChange={(v) => setEditJECreditAccountId(v ? Number(v) : '')}
+                          >
+                            <SelectTrigger className="h-10">
+                              <SelectValue placeholder="Select credit account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {accounts.map((a) => (
+                                <SelectItem key={a.id} value={String(a.id)}>
+                                  {a.name} ({a.code})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div>
+                          <Label className="mb-2 block">Amount</Label>
+                          <div className="flex">
+                            <span className="inline-flex items-center px-3 border border-r-0 rounded-l-md text-sm text-muted-foreground bg-muted/40">
+                              R
+                            </span>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              value={editJEAmount}
+                              onChange={(e) =>
+                                setEditJEAmount(e.target.value === '' ? '' : Number(e.target.value))
+                              }
+                              placeholder="0.00"
+                              className="rounded-l-none h-10 text-right"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-md border bg-amber-50/60">
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5" />
+                          <div className="text-sm">
+                            <div className="font-medium text-amber-900">Multi-line journal</div>
+                            <div className="text-amber-900/90">
+                              This entry has {editJEDetail.lines.length} lines. You can change the date & memo
+                              here. For line-level edits, use the Journals screen.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {editingSourceType === 'manual_transaction' && editMTDetail && (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px]">
+                        Manual Transaction (Editable)
+                      </Badge>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <Label className="mb-2 block">Type</Label>
+                         <Select value={editMTType} onValueChange={(v: any) => setEditMTType(v)}>
+                          <SelectTrigger className="h-10">
+                            <SelectValue placeholder="Select type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="income">Income</SelectItem>
+                            <SelectItem value="expense">Expense</SelectItem>
+                            <SelectItem value="transfer">Transfer</SelectItem>
+                            <SelectItem value="adjustment">Adjustment</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="mb-2 block">Category</Label>
+                        <Input
+                          value={editMTCategory}
+                          onChange={(e) => setEditMTCategory(e.target.value)}
+                          className="h-10"
+                        />
+                      </div>
+                       <div>
+                        <Label className="mb-2 block">Amount</Label>
+                        <div className="flex">
+                          <span className="inline-flex items-center px-3 border border-r-0 rounded-l-md text-sm text-muted-foreground bg-muted/40">
+                            R
+                          </span>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={editMTAmount}
+                            onChange={(e) =>
+                              setEditMTAmount(e.target.value === '' ? '' : Number(e.target.value))
+                            }
+                            placeholder="0.00"
+                            className="rounded-l-none h-10 text-right"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <Label className="mb-2 block">Account</Label>
+                        <Select
+                          value={editMTAccountId === '' ? '' : String(editMTAccountId)}
+                          onValueChange={(v) => setEditMTAccountId(v ? Number(v) : '')}
+                        >
+                          <SelectTrigger className="h-10">
+                            <SelectValue placeholder="Select account" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {accounts.map((a) => (
+                              <SelectItem key={a.id} value={String(a.id)}>
+                                {a.name} ({a.code})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 bg-muted/30 border-t flex items-center justify-end gap-2">
+            <Button variant="outline" onClick={() => setEditOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={saveEdit}>Save</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
     </div>
   );
