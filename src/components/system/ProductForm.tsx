@@ -206,7 +206,7 @@ export function ProductForm({ product, onSave, onCancel }: ProductFormProps) {
       </div>
 
       <div>
-        <Label htmlFor='stock'>Stock Quantity</Label>
+        <Label htmlFor='stock'>Available Quantity</Label>
         <Input
           id='stock'
           type='number'

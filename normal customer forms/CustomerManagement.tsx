@@ -1,26 +1,88 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Users, CircleDollarSign, Coins, Repeat, Gem, Plus, Search, Loader2 } from 'lucide-react';
-
+// src/pages/CustomerManagement.tsx
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from '@/components/ui/table';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
-  DialogFooter,
-  DialogClose,
+  DialogTrigger
 } from '@/components/ui/dialog';
-import { useToast } from '@/components/ui/use-toast';
-import { CustomerForm } from './CustomerForm'; // <-- your form below
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger
+} from '@/components/ui/alert-dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+// --- Import Icons ---
+import {
+  Plus,
+  Search,
+  Edit,
+  Trash2,
+  Loader2,
+  Users,
+  CircleDollarSign, // High Value Icon
+  Coins,            // Low Value Icon
+  Repeat,          // Frequent Buyer Icon
+  Gem             // Big Spender Icon
+} from 'lucide-react';
+// --- End Import Icons ---
+import { CustomerForm } from './CustomerForm';
+import { useToast } from '@/hooks/use-toast';
 
-// --- API auth helper (adjust if you keep tokens elsewhere) ---
-const getToken = () => localStorage.getItem('authToken') || '';
+interface CustomField {
+  id: number;
+  name: string;
+  value: string;
+}
 
+// --- Updated Customer Interface to Match Backend Response ---
+interface Customer {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  address?: string;
+  vatNumber?: string; // Maps to tax_id from backend
+  status?: 'Active' | 'Inactive';
+  customFields?: CustomField[];
+  totalInvoiced: number;       // From backend aggregation
+  numberOfPurchases: number;   // From backend aggregation
+  averageOrderValue: number;   // Calculated by backend
+}
+// --- End Updated Customer Interface ---
+
+interface CustomerSaveData {
+  name: string;
+  email: string;
+  phone?: string;
+  address?: string;
+  vatNumber?: string;
+  customFields?: string;
+}
+
+// --- Define Customer Clusters ---
 type CustomerCluster = 'All' | 'High Value' | 'Low Value' | 'Frequent Buyer' | 'Big Spender';
 
+// --- Updated Cluster Tabs with Proper Icons ---
 const CLUSTER_TABS: { value: CustomerCluster; label: string; icon: React.ReactNode }[] = [
   { value: 'All', label: 'All Customers', icon: <Users className="h-4 w-4 mr-2" /> },
   { value: 'High Value', label: 'High Value', icon: <CircleDollarSign className="h-4 w-4 mr-2" /> },
@@ -28,54 +90,116 @@ const CLUSTER_TABS: { value: CustomerCluster; label: string; icon: React.ReactNo
   { value: 'Frequent Buyer', label: 'Frequent Buyers', icon: <Repeat className="h-4 w-4 mr-2" /> },
   { value: 'Big Spender', label: 'Big Spenders', icon: <Gem className="h-4 w-4 mr-2" /> },
 ];
+// --- End Define Customer Clusters ---
 
-// --- types (align with your backend) ---
-interface CustomerRow {
-  id: number;
-  name: string;
-  email?: string | null;
-  phone?: string | null;
-  address?: string | null;
-  vat_number?: string | null;
-  total_invoiced?: number | null;
-  purchases?: number | null;
-  avg_order?: number | null;
-  active?: boolean | null;
-}
-
-interface CustomerPayload {
-  id?: string;
-  name: string;
-  email: string;
-  phone: string;
-  address: string;
-  vatNumber: string;
-  customFields?: { id: number; name: string; value: string }[];
-}
-
-export default function CustomerManagement() {
+export function CustomerManagement() {
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isFormDialogOpen, setIsFormDialogOpen] = useState(false);
+  const [currentCustomer, setCurrentCustomer] = useState<Customer | undefined>(undefined);
+  // --- State for Customer Clustering ---
+  const [activeCluster, setActiveCluster] = useState<CustomerCluster>('All');
+  // --- End State for Customer Clustering ---
   const { toast } = useToast();
-  const [query, setQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<CustomerCluster>('All');
 
-  const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<CustomerRow[]>([]);
-  const [openForm, setOpenForm] = useState(false);
+  const getAuthHeaders = useCallback(() => {
+    const token = localStorage.getItem('token');
+    // console.log('Frontend: Token from localStorage in getAuthHeaders:', token ? token.substring(0, 10) + '...' : 'NONE'); // Optional debug log
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  }, []);
 
-  // fetch customers
-  const loadCustomers = async () => {
+  // --- Fetch Customers with Cluster Data from Backend ---
+  const fetchCustomersWithClusterData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const headers = getAuthHeaders();
+      // console.log('Frontend: Headers for fetchCustomersWithClusterData:', headers); // Optional debug log
+
+      // --- CALL THE NEW BACKEND ENDPOINT ---
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/customers/cluster-data`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers,
+        },
+      });
+      // --- END CALL THE NEW BACKEND ENDPOINT ---
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Backend response for ${response.status}:`, errorText);
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+
+      // --- RECEIVE DATA WITH METRICS FROM BACKEND ---
+      const data: Customer[] = await response.json();
+      // --- END RECEIVE DATA WITH METRICS ---
+      
+      setCustomers(data);
+    } catch (err) {
+      console.error('Failed to fetch clustered customers:', err);
+      setError('Failed to load customers. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [getAuthHeaders]);
+  // --- End Fetch Customers with Cluster Data ---
+
+  // --- Effect to Fetch Data on Mount and Search Change ---
+  useEffect(() => {
+    // console.log('Frontend: useEffect in CustomerManagement triggered.'); // Optional debug log
+    fetchCustomersWithClusterData();
+  }, [fetchCustomersWithClusterData, searchTerm]); // Add searchTerm if backend handles search, otherwise remove
+  // --- End Effect to Fetch Data ---
+
+  const handleFormSave = async (customerData: Customer) => {
+    const payload: CustomerSaveData = {
+      name: customerData.name,
+      email: customerData.email,
+      phone: customerData.phone,
+      address: customerData.address,
+      vatNumber: customerData.vatNumber,
+      customFields: JSON.stringify(customerData.customFields?.filter(f => f.name.trim() !== '') || []),
+    };
+
+    if (currentCustomer) {
+      await handleUpdateCustomer(currentCustomer.id, payload);
+    } else {
+      await handleCreateCustomer(payload);
+    }
+  };
+
+  const handleCreateCustomer = async (customerData: CustomerSaveData) => {
     setLoading(true);
     try {
-      const resp = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/customers`, {
-        headers: { Authorization: `Bearer ${getToken()}` },
+      const response = await fetch('https://quantnow-cu1v.onrender.com/api/customers', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify(customerData)
       });
-      if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
-      const data = await resp.json();
-      setRows(Array.isArray(data) ? data : []);
-    } catch (err: any) {
+
+      if (!response.ok) {
+        const errorBody = await response.json();
+        throw new Error(errorBody.error || 'Failed to create customer.');
+      }
+
       toast({
-        title: 'Failed to fetch customers',
-        description: err?.message || 'Internal server error',
+        title: 'Success',
+        description: 'Customer created successfully.',
+      });
+      setIsFormDialogOpen(false);
+      setCurrentCustomer(undefined);
+      await fetchCustomersWithClusterData(); // Refresh data
+    } catch (err) {
+      console.error('Error creating customer:', err);
+      toast({
+        title: 'Error',
+        description: `Failed to create customer: ${err instanceof Error ? err.message : String(err)}`,
         variant: 'destructive',
       });
     } finally {
@@ -83,190 +207,256 @@ export default function CustomerManagement() {
     }
   };
 
-  useEffect(() => {
-    loadCustomers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // quick client-side filter and “clustering” (dummy rules; swap for server tags if you have them)
-  const filtered = useMemo(() => {
-    let list = rows;
-
-    // text search
-    if (query.trim()) {
-      const q = query.toLowerCase();
-      list = list.filter(
-        (r) =>
-          r.name?.toLowerCase().includes(q) ||
-          r.email?.toLowerCase().includes(q) ||
-          r.phone?.toLowerCase().includes(q)
-      );
-    }
-
-    // cluster
-    switch (activeTab) {
-      case 'High Value':
-        list = list.filter((r) => (r.total_invoiced || 0) >= 50000); // tweak thresholds
-        break;
-      case 'Low Value':
-        list = list.filter((r) => (r.total_invoiced || 0) > 0 && (r.total_invoiced || 0) < 5000);
-        break;
-      case 'Frequent Buyer':
-        list = list.filter((r) => (r.purchases || 0) >= 12);
-        break;
-      case 'Big Spender':
-        list = list.filter((r) => (r.avg_order || 0) >= 2500);
-        break;
-      default:
-        break;
-    }
-
-    // sort: active first, then by name
-    return [...list].sort((a, b) => {
-      const aAct = a.active ? 0 : 1;
-      const bAct = b.active ? 0 : 1;
-      if (aAct !== bAct) return aAct - bAct;
-      return (a.name || '').localeCompare(b.name || '');
-    });
-  }, [rows, query, activeTab]);
-
-  // create customer from form
-  const handleSaveCustomer = async (payload: CustomerPayload) => {
+  const handleUpdateCustomer = async (id: string, customerData: CustomerSaveData) => {
+    setLoading(true);
     try {
-      const resp = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/customers`, {
-        method: 'POST',
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/customers/${id}`, {
+        method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${getToken()}`,
+          ...getAuthHeaders(),
         },
-        body: JSON.stringify({
-          name: payload.name,
-          contact_person: null,
-          email: payload.email || null,
-          phone: payload.phone || null,
-          address: payload.address || null,
-          tax_id: payload.vatNumber || null,
-        }),
+        body: JSON.stringify(customerData)
       });
 
-      if (!resp.ok) {
-        const j = await resp.json().catch(() => ({}));
-        throw new Error(j?.detail || j?.error || `${resp.status} ${resp.statusText}`);
+      if (!response.ok) {
+        const errorBody = await response.json();
+        throw new Error(errorBody.error || 'Failed to update customer.');
       }
 
-      toast({ title: 'Customer created', description: payload.name });
-      setOpenForm(false);
-      await loadCustomers();
-    } catch (err: any) {
       toast({
-        title: 'Add customer failed',
-        description: err?.message || 'Could not save customer',
+        title: 'Success',
+        description: 'Customer updated successfully.',
+      });
+      setIsFormDialogOpen(false);
+      setCurrentCustomer(undefined);
+      await fetchCustomersWithClusterData(); // Refresh data
+    } catch (err) {
+      console.error('Error updating customer:', err);
+      toast({
+        title: 'Error',
+        description: `Failed to update customer: ${err instanceof Error ? err.message : String(err)}`,
         variant: 'destructive',
       });
+    } finally {
+      setLoading(false);
     }
   };
 
+  const handleDeleteCustomer = async (id: string) => {
+    setLoading(true);
+    try {
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/customers/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json();
+        throw new Error(errorBody.error || 'Failed to delete customer.');
+      }
+
+      toast({
+        title: 'Success',
+        description: 'Customer deleted successfully.',
+      });
+      await fetchCustomersWithClusterData(); // Refresh data
+    } catch (err) {
+      console.error('Error deleting customer:', err);
+      toast({
+        title: 'Error',
+        description: `Failed to delete customer: ${err instanceof Error ? err.message : String(err)}`,
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEditCustomer = (customer: Customer) => {
+    setCurrentCustomer(customer);
+    setIsFormDialogOpen(true);
+  };
+
+  const handleFormCancel = () => {
+    setIsFormDialogOpen(false);
+    setCurrentCustomer(undefined);
+  };
+
+  // --- Function to Filter Customers by Cluster ---
+  const filterCustomersByCluster = useCallback((cluster: CustomerCluster): Customer[] => {
+    if (cluster === 'All') {
+      return customers;
+    }
+
+    return customers.filter(customer => {
+      // Use the metrics provided by the backend
+      const totalInvoiced = customer.totalInvoiced ?? 0;
+      const numberOfPurchases = customer.numberOfPurchases ?? 0;
+      const averageOrderValue = customer.averageOrderValue ?? 0;
+
+      switch (cluster) {
+        case 'High Value':
+          return totalInvoiced > 1000; // Example threshold
+        case 'Low Value':
+          return totalInvoiced <= 500; // Example threshold
+        case 'Frequent Buyer':
+          return numberOfPurchases > 5; // Example threshold
+        case 'Big Spender':
+          return averageOrderValue > 200; // Example threshold
+        default:
+          return true; // Should not happen, but safe default
+      }
+    });
+  }, [customers]);
+  // --- End Function to Filter Customers by Cluster ---
+
+  // Filter customers based on active cluster and search term
+  const filteredCustomers = filterCustomersByCluster(activeCluster).filter(
+    customer =>
+      customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      customer.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (customer.phone && customer.phone.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (customer.vatNumber && customer.vatNumber.toLowerCase().includes(searchTerm.toLowerCase()))
+  );
+
   return (
-    <div className="space-y-4">
-      {/* header bar */}
-      <div className="flex items-center justify-between">
-        <div className="text-lg font-semibold">Customer Management</div>
-        <Button onClick={() => setOpenForm(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          New Customer
-        </Button>
-      </div>
-
-      {/* cluster tabs */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {CLUSTER_TABS.map((t) => (
-          <Button
-            key={t.value}
-            variant={activeTab === t.value ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => setActiveTab(t.value)}
-            className="whitespace-nowrap"
-          >
-            {t.icon}
-            {t.label}
-          </Button>
-        ))}
-      </div>
-
-      {/* search */}
-      <div className="flex items-center gap-2">
-        <div className="relative w-full sm:max-w-md">
-          <Search className="h-4 w-4 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+    <Card className='w-full'>
+      <CardHeader className='flex flex-col sm:flex-row items-start sm:items-center justify-between space-y-2 sm:space-y-0 pb-2'>
+        <CardTitle className='text-xl font-medium'>Customer Management</CardTitle>
+        <div className='flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 w-full sm:w-auto'>
           <Input
-            placeholder="Search customers…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="pl-8"
+            placeholder='Search customers...'
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            className='max-w-sm'
           />
+          <Dialog open={isFormDialogOpen} onOpenChange={setIsFormDialogOpen}>
+            <DialogTrigger asChild>
+              <Button onClick={() => setCurrentCustomer(undefined)} className='w-full sm:w-auto'>
+                <Plus className='mr-2 h-4 w-4' /> New Customer
+              </Button>
+            </DialogTrigger>
+            <DialogContent className='sm:max-w-[425px]'>
+              <DialogHeader>
+                <DialogTitle>
+                  {currentCustomer ? 'Edit Customer' : 'Create New Customer'}
+                </DialogTitle>
+              </DialogHeader>
+              <CustomerForm
+                customer={currentCustomer}
+                onSave={handleFormSave}
+                onCancel={handleFormCancel}
+              />
+            </DialogContent>
+          </Dialog>
         </div>
-      </div>
-
-      {/* table */}
-      <div className="border rounded-lg overflow-hidden">
-        <div className="grid grid-cols-[minmax(220px,1.2fr)_minmax(160px,0.9fr)_minmax(120px,0.8fr)_minmax(120px,0.8fr)_minmax(130px,0.8fr)_minmax(110px,0.7fr)_minmax(100px,0.6fr)] px-3 py-2 bg-muted/40 text-sm font-medium">
-          <div>Name</div>
-          <div>Email</div>
-          <div>Phone</div>
-          <div>Total Invoiced (R)</div>
-          <div>Purchases</div>
-          <div>Avg Order (R)</div>
-          <div>Status</div>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center py-10 text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin mr-2" />
-            Loading…
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="px-4 py-10 text-sm text-muted-foreground">No customers found.</div>
-        ) : (
-          <div className="divide-y">
-            {filtered.map((r) => (
-              <div
-                key={r.id}
-                className="grid grid-cols-[minmax(220px,1.2fr)_minmax(160px,0.9fr)_minmax(120px,0.8fr)_minmax(120px,0.8fr)_minmax(130px,0.8fr)_minmax(110px,0.7fr)_minmax(100px,0.6fr)] px-3 py-2 text-sm"
-              >
-                <div className="truncate">{r.name}</div>
-                <div className="truncate">{r.email || 'N/A'}</div>
-                <div className="truncate">{r.phone || 'N/A'}</div>
-                <div>{(r.total_invoiced ?? 0).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' }).replace('ZAR', 'R')}</div>
-                <div>{r.purchases ?? 0}</div>
-                <div>{(r.avg_order ?? 0).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' }).replace('ZAR', 'R')}</div>
-                <div>{r.active ? <Badge>Active</Badge> : <Badge variant="secondary">Inactive</Badge>}</div>
-              </div>
+      </CardHeader>
+      <CardContent>
+        {/* --- Tabs for Customer Clusters --- */}
+        <Tabs value={activeCluster} onValueChange={(value) => setActiveCluster(value as CustomerCluster)} className="w-full mb-4">
+          <TabsList className="grid w-full grid-cols-5">
+            {CLUSTER_TABS.map(tab => (
+              <TabsTrigger key={tab.value} value={tab.value} className="flex items-center justify-center">
+                {tab.icon}
+                <span className="hidden sm:inline">{tab.label}</span>
+                <span className="sm:hidden">{tab.value}</span>
+              </TabsTrigger>
             ))}
-          </div>
-        )}
-      </div>
-
-      {/* add / edit dialog */}
-      <Dialog open={openForm} onOpenChange={setOpenForm}>
-        <DialogContent className="max-w-3xl p-0">
-          <DialogHeader className="px-6 pt-6 pb-0">
-            <DialogTitle>Add Customer</DialogTitle>
-            <DialogDescription>Capture the customer details below and click Create.</DialogDescription>
-          </DialogHeader>
-
-          <div className="px-6 py-4 overflow-auto max-h-[70vh]">
-            <CustomerForm
-              onSave={handleSaveCustomer}
-              onCancel={() => setOpenForm(false)}
-            />
-          </div>
-
-          <DialogFooter className="px-6 pb-6">
-            <DialogClose asChild>
-              <Button variant="outline">Close</Button>
-            </DialogClose>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+          </TabsList>
+          {CLUSTER_TABS.map(tab => (
+            <TabsContent key={tab.value} value={tab.value}>
+              {loading ? (
+                <div className='flex justify-center items-center h-40'>
+                  <Loader2 className='h-8 w-8 animate-spin' />
+                </div>
+              ) : error ? (
+                <div className='text-red-500 text-center py-4'>{error}</div>
+              ) : (
+                <div className='overflow-x-auto'>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Phone</TableHead>
+                        <TableHead>VAT Number</TableHead>
+                        <TableHead className="text-right">Total Invoiced (R)</TableHead>
+                        <TableHead className="text-right">Purchases</TableHead>
+                        <TableHead className="text-right">Avg Order (R)</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className='text-right'>Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredCustomers.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={9} className='text-center'>
+                            No customers found in this cluster matching your search.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        filteredCustomers.map(customer => (
+                          <TableRow key={customer.id}>
+                            <TableCell className='font-medium'>{customer.name}</TableCell>
+                            <TableCell>{customer.email}</TableCell>
+                            <TableCell>{customer.phone || 'N/A'}</TableCell>
+                            <TableCell>{customer.vatNumber || 'N/A'}</TableCell>
+                            <TableCell className="text-right">R{customer.totalInvoiced.toFixed(2)}</TableCell>
+                            <TableCell className="text-right">{customer.numberOfPurchases}</TableCell>
+                            <TableCell className="text-right">R{customer.averageOrderValue.toFixed(2)}</TableCell>
+                            <TableCell>
+                              <Badge variant={customer.status === 'Active' ? 'default' : 'secondary'}>
+                                {customer.status || 'N/A'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className='text-right'>
+                              <div className='flex justify-end space-x-2'>
+                                <Button
+                                  variant='ghost'
+                                  size='sm'
+                                  onClick={() => handleEditCustomer(customer)}
+                                >
+                                  <Edit className='h-4 w-4' />
+                                </Button>
+                                <AlertDialog>
+                                  <AlertDialogTrigger asChild>
+                                    <Button variant='ghost' size='sm'>
+                                      <Trash2 className='h-4 w-4' />
+                                    </Button>
+                                  </AlertDialogTrigger>
+                                  <AlertDialogContent>
+                                    <AlertDialogHeader>
+                                      <AlertDialogTitle>Delete Customer</AlertDialogTitle>
+                                      <AlertDialogDescription>
+                                        Are you sure you want to delete {customer.name}?
+                                        This action cannot be undone.
+                                      </AlertDialogDescription>
+                                    </AlertDialogHeader>
+                                    <AlertDialogFooter>
+                                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                      <AlertDialogAction
+                                        onClick={() => handleDeleteCustomer(customer.id)}
+                                      >
+                                        Delete
+                                      </AlertDialogAction>
+                                    </AlertDialogFooter>
+                                  </AlertDialogContent>
+                                </AlertDialog>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </TabsContent>
+          ))}
+        </Tabs>
+        {/* --- End Tabs for Customer Clusters --- */}
+      </CardContent>
+    </Card>
   );
 }

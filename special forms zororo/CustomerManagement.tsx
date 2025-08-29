@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -337,7 +337,7 @@ export function CustomerManagement() {
                 id_number: applicationData.id_number,
                 alt_name: applicationData.alt_name,
                 relation_to_member: applicationData.relation_to_member,
-                gen_date_of_birth: applicationData.relation_dob, // Renamed to avoid clash, assuming this is relation_dob
+                relation_dob: applicationData.relation_dob,
                 family_members: applicationData.family_members,
                 extended_family: applicationData.extended_family,
                 plan_options: applicationData.plan_options,
@@ -457,7 +457,7 @@ export function CustomerManagement() {
         } catch (err) {
             toast({ title: 'Error', description: `Failed to delete customer: ${err instanceof Error ? err.message : String(err)}`, variant: 'destructive' });
         } finally {
-            setLoading(false);
+                       setLoading(false);
         }
     };
 
@@ -505,7 +505,7 @@ export function CustomerManagement() {
         setCurrentApplication(undefined);
     };
 
-    // --- Filtering and Rendering Logic ---
+    // --- Filtering & Cluster helpers ---
     const filterCustomersByCluster = useCallback((cluster: CustomerCluster): Customer[] => {
         if (cluster === 'All') { return customers; }
         return customers.filter(customer => {
@@ -514,19 +514,31 @@ export function CustomerManagement() {
             const averageOrderValue = customer.averageOrderValue ?? 0;
 
             switch (cluster) {
-                case 'High Value': return totalInvoiced > 1000;
-                case 'Low Value': return totalInvoiced <= 500;
+                case 'High Value':     return totalInvoiced > 1000;
+                case 'Low Value':      return totalInvoiced <= 500;
                 case 'Frequent Buyer': return numberOfPurchases > 5;
-                case 'Big Spender': return averageOrderValue > 200;
-                default: return true;
+                case 'Big Spender':    return averageOrderValue > 200;
+                default:               return true;
             }
         });
     }, [customers]);
 
+    // Precompute counts for badges on cluster tabs
+    const clusterCounts = useMemo<Record<CustomerCluster, number>>(() => {
+        const counts: Record<CustomerCluster, number> = {
+            All: customers.length,
+            'High Value': filterCustomersByCluster('High Value').length,
+            'Low Value': filterCustomersByCluster('Low Value').length,
+            'Frequent Buyer': filterCustomersByCluster('Frequent Buyer').length,
+            'Big Spender': filterCustomersByCluster('Big Spender').length,
+        };
+        return counts;
+    }, [customers, filterCustomersByCluster]);
+
     const filteredCustomers = filterCustomersByCluster(activeCluster).filter(
         customer =>
             (customer.firstName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            customer.lastName?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+             customer.lastName?.toLowerCase().includes(searchTerm.toLowerCase())) ||
             customer.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
             (customer.phone && customer.phone.toLowerCase().includes(searchTerm.toLowerCase())) ||
             (customer.idNumber && customer.idNumber.toLowerCase().includes(searchTerm.toLowerCase()))
@@ -543,8 +555,6 @@ export function CustomerManagement() {
 
     // --- Conditional Form Rendering ---
     if (isFormOpen) {
-        // The CustomerForm is now generic enough to handle both customer and application data
-        // We pass 'application' prop if it's an application, otherwise 'customer'
         return (
             <CustomerForm
                 application={view === 'applications' ? currentApplication : undefined}
@@ -576,7 +586,7 @@ export function CustomerManagement() {
             </CardHeader>
             <CardContent>
                 {/* --- View Switcher Tabs --- */}
-                <Tabs value={view} onValueChange={(value) => setView(value as View)} className="w-full mb-4">
+                <Tabs value={view} onValueChange={(value) => setView(value as View)} className="w-full mb-3">
                     <TabsList className="grid w-full grid-cols-2 rounded-md">
                         <TabsTrigger value="customers" className="flex items-center justify-center rounded-md">
                             <Users className="h-4 w-4 mr-2" /> Customers
@@ -586,6 +596,31 @@ export function CustomerManagement() {
                         </TabsTrigger>
                     </TabsList>
                 </Tabs>
+
+                {/* --- NEW: Cluster Tabs Row (only for Customers view) --- */}
+                {view === 'customers' && (
+                    <Tabs
+                        value={activeCluster}
+                        onValueChange={(val) => setActiveCluster(val as CustomerCluster)}
+                        className="w-full mb-4"
+                    >
+                        <TabsList className="flex w-full flex-wrap gap-2 rounded-md p-1">
+                            {CLUSTER_TABS.map(tab => (
+                                <TabsTrigger
+                                    key={tab.value}
+                                    value={tab.value}
+                                    className="flex items-center rounded-md px-3 py-1.5"
+                                >
+                                    {tab.icon}
+                                    <span className="mr-2">{tab.label}</span>
+                                    <Badge variant="secondary">{clusterCounts[tab.value]}</Badge>
+                                </TabsTrigger>
+                            ))}
+                        </TabsList>
+                        {/* We don’t need separate TabsContent blocks here since the table below
+                            uses activeCluster to filter. Keeping the Tabs for the UX/selection */}
+                    </Tabs>
+                )}
                 
                 {loading ? (
                     <div className='flex justify-center items-center h-40'>
@@ -675,7 +710,7 @@ export function CustomerManagement() {
                                                 <TableCell>{app.email}</TableCell>
                                                 <TableCell>{app.phone}</TableCell>
                                                 <TableCell>{app.id_number || 'N/A'}</TableCell>
-                                                <TableCell><Badge>{app.status || 'Active'}</Badge></TableCell>
+                                                <TableCell><Badge>{(app as any).status || 'Active'}</Badge></TableCell>
                                                 <TableCell className='text-right'>
                                                     <div className='flex justify-end space-x-2'>
                                                         <Button variant='ghost' size='sm' onClick={() => handleEditApplication(app)}><Edit className='h-4 w-4' /></Button>

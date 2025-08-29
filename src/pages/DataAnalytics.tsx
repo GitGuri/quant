@@ -1,25 +1,38 @@
+// src/pages/DataAnalytics.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { Header } from '@/components/layout/Header';
-import { ChartGrid } from '@/components/analytics/ChartGrid';
-import { ChartModal } from '@/components/analytics/ChartModal';
 import { motion } from 'framer-motion';
 import { useAuth } from '../AuthPage';
-import Highcharts from '../lib/initHighcharts'; // ← use the pre‑initialized instance
+import Highcharts from '../lib/initHighcharts';
+import HighchartsReact from 'highcharts-react-official';
 import type { Options } from 'highcharts';
-import { Spin, Alert, Button } from 'antd';
+import { Spin, Alert, Button, Select, Card } from 'antd';
+import type { SelectProps } from 'antd';
+
+// --- Add interfaces for new data structures ---
+interface DailySalesDataPoint {
+  date: string; // 'YYYY-MM-DD' - This is correct from the backend
+  total_sales_amount: number;
+}
+
+interface MonthlyExpenseDataPoint {
+  month: string; // 'YYYY-MM-DD' (first day of the month)
+  [category: string]: number | string; // Index signature for dynamic categories
+}
+// --- End new interfaces ---
 
 export interface ChartData {
   id: string;
   title: string;
   type:
-    | 'sankey'
     | 'dependencywheel'
     | 'networkgraph'
     | 'sunburst'
     | 'packedbubble'
     | 'variwide'
-    | 'streamgraph'
-    | 'solidgauge';
+    | 'solidgauge'
+    | 'columnrange' // For Bar Race
+    | 'heatmap';    // For Heatmaps (Calendar or Regular)
   data: (string | number)[][];
   config: Options;
   isLoading: boolean;
@@ -29,11 +42,11 @@ export interface ChartData {
 const API = 'https://quantnow-cu1v.onrender.com';
 
 const DataAnalytics = () => {
-  const [selectedChart, setSelectedChart] = useState<ChartData | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedChartIds, setSelectedChartIds] = useState<string[]>(['variwide-revenue-volume']);
   const [allChartData, setAllChartData] = useState<ChartData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [availableCharts, setAvailableCharts] = useState<{ id: string; title: string }[]>([]);
 
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
@@ -43,6 +56,7 @@ const DataAnalytics = () => {
   const fetchChartData = useCallback(async () => {
     if (!token) {
       setAllChartData([]);
+      setAvailableCharts([]);
       setLoading(false);
       setError('Authentication required. Please log in.');
       return;
@@ -65,6 +79,8 @@ const DataAnalytics = () => {
         transactionBreakdownRes,
         payrollDistributionRes,
         topSellingProductsRes,
+        dailySalesRes,
+        monthlyExpensesRes,
       ] = await Promise.all([
         fetch(`${API}/api/charts/revenue-trend`, { headers }),
         fetch(`${API}/api/charts/transaction-volume`, { headers }),
@@ -73,6 +89,8 @@ const DataAnalytics = () => {
         fetch(`${API}/api/charts/transaction-type-breakdown`, { headers }),
         fetch(`${API}/api/charts/payroll-distribution`, { headers }),
         fetch(`${API}/api/charts/top-selling-products`, { headers }),
+        fetch(`${API}/api/charts/daily-sales-aggregation`, { headers }),
+        fetch(`${API}/api/charts/monthly-expenses`, { headers }),
       ]);
 
       const ensureOk = (r: Response, name: string) => {
@@ -85,14 +103,18 @@ const DataAnalytics = () => {
       ensureOk(transactionBreakdownRes, 'transaction type breakdown');
       ensureOk(payrollDistributionRes, 'payroll distribution');
       ensureOk(topSellingProductsRes, 'top-selling products');
+      ensureOk(dailySalesRes, 'daily sales aggregation');
+      ensureOk(monthlyExpensesRes, 'monthly expenses');
 
-      const revenueTrend = await revenueTrendRes.json();            // [{month, revenue, expenses, profit}]
-      const txnVolume = await transactionVolumeRes.json();          // [{month, quotes, invoices, purchases}]
-      const customerLTV = await customerLTVRes.json();              // [{bucket, count}]
-      const stock = await productStockRes.json();                   // [{name, min, max, current}] (not used directly here)
-      const breakdown = await transactionBreakdownRes.json();       // { 'YYYY-MM': {sale, income, expense, cash_in}, ... }
-      const payroll = await payrollDistributionRes.json();          // [{month, total_payroll}] (kept if you want later)
-      const topProducts = await topSellingProductsRes.json();       // [{product_name, total_quantity_sold}]
+      const revenueTrend = await revenueTrendRes.json();
+      const txnVolume = await transactionVolumeRes.json();
+      const customerLTV = await customerLTVRes.json();
+      const stock = await productStockRes.json();
+      const breakdown = await transactionBreakdownRes.json();
+      const payroll = await payrollDistributionRes.json();
+      const topProducts = await topSellingProductsRes.json();
+      const dailySalesData: DailySalesDataPoint[] = await dailySalesRes.json();
+      const monthlyExpensesData: MonthlyExpenseDataPoint[] = await monthlyExpensesRes.json();
 
       const charts: ChartData[] = [];
 
@@ -100,7 +122,8 @@ const DataAnalytics = () => {
       const months = revenueTrend.map((d: any) => d.month);
       const revenueByMonth = revenueTrend.map((d: any) => Number(d.revenue) || 0);
       const txnCountByMonth = txnVolume.map(
-        (d: any) => (Number(d.quotes) || 0) + (Number(d.invoices) || 0) + (Number(d.purchases) || 0)
+        (d: any) =>
+          (Number(d.quotes) || 0) + (Number(d.invoices) || 0) + (Number(d.purchases) || 0)
       );
       const variwideData = months.map((m: string, i: number) => ({
         name: m,
@@ -187,54 +210,13 @@ const DataAnalytics = () => {
         error: null,
       });
 
-      // 4) Sankey — cash flow structure
+      // 4) Dependency Wheel — payment routes
       const breakdownMonths = Object.keys(breakdown);
       const salesData = breakdownMonths.map((m) => Number(breakdown[m].sale) || 0);
       const incomeData = breakdownMonths.map((m) => Number(breakdown[m].income) || 0);
       const expenseData = breakdownMonths.map((m) => Number(breakdown[m].expense) || 0);
       const cashInData = breakdownMonths.map((m) => Number(breakdown[m].cash_in) || 0);
 
-      const sankeyLinks: Array<[string, string, number]> = [
-        ['Sales', 'Inflow', sum(salesData)],
-        ['Income', 'Inflow', sum(incomeData)],
-        ['Cash In', 'Inflow', sum(cashInData)],
-        ['Expenses', 'Outflow', sum(expenseData)],
-        ['Inflow', 'Net', sum(salesData) + sum(incomeData) + sum(cashInData)],
-        ['Outflow', 'Net', sum(expenseData)],
-      ];
-
-      charts.push({
-        id: 'cashflow-sankey',
-        title: 'Cash Flow (Sankey)',
-        type: 'sankey',
-        data: [],
-        config: {
-          chart: { type: 'sankey' },
-          title: { text: 'Cash Flow Structure' },
-          tooltip: { pointFormat: '<b>{point.from} → {point.to}</b>: {point.weight:,.0f}' },
-          series: [
-            {
-              type: 'sankey',
-              keys: ['from', 'to', 'weight'],
-              data: sankeyLinks,
-              nodes: [
-                { id: 'Sales', color: '#00E676' },
-                { id: 'Income', color: '#40C4FF' },
-                { id: 'Cash In', color: '#FFC400' },
-                { id: 'Expenses', color: '#FF4081' },
-                { id: 'Inflow', color: '#7C4DFF' },
-                { id: 'Outflow', color: '#FF6E40' },
-                { id: 'Net', color: '#00E5FF' },
-              ],
-              dataLabels: { nodeFormat: '{point.name}' },
-            },
-          ],
-        },
-        isLoading: false,
-        error: null,
-      });
-
-      // 5) Dependency Wheel — payment routes
       const totalInflow = sum(salesData) + sum(incomeData) + sum(cashInData);
       const totalOutflow = sum(expenseData);
       const bankShare = 0.75, cashShare = 0.25;
@@ -264,7 +246,7 @@ const DataAnalytics = () => {
         error: null,
       });
 
-      // 6) Network Graph — products ↔ transaction types
+      // 5) Network Graph — products ↔ transaction types
       const nodes = [{ id: 'Sales' }, { id: 'Income' }, { id: 'Expenses' }].concat(
         topProducts.slice(0, 12).map((p: any) => ({ id: p.product_name }))
       );
@@ -293,41 +275,256 @@ const DataAnalytics = () => {
         error: null,
       });
 
-      // 7) Streamgraph — monthly breakdown
-      const monthsOrdered = breakdownMonths;
-      const salesStream = monthsOrdered.map((m) => Number(breakdown[m].sale) || 0);
-      const incomeStream = monthsOrdered.map((m) => Number(breakdown[m].income) || 0);
-      const expenseStream = monthsOrdered.map((m) => Number(breakdown[m].expense) || 0);
-      const cashInStream = monthsOrdered.map((m) => Number(breakdown[m].cash_in) || 0);
+      // --- NEW: 6) Bar Race - Monthly Expenses by Category ---
+      if (monthlyExpensesData && monthlyExpensesData.length > 0) {
+        const expenseCategories = Object.keys(monthlyExpensesData[0] || {}).filter(key => key !== 'month');
+        
+        const barRaceCategories = monthlyExpensesData.map(item => {
+            const date = new Date(item.month);
+            return date.toLocaleDateString('en-ZA', { year: 'numeric', month: 'short' });
+        });
 
-      charts.push({
-        id: 'stream-monthly-breakdown',
-        title: 'Monthly Transaction Breakdown (Streamgraph)',
-        type: 'streamgraph',
-        data: [],
-        config: {
-          chart: { type: 'streamgraph' },
-          title: { text: 'Flow of Activity Over Time' },
-          xAxis: {
-            categories: monthsOrdered,
-            crosshair: true,
-            labels: { align: 'left', reserveSpace: false, rotation: 270 },
-            lineWidth: 0,
-            margin: 20,
-            tickWidth: 0,
-          },
-          yAxis: { visible: false, startOnTick: false, endOnTick: false },
-          plotOptions: { streamgraph: { lineWidth: 0, marker: { enabled: false } } },
-          series: [
-            { name: 'Sales', data: salesStream, type: 'streamgraph', color: '#8BC34A' },
-            { name: 'Income', data: incomeStream, type: 'streamgraph', color: '#FFEB3B' },
-            { name: 'Expenses', data: expenseStream, type: 'streamgraph', color: '#FF5722' },
-            { name: 'Cash In', data: cashInStream, type: 'streamgraph', color: '#00BCD4' },
-          ],
-        },
-        isLoading: false,
-        error: null,
-      });
+        const barRaceSeries = expenseCategories.map(category => {
+            return {
+                name: category.replace(/_/g, ' '),
+                type: 'columnrange' as const,
+                data: monthlyExpensesData.map((item, index) => ({
+                    y: item[category] || 0,
+                    name: barRaceCategories[index]
+                })),
+            };
+        });
+
+        charts.push({
+            id: 'bar-race-expenses',
+            title: 'Monthly Expenses by Category (Bar Race)',
+            type: 'columnrange',
+            data: [],
+            config: {
+                chart: {
+                    type: 'columnrange',
+                    inverted: true,
+                },
+                title: { text: 'Monthly Expenses by Category' },
+                subtitle: { text: 'See how expense categories compete over time' },
+                xAxis: {
+                    categories: barRaceCategories
+                },
+                yAxis: {
+                    title: { text: 'Amount (ZAR)' }
+                },
+                legend: {
+                    enabled: true
+                },
+                plotOptions: {
+                    series: {
+                        grouping: false,
+                        borderWidth: 0,
+                        dataLabels: [{
+                            enabled: true,
+                        }, {
+                            enabled: true,
+                            format: 'R {point.y:,.0f}',
+                            inside: true,
+                            style: {
+                                color: 'white',
+                                textOutline: 'none',
+                                fontWeight: 'normal',
+                                fontSize: '10px'
+                            }
+                        }]
+                    }
+                },
+                tooltip: {
+                    headerFormat: '<span style="font-size: 10px">{point.key}</span><br/>',
+                    pointFormat: '<span style="color:{point.color}">\u25CF</span> {series.name}: <b>R {point.y:,.2f}</b><br/>'
+                },
+                series: barRaceSeries
+            },
+            isLoading: false,
+            error: null,
+        });
+      } else {
+          charts.push({
+            id: 'bar-race-expenses',
+            title: 'Monthly Expenses by Category (Bar Race)',
+            type: 'columnrange',
+            data: [],
+            config: {
+              title: { text: 'Monthly Expenses by Category' },
+              subtitle: { text: 'No expense data available for bar race.' },
+              series: []
+            },
+            isLoading: false,
+            error: 'No expense data available.',
+          });
+      }
+      // --- END NEW: Bar Race ---
+
+      // --- NEW: 7) Calendar Heatmap - Daily Sales ---
+      if (dailySalesData && dailySalesData.length > 0) {
+        // --- Data Processing Logic for Monthly Calendar View ---
+        interface CalendarDayData {
+          date: Date;
+          weekIndex: number;
+          dayOfWeek: number;
+          value: number;
+          displayDate: string;
+        }
+
+        // 1. Determine the overall date range
+        const dates = dailySalesData.map(d => new Date(d.date));
+        const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
+        const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
+
+        // 2. Find the start of the first week (Monday of the week containing the earliest sale)
+        const startCalendarDate = new Date(minDate);
+        startCalendarDate.setDate(minDate.getDate() - minDate.getDay() + 1); // Adjust for Mon as start of week
+
+        // 3. Find the end of the last week (Sunday of the week containing the latest sale)
+        const endCalendarDate = new Date(maxDate);
+        endCalendarDate.setDate(maxDate.getDate() + (7 - maxDate.getDay())); // Adjust for Sun as end of week
+
+        // 4. Create a map of existing sales data for quick lookup
+        const salesMap: Record<string, number> = {};
+        dailySalesData.forEach(item => {
+          salesMap[item.date] = item.total_sales_amount;
+        });
+
+        // 5. Generate all days in the calendar range
+        const calendarDays: CalendarDayData[] = [];
+        const currentDate = new Date(startCalendarDate);
+        let weekCounter = 0; // To track week index for X-axis
+
+        while (currentDate <= endCalendarDate) {
+          // Check if we are starting a new week (Monday)
+          if (currentDate.getDay() === 1) { 
+            weekCounter++;
+          }
+
+          const dateString = currentDate.toISOString().split('T')[0];
+          const value = salesMap[dateString] || 0;
+
+          // Corrected: Use 0-based indexing where 0=Monday, 1=Tuesday, ..., 6=Sunday
+          const dayOfWeek = currentDate.getDay(); // This returns 0=Sunday, 1=Monday, ..., 6=Saturday
+          const correctedDayOfWeek = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+          calendarDays.push({
+            date: new Date(currentDate),
+            weekIndex: weekCounter - 1, // Make it 0-based
+            dayOfWeek: correctedDayOfWeek,
+            value: value,
+            displayDate: dateString
+          });
+
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+
+        // 6. Prepare data for Highcharts heatmap
+        const heatmapData: [number, number, number][] = calendarDays.map(day => [
+          day.weekIndex,
+          day.dayOfWeek,
+          day.value
+        ]);
+
+        // 7. Prepare X and Y axis categories
+        const xAxisCategories: string[] = [];
+        if (calendarDays.length > 0) {
+            const uniqueWeeks = Array.from(new Set(calendarDays.map(d => d.weekIndex))).sort((a, b) => a - b);
+            xAxisCategories.push(...uniqueWeeks.map(weekNum => `Week ${weekNum + 1}`));
+        }
+
+        // Y-axis: Days of the week (corrected order: Mon, Tue, Wed, Thu, Fri, Sat, Sun)
+        const yAxisCategories = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+        // --- End Data Processing ---
+
+        charts.push({
+            id: 'calendar-heatmap-sales',
+            title: 'Daily Sales Amount (Monthly Calendar View)',
+            type: 'heatmap',
+            data: [],
+            config: {
+                chart: {
+                    type: 'heatmap',
+                    marginTop: 40,
+                    marginBottom: 80,
+                    plotBorderWidth: 1,
+                    height: 400
+                },
+                title: { text: 'Daily Sales Amount' },
+                xAxis: {
+                    categories: xAxisCategories,
+                    title: { text: 'Weeks' },
+                    labels: {
+                        align: 'center',
+                        rotation: -45,
+                        style: {
+                            fontSize: '9px'
+                        }
+                    }
+                },
+                yAxis: {
+                    categories: yAxisCategories,
+                    title: { text: 'Day of Week' },
+                    reversed: false
+                },
+                colorAxis: {
+                    min: 0,
+                },
+                legend: {
+                    enabled: true,
+                    align: 'right',
+                    layout: 'vertical',
+                    margin: 0,
+                    verticalAlign: 'top',
+                    y: 25,
+                    symbolHeight: 200
+                },
+                tooltip: {
+                    formatter: function (this: Highcharts.TooltipFormatterContextObject) {
+                        const weekLabel = this.series.xAxis.categories[this.point.x];
+                        const dayLabel = this.series.yAxis.categories[this.point.y];
+                        const value = this.point.value;
+                        const dataPoint = calendarDays.find(d => 
+                            d.weekIndex === this.point.x && d.dayOfWeek === this.point.y
+                        );
+                        const dateString = dataPoint ? dataPoint.displayDate : 'N/A';
+                        return `<b>${dateString}</b><br/>
+                                ${weekLabel}, ${dayLabel}: <br/>
+                                Sales: <b>R ${value?.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>`;
+                    }
+                },
+                series: [{
+                    name: 'Daily Sales (ZAR)',
+                    type: 'heatmap',
+                    borderWidth: 0,
+                    data: heatmapData,
+                    dataLabels: {
+                        enabled: false,
+                        format: '{point.value:,.0f}'
+                    },
+                }]
+            },
+            isLoading: false,
+            error: null,
+        });
+      } else {
+          charts.push({
+            id: 'calendar-heatmap-sales',
+            title: 'Daily Sales Amount (Monthly Calendar View)',
+            type: 'heatmap',
+            data: [],
+            config: {
+              title: { text: 'Daily Sales Amount' },
+              subtitle: { text: 'No daily sales data available for heatmap.' },
+              series: []
+            },
+            isLoading: false,
+            error: 'No daily sales data available.',
+          });
+      }
+      // --- END NEW: Calendar Heatmap ---
 
       // 8) Solid Gauge KPI — latest profit margin
       const latest = revenueTrend[revenueTrend.length - 1] || { revenue: 0, profit: 0 };
@@ -374,9 +571,11 @@ const DataAnalytics = () => {
       });
 
       setAllChartData(charts);
+      setAvailableCharts(charts.map(c => ({ id: c.id, title: c.title })));
     } catch (err: any) {
       setError(err.message || 'Failed to load charts');
       console.error('Error fetching chart data:', err);
+      setAvailableCharts([]);
     } finally {
       setLoading(false);
     }
@@ -387,20 +586,18 @@ const DataAnalytics = () => {
       fetchChartData();
     } else {
       setAllChartData([]);
+      setAvailableCharts([]);
       setLoading(false);
       setError('Please log in to view analytics.');
     }
   }, [fetchChartData, isAuthenticated, token]);
 
-  const handleExpandChart = (chart: ChartData) => {
-    setSelectedChart(chart);
-    setIsModalOpen(true);
+  const handleChartSelectionChange: SelectProps['onChange'] = (value: string | string[]) => {
+    const selectedIds = Array.isArray(value) ? value : [value];
+    setSelectedChartIds(selectedIds);
   };
 
-  const handleCloseModal = () => {
-    setIsModalOpen(false);
-    setSelectedChart(null);
-  };
+  const selectedCharts = allChartData.filter(chart => selectedChartIds.includes(chart.id));
 
   return (
     <div className="flex-1 space-y-4 p-4 md:p-6 lg:p-8">
@@ -409,7 +606,6 @@ const DataAnalytics = () => {
       <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
         {loading && (
           <Spin tip="Loading charts..." size="large">
-            {/* child to satisfy antd warning */}
             <div style={{ height: 120 }} />
           </Spin>
         )}
@@ -429,10 +625,64 @@ const DataAnalytics = () => {
           />
         )}
 
-        {!loading && !error && <ChartGrid onExpandChart={handleExpandChart} chartData={allChartData} />}
-      </motion.div>
+        {!loading && !error && (
+          <>
+            <div className="mb-6">
+              <label htmlFor="chart-selector" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Select Chart(s)
+              </label>
+              <Select
+                id="chart-selector"
+                mode="multiple"
+                allowClear
+                style={{ width: '100%' }}
+                placeholder="Please select a chart"
+                value={selectedChartIds}
+                onChange={handleChartSelectionChange}
+                options={availableCharts.map(chart => ({
+                  label: chart.title,
+                  value: chart.id,
+                }))}
+              />
+            </div>
 
-      <ChartModal isOpen={isModalOpen} onClose={handleCloseModal} chart={selectedChart} />
+            {selectedCharts.length > 0 ? (
+              <div className="space-y-6">
+                {selectedCharts.map((chart) => (
+                  <Card 
+                    key={chart.id} 
+                    title={chart.title} 
+                    className="w-full shadow-lg rounded-2xl bg-white dark:bg-gray-800"
+                    headStyle={{ fontWeight: 'bold' }}
+                  >
+                    {chart.error ? (
+                      <Alert
+                        message="Chart Error"
+                        description={chart.error}
+                        type="warning"
+                        showIcon
+                      />
+                    ) : (
+                      <HighchartsReact 
+                        highcharts={Highcharts} 
+                        options={chart.config} 
+                        containerProps={{ style: { height: '100%', width: '100%' } }}
+                      />
+                    )}
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <Alert
+                message="No Chart Selected"
+                description="Please select a chart from the dropdown above to view it."
+                type="info"
+                showIcon
+              />
+            )}
+          </>
+        )}
+      </motion.div>
     </div>
   );
 };

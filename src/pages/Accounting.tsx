@@ -4,16 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/components/ui/table';
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
-} from '@/components/ui/dialog';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -26,7 +20,7 @@ import { useAuth } from '../AuthPage';
 const API_BASE = 'https://quantnow-cu1v.onrender.com';
 
 // Types
-interface Asset { /* unchanged from your version */ 
+interface Asset {
   id: string; type: string; name: string; number: string;
   cost: number; date_received: string; account_id: string; account_name: string;
   depreciation_method?: string; useful_life_years?: number; salvage_value?: number;
@@ -37,11 +31,19 @@ interface Expense {
   amount: number; date: string; account_id: string; account_name: string;
 }
 interface Account {
-  id: string; code: string; name: string; type: 'Asset'|'Liability'|'Equity'|'Income'|'Expense';
+  id: string; code: string; name: string;
+  type: 'Asset'|'Liability'|'Equity'|'Income'|'Expense';
 }
 
+// ---- Helpers for Opening Balances ----
+const normalSideOf = (t: Account['type']) =>
+  (t === 'Asset' || t === 'Expense') ? 'Debit' : 'Credit';
+
+const isBalanceSheetType = (t: Account['type']) =>
+  t === 'Asset' || t === 'Liability' || t === 'Equity';
+
 const Accounting = () => {
-  const [activeTab, setActiveTab] = useState<'assets'|'expenses'|'accounts'>('assets');
+  const [activeTab, setActiveTab] = useState<'assets'|'expenses'|'accounts'|'opening'>('assets');
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [modalType, setModalType] = useState<'asset'|'expense'|'account'|''>('');
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -54,6 +56,12 @@ const Accounting = () => {
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<{ type: 'asset' | 'expense' | 'account', id: string } | null>(null);
+
+  // ---- Opening balances state ----
+  const [openingAsOf, setOpeningAsOf] = useState(new Date().toISOString().slice(0,10));
+  const [openingDraft, setOpeningDraft] = useState<Record<string, number>>({});
+  const [isSavingOpening, setIsSavingOpening] = useState(false);
+  const [isLoadingOpening, setIsLoadingOpening] = useState(false);
 
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
@@ -89,6 +97,37 @@ const Accounting = () => {
     } catch (e) { console.error('Error fetching accounts:', e); }
   }, [token]);
 
+  // ---- Opening balances: load existing (optional, idempotent UX) ----
+  const fetchOpeningBalances = useCallback(async (asOf: string) => {
+    if (!token) { setOpeningDraft({}); return; }
+    setIsLoadingOpening(true);
+    try {
+      const r = await fetch(`${API_BASE}/setup/opening-balance?asOf=${asOf}`, { headers: authHeaders });
+      if (!r.ok) { setOpeningDraft({}); return; }
+      const data = await r.json();
+
+      const map: Record<string, number> = {};
+      for (const ln of (data.lines || [])) {
+        const nm = String(ln.name || '').toLowerCase();
+        if (nm === 'opening balance equity') continue;
+        const type = ln.type as Account['type'];
+        const normal = normalSideOf(type);
+        const debit = Number(ln.debit || 0);
+        const credit = Number(ln.credit || 0);
+        let amt = 0;
+        if (normal === 'Debit') amt = debit - credit;
+        else amt = credit - debit;
+        if (Math.abs(amt) > 0.0001) map[String(ln.account_id)] = amt;
+      }
+      setOpeningDraft(map);
+    } catch (e) {
+      console.error('Opening balances fetch error', e);
+      setOpeningDraft({});
+    } finally {
+      setIsLoadingOpening(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     if (isAuthenticated && token) {
       fetchAssets();
@@ -98,6 +137,10 @@ const Accounting = () => {
       setAssets([]); setExpenses([]); setAccounts([]);
     }
   }, [fetchAssets, fetchExpenses, fetchAccounts, isAuthenticated, token]);
+
+  useEffect(() => {
+    if (isAuthenticated && token) fetchOpeningBalances(openingAsOf);
+  }, [isAuthenticated, token, openingAsOf, fetchOpeningBalances]);
 
   const clearForm = () => setFormData({});
 
@@ -246,6 +289,39 @@ const Accounting = () => {
     }
   };
 
+  // ---- Save Opening Balances ----
+  const saveOpeningBalances = async () => {
+    if (!token) { alert('Please log in.'); return; }
+    setIsSavingOpening(true);
+    try {
+      const balances = Object.entries(openingDraft)
+        .map(([account_id, amount]) => ({ account_id: Number(account_id), amount: Number(amount) }))
+        .filter(b => Number.isFinite(b.amount) && b.amount !== 0);
+
+      if (balances.length === 0) {
+        alert('Enter at least one non-zero opening amount.');
+        setIsSavingOpening(false);
+        return;
+      }
+
+      const r = await fetch(`${API_BASE}/setup/opening-balance`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ asOf: openingAsOf, balances })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+
+      alert('Opening balances saved.');
+      await fetchOpeningBalances(openingAsOf);
+    } catch (e:any) {
+      console.error('Opening save error', e);
+      alert(`Failed to save opening balances: ${e?.message || e}`);
+    } finally {
+      setIsSavingOpening(false);
+    }
+  };
+
   const closeModal = () => { setIsModalVisible(false); clearForm(); };
 
   return (
@@ -253,10 +329,11 @@ const Accounting = () => {
       <Header title='Accounting' />
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }}>
         <Tabs value={activeTab} onValueChange={(v:any)=>setActiveTab(v)}>
-          <TabsList className='grid w-full grid-cols-3'>
+          <TabsList className='grid w-full grid-cols-4'>
             <TabsTrigger value='assets'>Assets</TabsTrigger>
             <TabsTrigger value='expenses'>Expenses</TabsTrigger>
             <TabsTrigger value='accounts'>Accounts</TabsTrigger>
+            <TabsTrigger value='opening'>Opening Balances</TabsTrigger>
           </TabsList>
 
           {/* Assets */}
@@ -428,6 +505,85 @@ const Accounting = () => {
                     ))}
                   </TableBody>
                 </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Opening Balances */}
+          <TabsContent value='opening'>
+            <Card>
+              <CardHeader>
+                <div className='flex justify-between items-center'>
+                  <CardTitle>Opening Balances</CardTitle>
+                  <div className='flex items-center gap-3'>
+                    <div className='flex items-center gap-2'>
+                      <Label className='whitespace-nowrap'>As of</Label>
+                      <Input type='date' value={openingAsOf}
+                        onChange={(e)=>setOpeningAsOf(e.target.value)} className='w-auto' />
+                    </div>
+                    <Button onClick={saveOpeningBalances} disabled={isSavingOpening}>
+                      {isSavingOpening ? 'Saving…' : 'Save Opening Balances'}
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+
+              <CardContent>
+                <p className='text-sm text-muted-foreground mb-4'>
+                  Enter each account’s balance on its <b>normal side</b> (Assets/Debits; Liabilities &amp; Equity/Credits).
+                  The system will post correct debits/credits and add a plug to <i>Opening Balance Equity</i> so the entry balances automatically.
+                </p>
+
+                {isLoadingOpening ? (
+                  <div className='text-sm'>Loading…</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Code</TableHead>
+                        <TableHead>Account</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead className='w-[220px]'>Opening amount (normal side)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {accounts
+                        .filter(a => isBalanceSheetType(a.type))
+                        .sort((a,b)=>a.code.localeCompare(b.code))
+                        .map(acc => {
+                          const normal = normalSideOf(acc.type);
+                          const key = String(acc.id);
+                          const val = openingDraft[key] ?? '';
+                          return (
+                            <TableRow key={acc.id}>
+                              <TableCell>{acc.code}</TableCell>
+                              <TableCell>{acc.name}</TableCell>
+                              <TableCell><Badge variant='outline'>{acc.type} • {normal}</Badge></TableCell>
+                              <TableCell>
+                                <div className='flex items-center gap-2'>
+                                  <Input
+                                    type='number'
+                                    inputMode='decimal'
+                                    placeholder={`0.00 (${normal})`}
+                                    value={val}
+                                    onChange={(e)=>{
+                                      const v = e.target.value;
+                                      setOpeningDraft(prev => {
+                                        const n = {...prev};
+                                        if (v === '' || Number(v) === 0) delete n[key];
+                                        else n[key] = Number(v);
+                                        return n;
+                                      });
+                                    }}
+                                  />
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                    </TableBody>
+                  </Table>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

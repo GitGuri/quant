@@ -92,6 +92,66 @@ interface DupMatch {
   score: number; // 0..1
 }
 
+// --- Import pipeline helpers (stage → preview → (optional PATCH) → commit) ---
+
+// a stable, per-row idempotency key (prevents double-posting on re-import)
+// a stable, short idempotency key: date|amount + 8-char hash of description
+const sourceUidOf = (t: Transaction) => {
+  const d = (t.date || '').slice(0, 10);
+  const a = Number(t.amount || 0).toFixed(2);
+  const desc = (t.description || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  // tiny deterministic hash (djb2)
+  let h = 5381;
+  for (let i = 0; i < desc.length; i++) h = ((h << 5) + h) ^ desc.charCodeAt(i);
+  const hx = Math.abs(h >>> 0).toString(36).slice(0, 8); // 8 chars
+  return `${d}|${a}|${hx}`; // always short (≤ 10 + 1 + 5 + 1 + 8 = ≤ 25 chars)
+};
+
+
+async function stageSelected(API_BASE_URL: string, authHeaders: any, rows: Array<{sourceUid:string; date:string; description:string; amount:number;}>) {
+  const res = await fetch(`${API_BASE_URL}/imports/bank/stage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
+    body: JSON.stringify({ source: 'bank_csv', rows }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json() as { batchId: number; inserted: number; duplicates: number };
+}
+
+async function loadPreview(API_BASE_URL: string, authHeaders: any, batchId: number) {
+  const res = await fetch(`${API_BASE_URL}/imports/${batchId}/preview`, {
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json() as {
+    batchId: number;
+    items: Array<{ rowId:number; sourceUid:string; date:string; description:string;
+                   amount:number; suggested:{debitAccountId:number|null; creditAccountId:number|null};
+                   error:string|null }>;
+  };
+}
+
+async function patchRowMapping(API_BASE_URL: string, authHeaders: any, rowId: number, debitId?: number|null, creditId?: number|null) {
+  const res = await fetch(`${API_BASE_URL}/imports/rows/${rowId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
+    body: JSON.stringify({
+      proposed_debit_account_id:  debitId  ?? undefined,
+      proposed_credit_account_id: creditId ?? undefined,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+async function commitBatch(API_BASE_URL: string, authHeaders: any, batchId: number) {
+  const res = await fetch(`${API_BASE_URL}/imports/${batchId}/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json() as { batchId:number; posted:number; skipped:number };
+}
+
 // ------------ Duplicate helpers ------------
 const normalize = (s?: string) =>
   (s || '')
@@ -396,11 +456,35 @@ const suggestAccountForText = (
 };
 
 // ------------ Editable table ------------
-const EditableTransactionTable = ({ transactions: initialTransactions, accounts, categories, onConfirm, onCancel }) => {
+const EditableTransactionTable = ({
+  transactions: initialTransactions,
+  accounts,
+  categories,
+  onConfirm,
+  isBusy = false,
+  onCancel,
+  // NEW:
+  forceCash,
+  onToggleForceCash,
+}: {
+  transactions: Transaction[];
+  accounts: Account[];
+  categories: string[];
+  onConfirm: (txs: Transaction[]) => void;
+  isBusy?: boolean;
+  onCancel: () => void;
+  forceCash: boolean;                       // NEW
+  onToggleForceCash: (val: boolean) => void; // NEW
+}) => {
   const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [isCancelled, setIsCancelled] = useState(false); // Track cancellation state
-
+  const [localForceCash, setLocalForceCash] = useState(!!forceCash);
+    useEffect(() => {
+    // sync if parent sends a different initial value
+    setLocalForceCash(!!forceCash);
+  }, [forceCash]);
+ const [isImporting, setIsImporting] = useState(false);
   useEffect(() => {
     setTransactions(initialTransactions);
   }, [initialTransactions]);
@@ -429,6 +513,23 @@ const EditableTransactionTable = ({ transactions: initialTransactions, accounts,
   return (
     <div className="p-4 bg-white rounded-lg shadow-md">
       <h4 className="text-lg font-semibold mb-3">Review & Edit Transactions:</h4>
+       {/* NEW: Cash override toggle */}
+  <div className="mb-3 flex items-center gap-2">
+    <input
+      id="force-cash-toggle"
+      type="checkbox"
+      checked={localForceCash}
+      onChange={(e) => {
+        setLocalForceCash(e.target.checked);   // update UI immediately
+        onToggleForceCash(e.target.checked);   // update parent state
+      }}
+    />
+    <label htmlFor="force-cash-toggle" className="text-sm">
+      Treat the balancing leg as <strong>Cash</strong> instead of Bank for all rows
+    </label>
+  </div>
+
+
       <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
         <Table>
           <TableHeader>
@@ -603,8 +704,8 @@ const EditableTransactionTable = ({ transactions: initialTransactions, accounts,
           <Button variant="secondary" onClick={handleCancel}>
             <XCircle size={18} className="mr-2" /> Cancel Review
           </Button>
-          <Button onClick={() => onConfirm(transactions)} disabled={isCancelled}>
-            <CheckCircle size={18} className="mr-2" /> Confirm & Submit Selected
+          <Button onClick={() => onConfirm(transactions)} disabled={isCancelled || isBusy}>
+            <CheckCircle size={18} className="mr-2" /> {isBusy ? 'Working…' : 'Confirm & Submit Selected'}
           </Button>
         </div>
       </div>
@@ -616,7 +717,7 @@ const EditableTransactionTable = ({ transactions: initialTransactions, accounts,
 const ChatInterface = () => {
   const RAIRO_API_BASE_URL = 'https://rairo-stmt-api.hf.space';
   const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
-
+  const [forceCash, setForceCash] = useState(false);
   const [messages, setMessages] = useState<Array<{ id: string; sender: string; content: string | JSX.Element }>>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [existingTxs, setExistingTxs] = useState<ExistingTx[]>([]);
@@ -630,7 +731,7 @@ const ChatInterface = () => {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
-
+  
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
   const [showDocumentGeneration, setShowDocumentGeneration] = useState(false);
@@ -640,6 +741,7 @@ const ChatInterface = () => {
   const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(true);
 
+  // ✅ Auth is used INSIDE the component (fix)
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
   const getAuthHeaders = useCallback(() => (token ? { Authorization: `Bearer ${token}` } : {}), [token]);
@@ -708,24 +810,18 @@ const ChatInterface = () => {
       if (!isAuthenticated || !token) { setExistingTxs([]); return; }
       try {
         const since = new Date(); since.setDate(since.getDate() - 180);
-        const params = new URLSearchParams({ since: since.toISOString().slice(0, 10), limit: '500' });
+        const params = new URLSearchParams({ since: since.toISOString().slice(0,10), limit: '500' });
         const res = await fetch(`${API_BASE_URL}/transactions?${params.toString()}`, {
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          headers: { 'Content-Type':'application/json', ...getAuthHeaders() },
         });
+        if (res.status === 401) { setExistingTxs([]); return; } // graceful if not logged-in/expired
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        setExistingTxs(
-          Array.isArray(data)
-            ? data.map((t: any) => ({
-                id: t.id,
-                amount: Number(t.amount),
-                date: (t.date || '').slice(0, 10),
-                description: t.description || '',
-                type: t.type,
-                account_id: t.account_id,
-              }))
-            : []
-        );
+        setExistingTxs(Array.isArray(data) ? data.map((t:any) => ({
+          id: t.id, amount: Number(t.amount),
+          date: (t.date || '').slice(0,10),
+          description: t.description || '', type: t.type, account_id: t.account_id,
+        })) : []);
       } catch (e) {
         console.error('Failed to fetch existing transactions for dup-check:', e);
         setExistingTxs([]);
@@ -920,8 +1016,10 @@ const ChatInterface = () => {
       const formData = new FormData();
       formData.append('file', file);
       const response = await fetch(`${RAIRO_API_BASE_URL}/process-pdf`, { method: 'POST', body: formData });
+      console.log(response)
       const result = await response.json();
-
+      console.log('Raw API result:', result);
+      
       if (response.ok) {
         addAssistantMessage('PDF processed successfully! Please review the extracted transactions.');
         const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
@@ -963,13 +1061,15 @@ const ChatInterface = () => {
         const flagged = markDuplicates(transformed, existingTxs);
 
         addAssistantMessage(
-          <EditableTransactionTable
-            transactions={flagged}
-            accounts={accounts}
-            categories={categories}
-            onConfirm={handleConfirmProcessedTransaction}
-            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-          />
+<EditableTransactionTable
+  transactions={flagged}
+  accounts={accounts}
+  categories={categories}
+  onConfirm={handleConfirmProcessedTransaction}
+  onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+  forceCash={forceCash}
+  onToggleForceCash={setForceCash}
+/>
         );
       } else {
         addAssistantMessage(`Error processing file: ${result.error || 'Unknown error'}`);
@@ -984,124 +1084,126 @@ const ChatInterface = () => {
   };
 
   const handleExcelUpload = async () => {
-  if (!file) { addAssistantMessage('No file selected for upload.'); return; }
-  if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to upload files.'); return; }
-  if (!isExcelFile(file)) { addAssistantMessage('Please select a valid Excel file (.xlsx/.xls).'); return; }
+    if (!file) { addAssistantMessage('No file selected for upload.'); return; }
+    if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to upload files.'); return; }
+    if (!isExcelFile(file)) { addAssistantMessage('Please select a valid Excel file (.xlsx/.xls).'); return; }
 
-  addUserMessage(`Initiating Excel import: ${file.name}...`);
-  addAssistantMessage(`Processing Excel: ${file.name}...`);
+    addUserMessage(`Initiating Excel import: ${file.name}...`);
+    addAssistantMessage(`Processing Excel: ${file.name}...`);
 
-  try {
-    const XLSX = await import('xlsx');
+    try {
+      const XLSX = await import('xlsx');
 
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array' });
-    const sheetName = wb.SheetNames[0]; // first sheet (e.g., "Office Rem")
-    const ws = wb.Sheets[sheetName];
-    const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheetName = wb.SheetNames[0]; // first sheet (e.g., "Office Rem")
+      const ws = wb.Sheets[sheetName];
+      const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
-    if (!rows.length) {
-      addAssistantMessage('No rows found in the first sheet.');
-      return;
+      if (!rows.length) {
+        addAssistantMessage('No rows found in the first sheet.');
+        return;
+      }
+
+      const prepared: Transaction[] = [];
+      const salesQueue: Array<{
+        customer_name: string; office?: string | null; date: string; description: string; amount: number;
+      }> = [];
+
+      for (const row of rows) {
+        // Normalize headers per row
+        const rowNorm: Record<string, any> = {};
+        Object.keys(row).forEach(k => { rowNorm[k.trim().toLowerCase()] = row[k]; });
+
+        const netRaw   = rowNorm['net'];
+        const client   = String(rowNorm['client'] || '').trim();
+        const office   = String(rowNorm['office'] || '').trim();
+
+        const num = (v: any) =>
+          typeof v === 'number' ? v :
+          typeof v === 'string' ? (parseFloat(v.replace(/[\s,]+/g, '')) || 0) :
+          0;
+
+        const revenue = num(netRaw);
+
+        // Skip if net is zero/blank
+        if (!revenue) continue;
+
+        // Default date to today (sheet has no date column)
+        const date = new Date().toISOString().slice(0,10);
+
+        // Description: default + tags
+        const tag = [client && `Client: ${client}`, office && `Office: ${office}`].filter(Boolean).join(' | ');
+        const baseDesc = 'Agent Import' + (tag ? ` [${tag}]` : '');
+
+        // 2) Revenue -> queue a Sale + preview row
+        const customer_name = client || 'Walk-in';
+        salesQueue.push({
+          customer_name,
+          office: office || null,
+          date,
+          description: baseDesc || `Sale for ${customer_name}`,
+          amount: Math.abs(revenue),
+        });
+
+        // --- PREVIEW ROW so user can see the sale in the table ---
+        prepared.push({
+          _tempId: crypto.randomUUID(),
+          type: 'income',
+          amount: Math.abs(revenue),
+          description: (baseDesc || `Sale for ${customer_name}`) + ' [Sales Preview]',
+          date,
+          category: 'Sales Revenue', // Updated category name
+          account_id: '',
+          original_text: JSON.stringify(row),
+          source: 'sales-preview',     // marker
+          is_verified: true,
+          confidenceScore: 100,
+          includeInImport: true,      // Now defaults to checked
+        });
+      }
+
+      if (!prepared.length && !salesQueue.length) {
+        addAssistantMessage('No importable transactions were derived from the Excel file.');
+        return;
+      }
+
+      // Save queued sales for submit time (STATE + REF hybrid)
+      setPendingSales(salesQueue);
+      pendingSalesRef.current = salesQueue;
+
+      // Show a quick summary so the user knows sales will be posted via /api/sales
+      const salesTotal = salesQueue.reduce((sum, s) => sum + Number(s.amount || 0), 0);
+      addAssistantMessage(
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
+          <div className="font-semibold">Sales queued for posting:</div>
+          <div>{salesQueue.length} sale(s), total R {salesTotal.toFixed(2)} — will be submitted to <code>/api/sales</code> after you click <em>Confirm &amp; Submit Selected</em>.</div>
+        </div>
+      );
+
+      // duplicate check (keeps all selected) for preview rows,
+      // but markDuplicates now respects existing includeInImport=false
+      const flagged = markDuplicates(prepared, existingTxs);
+
+      addAssistantMessage(
+<EditableTransactionTable
+  transactions={flagged}
+  accounts={accounts}
+  categories={categories}
+  onConfirm={handleConfirmProcessedTransaction}
+  onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+  forceCash={forceCash}
+  onToggleForceCash={setForceCash}
+/>
+      );
+    } catch (err: any) {
+      console.error('Excel parse error:', err);
+      addAssistantMessage(`Failed to process Excel file: ${err.message || 'Unknown error'}`);
+    } finally {
+      setFile(null);
+      setTypedDescription('');
     }
-
-    const prepared: Transaction[] = [];
-    const salesQueue: Array<{
-      customer_name: string; office?: string | null; date: string; description: string; amount: number;
-    }> = [];
-
-    for (const row of rows) {
-      // Normalize headers per row
-      const rowNorm: Record<string, any> = {};
-      Object.keys(row).forEach(k => { rowNorm[k.trim().toLowerCase()] = row[k]; });
-
-      const netRaw   = rowNorm['net'];
-      const client   = String(rowNorm['client'] || '').trim();
-      const office   = String(rowNorm['office'] || '').trim();
-
-      const num = (v: any) =>
-        typeof v === 'number' ? v :
-        typeof v === 'string' ? (parseFloat(v.replace(/[\s,]+/g, '')) || 0) :
-        0;
-
-      const revenue = num(netRaw);
-
-      // Skip if net is zero/blank
-      if (!revenue) continue;
-
-      // Default date to today (sheet has no date column)
-      const date = new Date().toISOString().slice(0,10);
-
-      // Description: default + tags
-      const tag = [client && `Client: ${client}`, office && `Office: ${office}`].filter(Boolean).join(' | ');
-      const baseDesc = 'Agent Import' + (tag ? ` [${tag}]` : '');
-
-      // 2) Revenue -> queue a Sale + preview row
-      const customer_name = client || 'Walk-in';
-      salesQueue.push({
-        customer_name,
-        office: office || null,
-        date,
-        description: baseDesc || `Sale for ${customer_name}`,
-        amount: Math.abs(revenue),
-      });
-
-      // --- PREVIEW ROW so user can see the sale in the table ---
-      prepared.push({
-        _tempId: crypto.randomUUID(),
-        type: 'income',
-        amount: Math.abs(revenue),
-        description: (baseDesc || `Sale for ${customer_name}`) + ' [Sales Preview]',
-        date,
-        category: 'Sales Revenue', // Updated category name
-        account_id: '',
-        original_text: JSON.stringify(row),
-        source: 'sales-preview',     // marker
-        is_verified: true,
-        confidenceScore: 100,
-        includeInImport: true,      // Now defaults to checked
-      });
-    }
-
-    if (!prepared.length && !salesQueue.length) {
-      addAssistantMessage('No importable transactions were derived from the Excel file.');
-      return;
-    }
-
-    // Save queued sales for submit time (STATE + REF hybrid)
-    setPendingSales(salesQueue);
-    pendingSalesRef.current = salesQueue;
-
-    // Show a quick summary so the user knows sales will be posted via /api/sales
-    const salesTotal = salesQueue.reduce((sum, s) => sum + Number(s.amount || 0), 0);
-    addAssistantMessage(
-      <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
-        <div className="font-semibold">Sales queued for posting:</div>
-        <div>{salesQueue.length} sale(s), total R {salesTotal.toFixed(2)} — will be submitted to <code>/api/sales</code> after you click <em>Confirm &amp; Submit Selected</em>.</div>
-      </div>
-    );
-
-    // duplicate check (keeps all selected) for preview rows,
-    // but markDuplicates now respects existing includeInImport=false
-    const flagged = markDuplicates(prepared, existingTxs);
-
-    addAssistantMessage(
-      <EditableTransactionTable
-        transactions={flagged}
-        accounts={accounts}
-        categories={['Sales Revenue']}
-        onConfirm={handleConfirmProcessedTransaction}
-        onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-      />
-    );
-  } catch (err: any) {
-    console.error('Excel parse error:', err);
-    addAssistantMessage(`Failed to process Excel file: ${err.message || 'Unknown error'}`);
-  } finally {
-    setFile(null);
-    setTypedDescription('');
-  }
-};
+  };
 
   // -------------- Text input --------------
   const handleTypedDescriptionSubmit = async () => {
@@ -1182,13 +1284,15 @@ const ChatInterface = () => {
         const flagged = markDuplicates(transformed, existingTxs);
 
         addAssistantMessage(
-          <EditableTransactionTable
-            transactions={flagged}
-            accounts={accounts}
-            categories={categories}
-            onConfirm={handleConfirmProcessedTransaction}
-            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-          />
+<EditableTransactionTable
+  transactions={flagged}
+  accounts={accounts}
+  categories={categories}
+  onConfirm={handleConfirmProcessedTransaction}
+  onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+  forceCash={forceCash}
+  onToggleForceCash={setForceCash}
+/>
         );
       } else {
         addAssistantMessage(`Error analyzing description: ${result.error || 'Unknown error'}`);
@@ -1294,13 +1398,15 @@ const ChatInterface = () => {
         const flagged = markDuplicates(transformed, existingTxs);
 
         addAssistantMessage(
-          <EditableTransactionTable
-            transactions={flagged}
-            accounts={accounts}
-            categories={categories}
-            onConfirm={handleConfirmProcessedTransaction}
-            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-          />
+<EditableTransactionTable
+  transactions={flagged}
+  accounts={accounts}
+  categories={categories}
+  onConfirm={handleConfirmProcessedTransaction}
+  onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+  forceCash={forceCash}
+  onToggleForceCash={setForceCash}
+/>
         );
       } else {
         addAssistantMessage(`Error processing audio: ${result.error || 'Unknown error'}`);
@@ -1323,55 +1429,152 @@ const ChatInterface = () => {
   };
 
   // -------------- Save Selected --------------
-  const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
-    // submit ONLY those still checked (default is true for all)
-    const toSubmit = (transactionsToSave || [])
-      .filter(t => t.includeInImport !== false)
-      .filter(t => t.source !== 'sales-preview'); // don't post preview rows as transactions
+// PIPELINE: stage -> preview -> (optional account PATCH) -> commit
+const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
+  const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+  const authHeaders = getAuthHeaders();
 
-    // SAFETY: read sales to submit from REF (never stale)
-    const salesToSubmit = [...pendingSalesRef.current];
+  // Only the rows the user kept checked
+  const toSubmit = (transactionsToSave || []).filter(t => t.includeInImport !== false);
 
-    if (toSubmit.length === 0 && salesToSubmit.length === 0) {
-      addAssistantMessage('Nothing selected to import.');
-      return;
-    }
+  if (toSubmit.length === 0) {
+    addAssistantMessage('Nothing selected to import.');
+    return;
+  }
 
-    addAssistantMessage(`Submitting ${toSubmit.length} transaction(s) and ${salesToSubmit.length} sale(s)...`);
+  // --- Timers to help you debug where time is spent ---
+  const t0 = performance.now();
+  addAssistantMessage(`Staging ${toSubmit.length} transaction(s)...`);
 
-    let allSuccessful = true;
+  try {
+    // 1) Build payload for stage
+    const rows = toSubmit.map(tx => ({
+      sourceUid:   sourceUidOf(tx),
+      date:        tx.date || new Date().toISOString().slice(0,10),
+      description: tx.description || 'Imported',
+      amount:      Number(tx.amount || 0),
+    }));
 
-    // 1) Submit COGS transactions
-    await Promise.all(
-      toSubmit.map(async (transaction) => {
-        const { success, error } = await submitTransaction(transaction);
-        if (!success) {
-          allSuccessful = false;
-          addAssistantMessage(`Failed to submit transaction: "${transaction.description || 'Unnamed Transaction'}". Reason: ${error}`);
-        }
-      })
+    // 2) Stage
+    const staged = await stageSelected(API_BASE_URL, authHeaders, rows);
+    const tStage = performance.now();
+    console.log('[IMPORT] Stage result:', staged, `(+${(tStage - t0).toFixed(0)}ms)`);
+    addAssistantMessage(`Stage complete (batch ${staged.batchId}). Inserted: ${staged.inserted}, duplicates skipped: ${staged.duplicates}.`);
+
+    // 3) Preview
+    addAssistantMessage('Analyzing & mapping accounts (preview)…');
+    const preview = await loadPreview(API_BASE_URL, authHeaders, staged.batchId);
+    const tPreview = performance.now();
+    console.log('[IMPORT] Preview items:', preview?.items?.length ?? 0, `(+${(tPreview - tStage).toFixed(0)}ms)`);
+
+    // 4) If backend couldn’t guess both sides, push the user’s chosen account
+// 4) If backend couldn’t guess both sides, push the user’s chosen account
+// 4) ALWAYS push a clear debit/credit mapping for each row.
+//    - Use the user's chosen account (original.account_id) as the non-cash leg
+//    - Balance against a Bank (preferred) or Cash account for the cash/bank leg
+let patchedCount = 0;
+
+// Pick a default cash/bank account for balancing
+// Pick a default cash/bank account for balancing, honoring the toggle
+// pickCashOrBank used during PATCH row mapping
+const pickCashOrBank = () => {
+  const toLower = (s?: string) => (s || '').toLowerCase();
+
+  const findBank = () =>
+    accounts.find(a =>
+      toLower(a.type) === 'asset' &&
+      /bank|cheque|current/.test(toLower(a.name))
     );
 
-    // 2) Submit Sales (Revenue)
-    for (const sale of salesToSubmit) {
-      try {
-        await submitSale(sale);
-      } catch (e: any) {
-        allSuccessful = false;
-        addAssistantMessage(`Failed to submit sale for "${sale.customer_name}" (R${Number(sale.amount).toFixed(2)}): ${e.message || e}`);
-      }
-    }
+  const findCash = () =>
+    accounts.find(a =>
+      toLower(a.type) === 'asset' &&
+      /cash/.test(toLower(a.name))
+    );
 
-    if (allSuccessful) {
-      addAssistantMessage(`Successfully submitted ${toSubmit.length} transaction(s) and ${salesToSubmit.length} sale(s).`);
-      // clear queue (STATE + REF)
-      pendingSalesRef.current = [];
-      setPendingSales([]);
-      setShowDocumentGeneration(true);
-    } else {
-      addAssistantMessage('Some items failed. Please review the messages above.');
-    }
-  };
+  if (forceCash) {
+    const cash = findCash();
+    if (cash) return Number(cash.id);
+    const bank = findBank();
+    return bank ? Number(bank.id) : null;
+  } else {
+    const bank = findBank();
+    if (bank) return Number(bank.id);
+    const cash = findCash();
+    return cash ? Number(cash.id) : null;
+  }
+};
+
+
+const cashOrBankId = pickCashOrBank();
+
+for (const p of preview.items) {
+  const original = toSubmit.find(t => sourceUidOf(t) === p.sourceUid);
+  if (!original) continue;
+
+  const chosenId = Number(original.account_id || 0) || null;
+  if (!chosenId) continue;
+
+  // Decide the side based on transaction type:
+  // - income:   Dr Bank/Cash, Cr chosen (e.g. Sales Revenue)
+  // - expense:  Dr chosen (expense), Cr Bank/Cash
+  // - debt:     Treat like liability increase: Dr Bank/Cash, Cr chosen (liability)
+  // If we can't find a bank/cash, still push the user's chosen side and let backend guess the other.
+  let debitId: number | null = null;
+  let creditId: number | null = null;
+
+  const ttype = (original.type || '').toLowerCase();
+  if (ttype === 'income') {
+    debitId = cashOrBankId;
+    creditId = chosenId;
+  } else if (ttype === 'expense') {
+    debitId = chosenId;
+    creditId = cashOrBankId;
+  } else if (ttype === 'debt') {
+    debitId = cashOrBankId;
+    creditId = chosenId;
+  } else {
+    // Unknown type → fall back to income-shape
+    debitId = cashOrBankId;
+    creditId = chosenId;
+  }
+
+  // If we have at least one side, push both where possible.
+  await patchRowMapping(
+    API_BASE_URL,
+    authHeaders,
+    p.rowId,
+    debitId || undefined,
+    creditId || undefined
+  );
+  patchedCount++;
+}
+
+addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
+
+
+    const tPatched = performance.now();
+    console.log('[IMPORT] Patch phase done:', { patchedCount }, `(+${(tPatched - tPreview).toFixed(0)}ms)`);
+
+    // 5) Commit
+    addAssistantMessage('Posting journal entries…');
+    const result = await commitBatch(API_BASE_URL, authHeaders, staged.batchId);
+    const tCommit = performance.now();
+    console.log('[IMPORT] Commit result:', result, `(+${(tCommit - tPatched).toFixed(0)}ms)`);
+    console.log('[IMPORT] Total time:', `${(tCommit - t0).toFixed(0)}ms`);
+
+    addAssistantMessage(`Journal posting done: ${result.posted} posted, ${result.skipped} skipped.`);
+
+    // Show the “Generate Financial Document” panel
+    setShowDocumentGeneration(true);
+  } catch (e: any) {
+    console.error('[IMPORT] Import failed:', e);
+    // If backend returned JSON {error: "..."} as text, show that text
+    const msg = e?.message || String(e);
+    addAssistantMessage(`Import failed: ${msg}`);
+  }
+};
+
 
   // -------------- Generate Docs --------------
   const handleGenerateFinancialDocument = async () => {

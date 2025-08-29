@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react'; 
 import {
   Button,
   Card,
@@ -63,6 +63,7 @@ type PaymentType = 'Cash' | 'Bank' | 'Credit';
 // --- END: MODIFIED TYPES TO MATCH BACKEND API ---
 
 const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // <-- set your API URL
+
 
 // ===== Credit Score (frontend-only, flag not block) =====
 type ScoreColor = 'green' | 'blue' | 'orange' | 'red' | 'default';
@@ -165,6 +166,67 @@ export default function POSScreen() {
   const getAuthHeaders = useCallback(() => {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
+
+  // === NEW: simple cache for account list and name → id helper ===
+  const [accountsCache, setAccountsCache] = useState<any[] | null>(null);
+
+  const loadAccountsOnce = useCallback(async () => {
+    if (!isAuthenticated || !token) return [];
+    if (accountsCache) return accountsCache;
+    try {
+      const res = await fetch(`${API_BASE_URL}/accounts`, {
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const list = await res.json();
+      setAccountsCache(list || []);
+      return list || [];
+    } catch (e) {
+      console.warn('Failed to load accounts for mapping', e);
+      setAccountsCache([]);
+      return [];
+    }
+  }, [isAuthenticated, token, getAuthHeaders, accountsCache]);
+
+// Assuming getAuthHeaders is available in scope or passed as a parameter
+async function findAccountIdByNames(candidates: string[]): Promise<number | null> {
+  try {
+    // --- FIX: Fetch from /accounts, not /products-services ---
+    const response = await fetch(`${API_BASE_URL}/accounts`, {
+      headers: getAuthHeaders(), // Ensure auth headers are included
+    });
+
+    if (!response.ok) {
+      console.error(`Failed to fetch accounts: ${response.status} ${response.statusText}`);
+      // Optionally throw or handle error
+      return null;
+    }
+
+    const list = await response.json();
+
+    // Optional: Add a log to see the fetched accounts (for debugging)
+    // console.log("Account list fetched for search:", list);
+
+    // --- DEFINE THE 'usable' FUNCTION HERE ---
+    const usable = (a: any) => a?.is_postable === true && a?.is_active === true && !!a?.reporting_category_id;
+    // --- END DEFINE ---
+
+    for (const name of candidates) {
+      // Use the same search logic (contains, case-insensitive)
+      const m = list.find((a: any) => (a?.name || '').toLowerCase().includes(name.toLowerCase()));
+      if (m && usable(m)) { // Ensure 'usable' function is defined and accessible
+        console.log(`Found account for '${name}':`, m); // Optional: Log the found account
+        return Number(m.id);
+      }
+    }
+    console.warn('Account not found for any of:', candidates);
+    return null;
+  } catch (error) {
+    console.error("Error in findAccountIdByNames:", error);
+    return null; // Or re-throw if preferred
+  }
+}
+  // === END NEW ===
 
   // Fetch score & cache when customer is selected
   const fetchAndCacheCustomerScore = useCallback(
@@ -506,7 +568,7 @@ export default function POSScreen() {
             setProductQty(1);
             setProductModal(false);
             setShowCustomProductForm(false);
-            messageApi.success(`"${itemToAdd.name}" added to cart.`);
+            messageApi.success(`"${selectedProduct.name}" added to cart.`);
           }
       }
     }
@@ -689,6 +751,68 @@ export default function POSScreen() {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to submit sale.');
       }
+
+      // === NEW: also create a journal entry for the sale ===
+      try {
+        // Pick debit account by payment type (exact names you requested)
+        const debitCandidates =
+          paymentType === 'Cash'
+            ? ['Cash']                         // exact
+            : paymentType === 'Bank'
+            ? ['Bank Account']                 // exact
+            : ['Accounts Receivable'];         // exact
+
+        const creditCandidates = ['Sales Revenue']; // exact
+
+        const [debitId, creditId] = await Promise.all([
+          findAccountIdByNames(debitCandidates),
+          findAccountIdByNames(creditCandidates),
+        ]);
+
+        if (debitId && creditId) {
+          const entryDate = new Date().toISOString().slice(0, 10);
+          const memoParts = ['POS sale'];
+          if (selectedCustomer?.name) memoParts.push(`to ${selectedCustomer.name}`);
+          if (paymentType === 'Bank' && bankName) memoParts.push(`(${bankName})`);
+          const memo = memoParts.join(' ');
+
+          const journalPayload = {
+            entryDate,
+            memo,
+            lines: [
+              { accountId: debitId, debit: total, credit: 0 },
+              { accountId: creditId, debit: 0, credit: total },
+            ],
+          };
+
+          const jr = await fetch(`${API_BASE_URL}/journal-entries`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify(journalPayload),
+          });
+
+          if (!jr.ok) {
+            const err = await jr.json().catch(() => null);
+            console.warn('Journal create failed:', err?.error || jr.status);
+            messageApi.warning(
+              'Sale recorded, but journal could not be created automatically.',
+            );
+          }
+        } else {
+          console.warn('Missing account mapping for POS journal.', {
+            triedDebit: debitCandidates,
+            triedCredit: creditCandidates,
+          });
+          messageApi.warning(
+            'Sale recorded, but required accounts were not found to create a journal.',
+          );
+        }
+      } catch (jeErr) {
+        console.warn('Journal error:', jeErr);
+        // don’t block the sale UI — just warn
+      }
+      // === END NEW ===
+
       // Re-fetch products for fresh stock (or to include newly created products)
       try {
         const productsResponse = await fetch(`${API_BASE_URL}/products-services`, {

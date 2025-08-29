@@ -1,3 +1,4 @@
+// src/lib/initHighcharts.ts (or your relevant path)
 import Highcharts from 'highcharts';
 
 // Core extensions FIRST
@@ -12,10 +13,22 @@ import DependencyWheel from 'highcharts/modules/dependency-wheel'; // needs sank
 import Networkgraph from 'highcharts/modules/networkgraph';
 import Streamgraph from 'highcharts/modules/streamgraph';
 import Sunburst from 'highcharts/modules/sunburst';
-//import PackedBubble from 'highcharts/modules/packed-bubble';
+// import PackedBubble from 'highcharts/modules/packed-bubble'; // Currently commented out
 import Variwide from 'highcharts/modules/variwide';
 import SolidGauge from 'highcharts/modules/solid-gauge'; // needs highcharts-more
 import Annotations from 'highcharts/modules/annotations';
+
+// --- NEWLY ADDED MODULES ---
+// For Heatmap chart
+import Heatmap from 'highcharts/modules/heatmap';
+// For Calendar chart (often used with heatmap or timeline approach)
+// Note: Highcharts doesn't have a specific 'timeline' module for calendars,
+// but the 'timeline' series type exists for other purposes.
+// We'll add it in case it's needed, but primarily heatmap is used for calendar grids.
+// If you specifically need the Timeline series type:
+// import Timeline from 'highcharts/modules/timeline';
+
+// --- END NEWLY ADDED MODULES ---
 
 // Init in the right order
 HighchartsMore(Highcharts);
@@ -28,10 +41,15 @@ DependencyWheel(Highcharts);
 Networkgraph(Highcharts);
 Streamgraph(Highcharts);
 Sunburst(Highcharts);
-//PackedBubble(Highcharts);
+// PackedBubble(Highcharts); // Currently commented out
 Variwide(Highcharts);
 SolidGauge(Highcharts);
 Annotations(Highcharts);
+
+// --- INITIALIZE NEWLY ADDED MODULES ---
+Heatmap(Highcharts);
+// Timeline(Highcharts); // Initialize if you uncommented the import above
+// --- END INITIALIZE NEWLY ADDED MODULES ---
 
 // Optional: silence accessibility warning or keep it enabled
 Highcharts.setOptions({
@@ -48,9 +66,13 @@ if (import.meta.env.DEV) {
     !!Highcharts.seriesTypes.networkgraph,
     !!Highcharts.seriesTypes.streamgraph,
     !!Highcharts.seriesTypes.sunburst,
-    !!Highcharts.seriesTypes.packedbubble,
+    // !!Highcharts.seriesTypes.packedbubble, // Currently commented out
     !!Highcharts.seriesTypes.variwide,
-    !!Highcharts.seriesTypes.solidgauge
+    !!Highcharts.seriesTypes.solidgauge,
+    // --- NEW MODULE CHECKS ---
+    !!Highcharts.seriesTypes.heatmap
+    // !!Highcharts.seriesTypes.timeline // Add if you imported/initialized Timeline
+    // --- END NEW MODULE CHECKS ---
   );
 }
 
