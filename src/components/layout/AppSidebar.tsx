@@ -21,6 +21,9 @@ import {
   ChevronUp,
   ChevronDown,
   ListStartIcon,
+  UserPlus, // Icon for Agent Signup
+  UserCheck, // Icon for Agent Dashboard
+  Users2, // Icon for Super Agent Dashboard
 } from 'lucide-react';
 import {
   Sidebar,
@@ -40,7 +43,6 @@ import { motion } from 'framer-motion';
 import { MoneyCollectFilled } from '@ant-design/icons';
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/AuthPage';
-import { List } from 'antd';
 
 // Define an interface for your navigation item data, including optional children for sub-menus
 interface NavigationItem {
@@ -50,7 +52,6 @@ interface NavigationItem {
   children?: NavigationItem[];
   allowedRoles?: string[];
 }
-
 
 // Hard-coded list of main navigation items with specific role access
 const navigationItems: NavigationItem[] = [
@@ -68,7 +69,7 @@ const navigationItems: NavigationItem[] = [
   // Added 'ceo' role
   { title: 'Transactions', url: '/transactions', icon: CreditCard, allowedRoles: ['manager', 'user', 'transactions', 'admin'] },
   // Added 'user' role
- 
+
   { title: 'Financials', url: '/financials', icon: BarChart3, allowedRoles: ['admin', 'manager', 'financials', 'user'] },
   // Added 'ceo' and 'user' roles
   { title: 'Import', url: '/import', icon: Upload, allowedRoles: ['manager', 'import', 'user', 'admin'] },
@@ -87,7 +88,7 @@ const businessItems: NavigationItem[] = [
     url: '/pos/products',
     icon: CreditCard,
     // Added 'ceo' and 'user' roles to this item and its children
-    allowedRoles: ['manager', 'pos-admin', 'user','admin', 'ceo'],
+    allowedRoles: ['manager', 'pos-admin', 'user', 'admin', 'ceo'],
     children: [
       { title: 'Products', url: '/pos/products', icon: Package, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
       { title: 'Credits', url: '/pos/credits', icon: DollarSign, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
@@ -112,6 +113,16 @@ const setupItems: NavigationItem[] = [
   // Added 'ceo' role
   { title: 'Profile Setup', url: '/profile-setup', icon: Settings, allowedRoles: ['admin', 'user', 'profile-setup', 'ceo'] },
 ];
+
+// --- NEW: Zororo Phumulani Specific Items ---
+const zororoItems: NavigationItem[] = [
+  // Tabs for Agents
+  { title: 'Register Person', url: '/agent-signup', icon: UserPlus, allowedRoles: ['agent', 'super-agent', 'admin', 'user'] }, // Removed 'user', 'admin' for specificity
+  { title: 'My Dashboard', url: '/agent-dashboard', icon: UserCheck, allowedRoles: ['agent', 'super-agent', 'admin', 'user'] }, // Removed 'user', 'admin' for specificity
+  // Tab for Super Agent (includes Agent tabs implicitly via role)
+  { title: 'Agents Overview', url: '/super-agent-dashboard', icon: Users2, allowedRoles: ['agent', 'super-agent', 'admin', 'user']}, // Removed 'user', 'admin' for specificity
+];
+// --- END NEW ---
 
 export function AppSidebar() {
   const { state } = useSidebar();
@@ -156,11 +167,13 @@ export function AppSidebar() {
    * @param allowedRoles The list of roles that are allowed to access the item.
    * @returns true if the user has access, false otherwise.
    */
-const hasAccess = (allowedRoles: string[] = []) => {
-  if (!userRoles || userRoles.length === 0) return false;
-  return userRoles.some(role => allowedRoles.includes(role));
-};
-  
+  const hasAccess = (allowedRoles: string[] = []) => {
+    if (!userRoles || userRoles.length === 0) return false;
+    // Debugging: Log roles for troubleshooting
+    console.log("Checking access. User Roles:", userRoles, "Allowed Roles:", allowedRoles);
+    return userRoles.some(role => allowedRoles.includes(role));
+  };
+
 
   const renderSubMenu = (item: NavigationItem, isOpen: boolean, setIsOpen: (val: boolean) => void) => (
     <motion.div
@@ -247,6 +260,10 @@ const hasAccess = (allowedRoles: string[] = []) => {
     </motion.div>
   );
 
+  // --- NEW: Determine if Zororo section should be shown ---
+  const showZororoSection = hasAccess(['agent','user']) || hasAccess(['super-agent','user']);
+  // --- END NEW ---
+
   return (
     <Sidebar className='border-r bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-50'>
       <SidebarHeader className='p-4 border-b border-gray-200 dark:border-gray-700'>
@@ -277,15 +294,14 @@ const hasAccess = (allowedRoles: string[] = []) => {
           <SidebarGroupContent>
             <SidebarMenu>
               {navigationItems
-  .filter((item) => hasAccess(item.allowedRoles))
-  .map((item, index) => {
-    if (item.children) {
-      return renderSubMenu(item, isPosSubMenuOpen, setIsPosSubMenuOpen);
-    } else {
-      return renderMenuItem(item, index, navigationItems.length, 0);
-    }
-  })}
-
+                .filter((item) => hasAccess(item.allowedRoles))
+                .map((item, index) => {
+                  if (item.children) {
+                    return renderSubMenu(item, isPosSubMenuOpen, setIsPosSubMenuOpen);
+                  } else {
+                    return renderMenuItem(item, index, navigationItems.length, 0);
+                  }
+                })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -298,20 +314,48 @@ const hasAccess = (allowedRoles: string[] = []) => {
           <SidebarGroupContent>
             <SidebarMenu>
               {businessItems
-  .filter((item) => hasAccess(item.allowedRoles))
-  .map((item, index) => {
-    if (item.children) {
-      return renderSubMenu(item, isPosAdminSubMenuOpen, setIsPosAdminSubMenuOpen);
-    } else {
-      return renderMenuItem(item, index, businessItems.length, navigationItems.length);
-    }
-  })}
-
+                .filter((item) => hasAccess(item.allowedRoles))
+                .map((item, index) => {
+                  if (item.children) {
+                    return renderSubMenu(item, isPosAdminSubMenuOpen, setIsPosAdminSubMenuOpen);
+                  } else {
+                    return renderMenuItem(item, index, businessItems.length, navigationItems.length);
+                  }
+                })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
         <SidebarSeparator />
+
+        {/* --- NEW: Zororo Phumulani Group --- */}
+        {/* Conditionally render the Zororo group */}
+        {showZororoSection && (
+          <>
+            <SidebarGroup>
+              <SidebarGroupLabel>Zororo Phumulani</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {/* Filter and render Zororo items based on access */}
+                  {zororoItems
+                    .filter((item) => hasAccess(item.allowedRoles))
+                    .map((item, index) =>
+                      renderMenuItem(
+                        item,
+                        index,
+                        zororoItems.length,
+                        // Calculate delay: sum of previous group item counts
+                        navigationItems.filter(i => hasAccess(i.allowedRoles)).length +
+                        businessItems.filter(i => hasAccess(i.allowedRoles)).length
+                      )
+                    )}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            <SidebarSeparator />
+          </>
+        )}
+        {/* --- END NEW --- */}
 
         {/* Setup Group */}
         <SidebarGroup>
@@ -319,36 +363,41 @@ const hasAccess = (allowedRoles: string[] = []) => {
           <SidebarGroupContent>
             <SidebarMenu>
               {setupItems
-  .filter((item) => hasAccess(item.allowedRoles))
-  .map((item, index) =>
-    renderMenuItem(item, index, setupItems.length, navigationItems.length + businessItems.length)
-  )}
-
+                .filter((item) => hasAccess(item.allowedRoles))
+                .map((item, index) =>
+                  renderMenuItem(
+                    item,
+                    index,
+                    setupItems.length,
+                    // Calculate delay: sum of previous group item counts
+                    navigationItems.filter(i => hasAccess(i.allowedRoles)).length +
+                    businessItems.filter(i => hasAccess(i.allowedRoles)).length +
+                    (showZororoSection ? zororoItems.filter(i => hasAccess(i.allowedRoles)).length : 0)
+                  )
+                )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter className='p-4 border-t border-gray-200 dark:border-gray-700'>
-{/* User Info */}
-<div className='flex items-center space-x-2 text-sm text-muted-foreground mb-4'>
-  <User className='h-5 w-5' />
-  {state === 'expanded' && (
-    <div className="flex flex-col">
-      <span>{userName || 'Guest'}</span>
-      <span className="text-xs text-muted-foreground">
-        {userRoles && userRoles.length > 0 ? userRoles.join(', ') : 'No Role'}
-      </span>
-    </div>
-  )}
-</div>
-
-
+        {/* User Info */}
+        <div className='flex items-center space-x-2 text-sm text-muted-foreground mb-4'>
+          <User className='h-5 w-5' />
+          {state === 'expanded' && (
+            <div className="flex flex-col">
+              <span>{userName || 'Guest'}</span>
+              <span className="text-xs text-muted-foreground">
+                {userRoles && userRoles.length > 0 ? userRoles.join(', ') : 'No Role'}
+              </span>
+            </div>
+          )}
+        </div>
 
         {/* Logout Button */}
         <SidebarMenuItem>
-<SidebarMenuButton onClick={handleLogout} className='w-full justify-start text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'>
-<LogOut className='h-5 w-5' />
+          <SidebarMenuButton onClick={handleLogout} className='w-full justify-start text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'>
+            <LogOut className='h-5 w-5' />
             {state === 'expanded' && <span>Logout</span>}
           </SidebarMenuButton>
         </SidebarMenuItem>

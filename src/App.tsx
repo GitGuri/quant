@@ -21,6 +21,9 @@ import UserManagementPage from './pages/UserManagementPage';
 import PayrollDashboard from './components/payroll/PayrollDashboard';
 import { DocumentManagement } from './pages/DocumentManagement';
 import { FinancialsProvider } from './contexts/FinancialsContext';
+import AgentSignup from './pages/AgentSignup';
+import SuperAgentDashboard from './pages/SuperAgentDashboard';
+import AgentDashboard from './pages/AgentDashboard';
 
 // ✅ Unified Auth Page (Login + Register)
 import { AuthPage, AuthProvider, useAuth } from './AuthPage';
@@ -73,7 +76,9 @@ const AppContent = () => {
             <Route path="/documents" element={<PrivateRoute><DocumentManagement /></PrivateRoute>} />
             <Route path="/personel-setup" element={<PrivateRoute><PersonelSetup /></PrivateRoute>} />
             <Route path="/profile-setup" element={<PrivateRoute><ProfileSetup /></PrivateRoute>} />
-
+            <Route path="/agent-signup" element={<PrivateRoute><AgentSignup /></PrivateRoute>} />
+            <Route path="/agent-dashboard" element={<PrivateRoute><AgentDashboard /></PrivateRoute>} />
+            <Route path="/super-agent-dashboard" element={<PrivateRoute><SuperAgentDashboard /></PrivateRoute>} />
             {/* Catch-all for undefined routes */}
             <Route path="*" element={<NotFound />} /> {/* Use your NotFound component */}
           </Routes>
