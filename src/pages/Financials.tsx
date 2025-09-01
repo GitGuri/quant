@@ -86,9 +86,14 @@ interface BalanceSheetData {
 }
 
 // Interfaces for the data returned by the specific API endpoints
+// --- FIXED: Updated ApiIncomeStatementSection to match the new backend response
 interface ApiIncomeStatementSection {
   section: string;
-  amount: string; // API returns string numbers
+  amount: number; // The new backend should return a number, not a string
+  accounts: {
+    name: string;
+    amount: number;
+  }[];
 }
 
 interface ApiBalanceSheetSection {
@@ -236,55 +241,88 @@ const Financials = () => {
   };
 
   // --- Data Normalization Functions ---
-  const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undefined) => {
-    const lines: { item: string; amount: number; type?: string }[] = [];
-    if (!sections || !Array.isArray(sections)) {
-        console.warn("Invalid income statement data received:", sections);
-        return lines;
-    }
-
-    const sectionMap: Record<string, number> = {};
-    sections.forEach(s => {
-        sectionMap[s.section] = num(s.amount);
-    });
-
-    lines.push({ item: 'Sales Revenue', amount: sectionMap['revenue'] || 0, type: 'detail' });
-    const grossProfit = (sectionMap['revenue'] || 0) - 0;
-    lines.push({ item: 'Gross Profit / (Loss)', amount: grossProfit, type: 'subtotal' });
-
-    const otherIncomeSections = Object.keys(sectionMap).filter(k => k === 'other_income');
-    if (otherIncomeSections.length > 0 || sectionMap['other_income'] > 0) {
-        lines.push({ item: 'Add: Other Income', amount: 0, type: 'header' });
-        lines.push({ item: '  Other Income', amount: sectionMap['other_income'] || 0, type: 'detail' });
-    }
-
-    const grossIncome = grossProfit + (sectionMap['other_income'] || 0);
-    lines.push({ item: 'Gross Income', amount: grossIncome, type: 'subtotal' });
-
-    lines.push({ item: 'Less: Expenses', amount: 0, type: 'header' });
-    if (sectionMap['operating_expenses'] !== undefined) {
-        lines.push({ item: '  Operating Expenses', amount: sectionMap['operating_expenses'], type: 'detail-expense' });
-    }
-    Object.keys(sectionMap).forEach(key => {
-        if (key !== 'revenue' && key !== 'other_income' && key !== 'operating_expenses' && sectionMap[key] > 0) {
-             lines.push({ item: `  ${key.replace(/_/g, ' ')}`, amount: sectionMap[key], type: 'detail-expense' });
-        }
-    });
-
-    const totalExpenses = Object.keys(sectionMap)
-        .filter(k => k !== 'revenue' && k !== 'other_income')
-        .reduce((sum, k) => sum + sectionMap[k], 0);
-    lines.push({ item: 'Total Expenses', amount: totalExpenses, type: 'subtotal' });
-
-    const netProfitLoss = grossIncome - totalExpenses;
-    lines.push({
-      item: netProfitLoss >= 0 ? 'NET PROFIT for the period' : 'NET LOSS for the period',
-      amount: Math.abs(netProfitLoss),
-      type: 'total'
-    });
-
+  // --- FIXED: Updated buildIncomeStatementLines to handle new data structure
+// --- Data Normalization Functions ---
+const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undefined) => {
+  const lines: { item: string; amount: number; type?: string }[] = [];
+  if (!sections || !Array.isArray(sections)) {
+    console.warn("Invalid income statement data received:", sections);
     return lines;
-  };
+  }
+
+  const sectionMap: Record<string, ApiIncomeStatementSection> = {};
+  sections.forEach(s => {
+    sectionMap[s.section] = s;
+  });
+
+  // 1. Revenue Section
+  lines.push({ item: 'Revenue', amount: 0, type: 'header' });
+  const revenueSection = sectionMap['revenue'];
+  if (revenueSection && revenueSection.accounts) {
+    revenueSection.accounts.forEach(acc => {
+      lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail' });
+    });
+  }
+  const totalRevenue = revenueSection?.amount || 0;
+  lines.push({ item: 'Total Revenue', amount: totalRevenue, type: 'subtotal' });
+
+  // 2. Cost of Goods Sold Section
+  const cogsSection = sectionMap['cogs'];
+  if (cogsSection && cogsSection.accounts.length > 0) {
+    lines.push({ item: 'Less: Cost of Goods Sold', amount: 0, type: 'header' });
+    cogsSection.accounts.forEach(acc => {
+      // COGS amounts should be negative to be subtracted
+      lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail-expense' });
+    });
+  }
+  const totalCogs = cogsSection?.amount || 0;
+  if (totalCogs > 0) {
+    lines.push({ item: 'Total Cost of Goods Sold', amount: totalCogs, type: 'subtotal' });
+  }
+
+  // 3. Gross Profit (calculated as Revenue - COGS)
+  const grossProfit = totalRevenue - totalCogs;
+  lines.push({ item: 'Gross Profit', amount: grossProfit, type: 'subtotal' });
+
+  // 4. Other Income Section
+  const otherIncomeSection = sectionMap['other_income'];
+  if (otherIncomeSection && otherIncomeSection.accounts && otherIncomeSection.accounts.length > 0) {
+    lines.push({ item: 'Other Income', amount: 0, type: 'header' });
+    otherIncomeSection.accounts.forEach(acc => {
+      lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail' });
+    });
+    lines.push({ item: 'Total Other Income', amount: otherIncomeSection.amount, type: 'subtotal' });
+  }
+
+  // 5. Expenses Section
+  lines.push({ item: 'Less: Expenses', amount: 0, type: 'header' });
+  let totalExpenses = 0;
+  Object.keys(sectionMap).forEach(key => {
+    const section = sectionMap[key];
+    // Exclude 'revenue', 'cogs', and 'other_income' which are handled separately
+    if (key !== 'revenue' && key !== 'cogs' && key !== 'other_income' && section.accounts.length > 0) {
+      lines.push({ item: `  ${key.replace(/_/g, ' ')}`, amount: 0, type: 'subheader' });
+      section.accounts.forEach(acc => {
+        lines.push({ item: `    ${acc.name}`, amount: acc.amount, type: 'detail-expense' });
+      });
+      totalExpenses += section.amount;
+      lines.push({ item: `  Total ${key.replace(/_/g, ' ')}`, amount: section.amount, type: 'subtotal' });
+    }
+  });
+
+  lines.push({ item: 'Total Expenses', amount: totalExpenses, type: 'subtotal' });
+
+  // 6. Net Profit/Loss
+  const netProfitLoss = grossProfit + (otherIncomeSection?.amount || 0) - totalExpenses;
+  lines.push({
+    item: netProfitLoss >= 0 ? 'NET PROFIT for the period' : 'NET LOSS for the period',
+    amount: Math.abs(netProfitLoss),
+    type: 'total'
+  });
+
+  return lines;
+};
+  // --- END FIXED ---
 
   // --- UPDATED: Enhanced Balance Sheet Normalization ---
   const normalizeBalanceSheetFromServer = (response: ApiBalanceSheetResponse | undefined): BalanceSheetData => {
@@ -450,6 +488,7 @@ const Financials = () => {
         console.log(`Fetched raw data for ${type}:`, payload);
 
         if (type === 'income-statement') {
+          // --- FIXED: Use the new payload structure
           const sections = payload?.sections as ApiIncomeStatementSection[] | undefined;
           const lines = buildIncomeStatementLines(sections);
           setIncomeStatementData(lines);
