@@ -313,7 +313,7 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
   lines.push({ item: 'Total Expenses', amount: totalExpenses, type: 'subtotal' });
 
   // 6. Net Profit/Loss
-  const netProfitLoss = grossProfit + (otherIncomeSection?.amount || 0) - totalExpenses;
+  const netProfitLoss = grossProfit + (otherIncomeSection?.amount || 0)-totalExpenses;
   lines.push({
     item: netProfitLoss >= 0 ? 'NET PROFIT for the period' : 'NET LOSS for the period',
     amount: Math.abs(netProfitLoss),

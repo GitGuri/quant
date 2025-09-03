@@ -1,8 +1,6 @@
-// src/pages/AgentSignup.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react'; // Added useEffect import
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/components/ui/use-toast';
-import { useAuth } from '../AuthPage'; // Adjust path if needed
 import {
   Card,
   CardContent,
@@ -20,7 +18,7 @@ interface FamilyMember {
     name: string;
     surname: string;
     relationship: string;
-    date_of_birth: string; // YYYY-MM-DD or null
+    date_of_birth: string | null; // YYYY-MM-DD or null
 }
 
 interface ExtendedFamilyMember {
@@ -28,7 +26,7 @@ interface ExtendedFamilyMember {
     name: string;
     surname: string;
     relationship: string;
-    date_of_birth: string; // YYYY-MM-DD or null
+    date_of_birth: string | null; // YYYY-MM-DD or null
     premium: number;
 }
 
@@ -42,11 +40,11 @@ interface Application {
     address: string;
     nationality: string;
     gender: string;
-    date_of_birth: string; // YYYY-MM-DD or null
+    date_of_birth: string | null; // YYYY-MM-DD or null
     id_number: string;
     alt_name: string;
     relation_to_member: string;
-    relation_dob: string; // YYYY-MM-DD or null
+    relation_dob: string | null; // YYYY-MM-DD or null
 
     // Family & Extended Family
     family_members: FamilyMember[];
@@ -63,14 +61,14 @@ interface Application {
     branch_code: string;
     account_holder: string;
     account_number: string;
-    deduction_date: string; // YYYY-MM-DD or null
+    deduction_date: string | null; // YYYY-MM-DD or null
     account_type: string;
-    commencement_date: string; // YYYY-MM-DD or null
+    commencement_date: string | null; // YYYY-MM-DD or null
 
     // Declaration
     declaration_signature: string;
-    declaration_date: string; // YYYY-MM-DD or null
-    call_time: string; // HH:MM or null
+    declaration_date: string | null; // YYYY-MM-DD or null
+    call_time: string | null; // HH:MM or null
     agent_name: string;
 
     // Agent Details
@@ -88,66 +86,71 @@ const A4_WIDTH_PX = 210 * 3.7795275591; // ≈ 794px
 const AgentSignup = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { isAuthenticated, token, userName, userRoles } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Basic check, though route protection should handle this
-  if (!isAuthenticated) {
-    // Redirect to login or show an error if somehow accessed unauthenticated
-    navigate('/login');
-    return null; // Or a simple message/loading state
+  // --- NEW: State for authentication token ---
+  const [authToken, setAuthToken] = useState<string | null>(null);
+
+  // --- NEW: Effect to get token from localStorage ---
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    setAuthToken(token);
+  }, []);
+
+const handleSaveApplication = async (applicationData: any) => {
+  if (!authToken) {
+    toast({
+      title: '❌ Authentication Error',
+      description: 'You are not logged in. Please log in and try again.',
+      variant: 'destructive',
+    });
+    return;
   }
 
-  // Optional: Check role again on the page itself
-  const isAgent = userRoles.includes('agent') || userRoles.includes('super-agent');
-  if (!isAgent) {
-     toast({
-        title: "Access Denied",
-        description: "You do not have permission to access this page.",
-        variant: "destructive",
-     });
-     navigate('/'); // Redirect to dashboard or a suitable page
-     return null;
-  }
+  setIsSubmitting(true);
+  try {
+    // 🔁 Map what the backend expects:
+    // - name/surname (not firstName/lastName)
+    // - keep the rest as-is
+    const payload = {
+      ...applicationData,
+      name: applicationData.firstName || '',   // 👈 map
+      surname: applicationData.lastName || '', // 👈 map
+    };
 
-  const handleSaveApplication = async (applicationData: any /* Use Application type if available */) => {
-    setIsSubmitting(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/applications`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`, // Include auth token
-        },
-        body: JSON.stringify(applicationData),
-      });
+    // (Optional) clean up if you don’t want to send firstName/lastName at all:
+    // delete payload.firstName;
+    // delete payload.lastName;
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Failed to submit application: ${response.status} ${response.statusText}`);
-      }
+    const response = await fetch(`${API_BASE_URL}/api/applications`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
 
-      const result = await response.json();
-      console.log('Application submitted successfully:', result);
-      toast({
-        title: '✅ Success!',
-        description: 'Application submitted successfully.',
-      });
-      // Optionally navigate to a confirmation page or back to the agent dashboard
-      // navigate('/agent-dashboard');
-      // For now, we'll just show the toast and let the user submit another
-
-    } catch (err: any) {
-      console.error('Error submitting application:', err);
-      toast({
-        title: '❌ Submission Failed',
-        description: err.message || 'An error occurred while submitting the application. Please try again.',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsSubmitting(false);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to submit application: ${response.status} ${response.statusText}`);
     }
-  };
+
+    const result = await response.json();
+    console.log('Application submitted successfully:', result);
+    toast({ title: '✅ Success!', description: 'Application submitted successfully.' });
+  } catch (err: any) {
+    console.error('Error submitting application:', err);
+    toast({
+      title: '❌ Submission Failed',
+      description: err.message || 'An error occurred while submitting the application. Please try again.',
+      variant: 'destructive',
+    });
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+
 
   const handleCancel = () => {
     // Optionally navigate back or to a specific agent page
@@ -161,7 +164,7 @@ const AgentSignup = () => {
         <CardHeader>
           <CardTitle>Register New Person</CardTitle>
           <CardDescription>
-            Please fill in the details for the new applicant. Submitted by: {userName || 'Agent'}
+            Please fill in the details for the new applicant.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -197,9 +200,9 @@ function CustomerFormFullPage({
 }) {
     return (
         <div className="w-full h-[100vh] flex flex-col">
-            {/* Sticky top bar (not printed) */}
+            {/* Sticky top bar (not printed) */
 
-            {/* Page body (scrollable) */}
+            /* Page body (scrollable) */}
             <div className="flex-1 overflow-auto">
                 <div className="max-w-[1200px] mx-auto w-full px-4 py-4">
                     <CustomerForm application={application} onSave={onSave} onCancel={onCancel} />
