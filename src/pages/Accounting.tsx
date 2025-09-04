@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Header } from '@/components/layout/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -41,6 +41,12 @@ const normalSideOf = (t: Account['type']) =>
 
 const isBalanceSheetType = (t: Account['type']) =>
   t === 'Asset' || t === 'Liability' || t === 'Equity';
+
+// ---- Helpers for funding pickers ----
+const looksLikeBankOrCash = (acc: Account) =>
+  acc.type === 'Asset' && /cash|bank|cheque|checking|current|savings|petty/i.test(acc.name || '');
+
+type FundingMethod = 'none' | 'cash' | 'liability';
 
 const Accounting = () => {
   const [activeTab, setActiveTab] = useState<'assets'|'expenses'|'accounts'|'opening'>('assets');
@@ -150,6 +156,10 @@ const Accounting = () => {
       ...item,
       dateReceived: (item as Asset).date_received,
       date: (item as Expense).date,
+      // editing doesn’t change funding by default
+      fundingMethod: 'none',
+      paid_from_account_id: '',
+      financed_liability_account_id: ''
     });
     setIsModalVisible(true);
   };
@@ -173,7 +183,7 @@ const Accounting = () => {
 
     try {
       const r = await fetch(url, { method: 'DELETE', headers: authHeaders });
-      if (r.status === 204) {
+      if (r.status === 204 || r.ok) {
         alert(success);
         if (type === 'asset') await fetchAssets();
         if (type === 'expense') await fetchExpenses();
@@ -191,6 +201,10 @@ const Accounting = () => {
     }
   };
 
+  // Derived lists for funding pickers
+  const bankAccounts = useMemo(() => accounts.filter(looksLikeBankOrCash), [accounts]);
+  const liabilityAccounts = useMemo(() => accounts.filter(a => a.type === 'Liability'), [accounts]);
+
   const handleSubmit = async () => {
     if (!token) { alert('You are not authenticated. Please log in.'); return; }
 
@@ -205,17 +219,40 @@ const Accounting = () => {
           alert('Please fill in all asset fields correctly (Type, Name, Cost, Date Received, Account)');
           return;
         }
+
+        // basic asset payload
         payload = {
           type: formData.type,
           name: formData.name,
           number: formData.number || null,
           cost,
           date_received: formData.dateReceived,
-          account_id: formData.account_id,
+          account_id: Number(formData.account_id),
           depreciation_method: formData.depreciationMethod || null,
           useful_life_years: formData.usefulLifeYears ? Number(formData.usefulLifeYears) : null,
           salvage_value: formData.salvageValue ? Number(formData.salvageValue) : null,
         };
+
+        // funding logic
+        const fm: FundingMethod = formData.fundingMethod || 'none';
+        if (!formData.id) {
+          if (fm === 'cash') {
+            if (!formData.paid_from_account_id) {
+              alert('Please choose a Bank/Cash account for payment.');
+              return;
+            }
+            payload.paid_from_account_id = Number(formData.paid_from_account_id);
+          }
+          if (fm === 'liability') {
+            if (!formData.financed_liability_account_id) {
+              alert('Please choose a Liability account for financing.');
+              return;
+            }
+            payload.financed_liability_account_id = Number(formData.financed_liability_account_id);
+          }
+        }
+        // For edits, we don’t change the original funding JEs here.
+
         if (formData.id) { url = `${API_BASE}/assets/${formData.id}`; method = 'PUT'; }
         else { url = `${API_BASE}/assets`; method = 'POST'; }
       }
@@ -232,7 +269,7 @@ const Accounting = () => {
           category: formData.category || null,
           amount,
           date: formData.date,
-          account_id: formData.account_id,
+          account_id: Number(formData.account_id),
         };
         if (formData.id) { url = `${API_BASE}/expenses/${formData.id}`; method = 'PUT'; }
         else { url = `${API_BASE}/expenses`; method = 'POST'; }
@@ -350,7 +387,26 @@ const Accounting = () => {
                     <Button onClick={handleRunDepreciation} disabled={isDepreciating} className='bg-green-600 hover:bg-green-700'>
                       {isDepreciating ? 'Running...' : <><Play className='h-4 w-4 mr-2' /> Run Depreciation</>}
                     </Button>
-                    <Button onClick={() => { clearForm(); setModalType('asset'); setIsModalVisible(true); }}>
+                    <Button onClick={() => {
+                      clearForm();
+                      setModalType('asset');
+                      setFormData({
+                        type: '',
+                        name: '',
+                        number: '',
+                        cost: '',
+                        dateReceived: '',
+                        account_id: '',
+                        depreciationMethod: 'straight-line',
+                        usefulLifeYears: '',
+                        salvageValue: '0',
+                        // funding defaults
+                        fundingMethod: 'none',
+                        paid_from_account_id: '',
+                        financed_liability_account_id: ''
+                      });
+                      setIsModalVisible(true);
+                    }}>
                       <Plus className='h-4 w-4 mr-2' /> Add Asset
                     </Button>
                   </div>
@@ -624,12 +680,17 @@ const Accounting = () => {
                 <Input value={formData.number || ''} onChange={e => setFormData({ ...formData, number: e.target.value })} placeholder='Asset Number (Optional)' />
 
                 <Label>Cost (R)</Label>
-                <Input type='number' value={formData.cost ?? ''} onChange={e => setFormData({ ...formData, cost: e.target.value === '' ? '' : Number(e.target.value) })} placeholder='Cost' />
+                <Input
+                  type='number'
+                  value={formData.cost ?? ''}
+                  onChange={e => setFormData({ ...formData, cost: e.target.value === '' ? '' : Number(e.target.value) })}
+                  placeholder='Cost'
+                />
 
                 <Label>Date Received</Label>
                 <Input type='date' value={formData.dateReceived || ''} onChange={e => setFormData({ ...formData, dateReceived: e.target.value })} />
 
-                <Label>Account</Label>
+                <Label>Asset Account</Label>
                 <Select value={formData.account_id || ''} onValueChange={value => setFormData({ ...formData, account_id: value })}>
                   <SelectTrigger><SelectValue placeholder='Select account' /></SelectTrigger>
                   <SelectContent>
@@ -648,10 +709,93 @@ const Accounting = () => {
                 </Select>
 
                 <Label>Useful Life (Years)</Label>
-                <Input type='number' value={formData.usefulLifeYears ?? ''} onChange={e => setFormData({ ...formData, usefulLifeYears: e.target.value === '' ? '' : Number(e.target.value) })} placeholder='e.g., 5' />
+                <Input
+                  type='number'
+                  value={formData.usefulLifeYears ?? ''}
+                  onChange={e => setFormData({ ...formData, usefulLifeYears: e.target.value === '' ? '' : Number(e.target.value) })}
+                  placeholder='e.g., 5'
+                />
 
                 <Label>Salvage Value (R)</Label>
-                <Input type='number' value={formData.salvageValue ?? ''} onChange={e => setFormData({ ...formData, salvageValue: e.target.value === '' ? '' : Number(e.target.value) })} placeholder='e.g., 1000' />
+                <Input
+                  type='number'
+                  value={formData.salvageValue ?? ''}
+                  onChange={e => setFormData({ ...formData, salvageValue: e.target.value === '' ? '' : Number(e.target.value) })}
+                  placeholder='e.g., 1000'
+                />
+
+                {/* Funding */}
+                <div className='border rounded-md p-3 mt-1'>
+                  <div className='flex items-center justify-between gap-3 mb-3'>
+                    <Label className='m-0'>Funding</Label>
+                    <Select
+                      value={formData.fundingMethod || 'none'}
+                      onValueChange={(value) => {
+                        const fm = value as FundingMethod;
+                        setFormData((prev:any) => ({
+                          ...prev,
+                          fundingMethod: fm,
+                          // clear opposing pickers
+                          paid_from_account_id: fm === 'cash' ? (prev.paid_from_account_id || '') : '',
+                          financed_liability_account_id: fm === 'liability' ? (prev.financed_liability_account_id || '') : ''
+                        }));
+                      }}
+                    >
+                      <SelectTrigger className='w-56'><SelectValue placeholder='Select funding' /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value='none'>No journal yet</SelectItem>
+                        <SelectItem value='cash'>Paid from Cash/Bank</SelectItem>
+                        <SelectItem value='liability'>Financed (Liability)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {formData.fundingMethod === 'cash' && (
+                    <div className='mt-2'>
+                      <Label>Bank / Cash Account</Label>
+                      <Select
+                        value={formData.paid_from_account_id || ''}
+                        onValueChange={(value)=> setFormData({ ...formData, paid_from_account_id: value })}
+                      >
+                        <SelectTrigger><SelectValue placeholder='Select bank/cash account' /></SelectTrigger>
+                        <SelectContent>
+                          {bankAccounts.map(acc => (
+                            <SelectItem key={acc.id} value={acc.id}>{acc.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className='text-xs text-muted-foreground mt-1'>
+                        Will post: <b>Dr Fixed Asset</b> / <b>Cr Bank</b>.
+                      </p>
+                    </div>
+                  )}
+
+                  {formData.fundingMethod === 'liability' && (
+                    <div className='mt-2'>
+                      <Label>Liability Account</Label>
+                      <Select
+                        value={formData.financed_liability_account_id || ''}
+                        onValueChange={(value)=> setFormData({ ...formData, financed_liability_account_id: value })}
+                      >
+                        <SelectTrigger><SelectValue placeholder='Select liability account' /></SelectTrigger>
+                        <SelectContent>
+                          {liabilityAccounts.map(acc => (
+                            <SelectItem key={acc.id} value={acc.id}>{acc.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className='text-xs text-muted-foreground mt-1'>
+                        Will post: <b>Dr Fixed Asset</b> / <b>Cr Liability</b>.
+                      </p>
+                    </div>
+                  )}
+
+                  {formData.fundingMethod === 'none' && (
+                    <p className='text-xs text-muted-foreground'>
+                      No journal will be posted now. You can post funding later.
+                    </p>
+                  )}
+                </div>
               </>
             )}
 

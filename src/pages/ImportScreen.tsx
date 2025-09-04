@@ -1,5 +1,5 @@
 // ImportScreen.tsx
-import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useLayoutEffect, useMemo } from 'react';
 import {
   Mic,
   Paperclip,
@@ -45,7 +45,6 @@ import { useAuth } from '../AuthPage';
 import { SearchableAccountSelect } from '../components/SearchableAccountSelect';
 import { SearchableCategorySelect } from '../components/SearchableCategorySelect';
 import { Link, useNavigate } from 'react-router-dom';
-
 
 declare global {
   interface Window {
@@ -572,20 +571,58 @@ const EditableTransactionTable = ({
   const [isCancelled, setIsCancelled] = useState(false);
   const [localForceCash, setLocalForceCash] = useState(!!forceCash);
   const [confirmClicked, setConfirmClicked] = useState(false);
-  
-  useEffect(() => { setConfirmClicked(false); }, [initialTransactions]);
 
-const handleConfirmOnce = () => {
-  if (confirmClicked || isBusy) return;   // ignore double taps
-  setConfirmClicked(true);                // disable instantly
-  onConfirm(transactions);                // parent still sets importBusy
-};
+  const hasZeroSelected = useMemo(
+    () => transactions.some(t => t.includeInImport !== false && Number(t.amount) === 0),
+    [transactions]
+  );
+  const zeroSelectedCount = useMemo(
+    () => transactions.filter(t => t.includeInImport !== false && Number(t.amount) === 0).length,
+    [transactions]
+  );
+
+  useEffect(() => {
+    setConfirmClicked(false);
+    clickedRef.current = false;
+  }, [initialTransactions]);
+
+  const handleConfirmOnce = () => {
+    // hard guard against double triggers (and block zero amounts)
+    if (clickedRef.current || confirmClicked || isBusy || hasZeroSelected) return;
+    clickedRef.current = true;     // blocks any immediate second click
+    setConfirmClicked(true);       // visually disable + change label
+    onConfirm(transactions);       // kick off parent flow (sets importBusy)
+  };
 
   // sticky horizontal bar sync
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const bottomStripRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);   // NEW: measures content width
+  const topStripRef = useRef<HTMLDivElement | null>(null);   // NEW
+  const clickedRef = useRef(false);
   const [contentWidth, setContentWidth] = useState<number>(0);
-  useResizeObserver(scrollAreaRef, (w) => setContentWidth(w));
+
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+
+    const ro = new ResizeObserver(() => {
+      setContentWidth(el.scrollWidth);
+    });
+    ro.observe(el);
+
+    // init
+    setContentWidth(el.scrollWidth);
+
+    // also react to window resizing
+    const onWin = () => setContentWidth(el.scrollWidth);
+    window.addEventListener('resize', onWin, { passive: true });
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', onWin);
+    };
+  }, []);
 
   useEffect(() => {
     setLocalForceCash(!!forceCash);
@@ -597,18 +634,41 @@ const handleConfirmOnce = () => {
 
   useEffect(() => {
     const area = scrollAreaRef.current;
-    const strip = bottomStripRef.current;
-    if (!area || !strip) return;
+    const top = topStripRef.current;
+    const bottom = bottomStripRef.current;
+    if (!area || !top || !bottom) return;
 
-    const onAreaScroll = () => { strip.scrollLeft = area.scrollLeft; };
-    const onStripScroll = () => { area.scrollLeft = strip.scrollLeft; };
+    let syncing = false;
+    const sync = (from: HTMLElement, targets: HTMLElement[]) => {
+      if (syncing) return;
+      syncing = true;
+      const x = from.scrollLeft;
+      for (const t of targets) if (t !== from) t.scrollLeft = x;
+      syncing = false;
+    };
 
-    area.addEventListener('scroll', onAreaScroll, { passive: true });
-    strip.addEventListener('scroll', onStripScroll, { passive: true });
+    const onArea = () => sync(area, [top, bottom]);
+    const onTop = () => sync(top, [area, bottom]);
+    const onBottom = () => sync(bottom, [area, top]);
+
+    area.addEventListener('scroll', onArea, { passive: true });
+    top.addEventListener('scroll', onTop, { passive: true });
+    bottom.addEventListener('scroll', onBottom, { passive: true });
+
+    // Wheel → horizontal (so users don’t need a trackpad)
+    const onWheel = (e: WheelEvent) => {
+      // If vertical scroll dominates, convert it to horizontal
+      if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) {
+        area.scrollLeft += e.deltaY;
+      }
+    };
+    area.addEventListener('wheel', onWheel as any, { passive: true });
 
     return () => {
-      area.removeEventListener('scroll', onAreaScroll);
-      strip.removeEventListener('scroll', onStripScroll);
+      area.removeEventListener('scroll', onArea);
+      top.removeEventListener('scroll', onTop);
+      bottom.removeEventListener('scroll', onBottom);
+      area.removeEventListener('wheel', onWheel as any);
     };
   }, []);
 
@@ -635,7 +695,16 @@ const handleConfirmOnce = () => {
 
   return (
     <div className="p-4 bg-white rounded-lg shadow-md">
-      <h4 className="text-lg font-semibold mb-3">Review & Edit Transactions:</h4>
+      <h4 className="text-lg font-semibold mb-1">Review & Edit Transactions:</h4>
+      <div className="mb-2 text-xs text-gray-600">
+        Heads-up: amounts of <strong>0</strong> are not allowed. Edit the amount or uncheck <em>“Import?”</em> to skip a row.
+      </div>
+
+      {hasZeroSelected && (
+        <div className="mb-3 p-2 rounded-md border border-red-200 bg-red-50 text-red-700 text-sm">
+          {zeroSelectedCount} selected row{zeroSelectedCount > 1 ? 's have' : ' has'} an amount of 0. Fix before submitting.
+        </div>
+      )}
 
       {/* Cash override toggle */}
       <div className="mb-3 flex items-center gap-2">
@@ -653,178 +722,250 @@ const handleConfirmOnce = () => {
         </label>
       </div>
 
-      {/* Table with sticky bottom scrollbar */}
+      {/* Table with sticky top & bottom horizontal scrollbars */}
       <div className="relative">
+        {/* TOP sticky scrollbar */}
+        <div
+          ref={topStripRef}
+          className="sticky top-0 left-0 right-0 h-5 overflow-x-auto overflow-y-hidden bg-white/90 backdrop-blur border-b border-gray-200 z-10"
+          style={{ scrollbarGutter: 'stable both-edges' }}
+          aria-label="Horizontal scroll (top)"
+        >
+          <div style={{ width: contentWidth, height: 1 }} />
+        </div>
+
+        {/* Scrollable table area */}
         <div
           ref={scrollAreaRef}
           className="overflow-x-auto overflow-y-auto max-h-[400px] pb-6"
         >
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Import?</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Amount (R)</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Account</TableHead>
-                <TableHead>Confidence</TableHead>
-                <TableHead>Duplicate</TableHead>
-                <TableHead>Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {transactions.map((tx) => {
-                const rowId = tx.id || tx._tempId!;
-                const dupCount = tx.duplicateMatches?.length || 0;
+          {/* Measure real content width via this wrapper */}
+          <div ref={contentRef} className="inline-block min-w-max">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Import?</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Amount (R)</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Account</TableHead>
+                  <TableHead>Confidence</TableHead>
+                  <TableHead>Duplicate</TableHead>
+                  <TableHead>Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {transactions.map((tx) => {
+                  const rowId = tx.id || tx._tempId!;
+                  const dupCount = tx.duplicateMatches?.length || 0;
+                  const isZero = Number(tx.amount) === 0 && tx.includeInImport !== false;
 
-                return (
-                  <TableRow key={rowId}>
-                    {/* Import checkbox */}
-                    <TableCell>
-                      <input
-                        type="checkbox"
-                        checked={tx.includeInImport !== false}
-                        onChange={() => toggleInclude(rowId)}
-                        aria-label="Include in import"
-                        disabled={isBusy}
-                      />
-                    </TableCell>
-
-                    {/* Type */}
-                    <TableCell>
-                      {editingRowId === rowId ? (
-                        <Select value={tx.type} onValueChange={(value) => handleTransactionChange(rowId, 'type', value)}>
-                          <SelectTrigger className="w-[100px]"><SelectValue placeholder="Type" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="income">Income</SelectItem>
-                            <SelectItem value="expense">Expense</SelectItem>
-                            <SelectItem value="debt">Debt</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      ) : (tx.type)}
-                    </TableCell>
-
-                    {/* Amount */}
-                    <TableCell>
-                      {editingRowId === rowId ? (
-                        <Input type="number" step="0.01" value={tx.amount} onChange={(e) => handleTransactionChange(rowId, 'amount', e.target.value)} className="w-[110px]" />
-                      ) : (Number(tx.amount).toFixed(2))}
-                    </TableCell>
-
-                    {/* Description */}
-                    <TableCell className="max-w-[240px] truncate">
-                      {editingRowId === rowId ? (
-                        <Textarea value={tx.description} onChange={(e) => handleTransactionChange(rowId, 'description', e.target.value)} rows={2} className="w-[240px]" />
-                      ) : (tx.description)}
-                    </TableCell>
-
-                    {/* Date */}
-                    <TableCell>
-                      {editingRowId === rowId ? (
-                        <Input type="date" value={tx.date} onChange={(e) => handleTransactionChange(rowId, 'date', e.target.value)} className="w-[150px]" />
-                      ) : (tx.date)}
-                    </TableCell>
-
-                    {/* Category */}
-                    <TableCell>
-                      {editingRowId === rowId ? (
-                        <SearchableCategorySelect
-                          value={tx.category}
-                          onChange={(val) => handleTransactionChange(rowId, 'category', val)}
-                          categories={categories}
+                  return (
+                    <TableRow key={rowId}>
+                      {/* Import checkbox */}
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          checked={tx.includeInImport !== false}
+                          onChange={() => toggleInclude(rowId)}
+                          aria-label="Include in import"
+                          disabled={isBusy}
                         />
-                      ) : (tx.category)}
-                    </TableCell>
+                      </TableCell>
 
-                    {/* Account */}
-                    <TableCell>
-                      {editingRowId === rowId ? (
-                        <SearchableAccountSelect
-                          value={tx.account_id}
-                          onChange={(val) => handleTransactionChange(rowId, 'account_id', val)}
-                          accounts={accounts}
-                        />
-                      ) : (accounts.find(acc => String(acc.id) === String(tx.account_id))?.name || 'N/A')}
-                    </TableCell>
+                      {/* Type */}
+                      <TableCell>
+                        {editingRowId === rowId ? (
+                          <Select
+                            value={tx.type}
+                            onValueChange={(value) => handleTransactionChange(rowId, 'type', value)}
+                          >
+                            <SelectTrigger className="w-[100px]">
+                              <SelectValue placeholder="Type" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="income">Income</SelectItem>
+                              <SelectItem value="expense">Expense</SelectItem>
+                              <SelectItem value="debt">Debt</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          tx.type
+                        )}
+                      </TableCell>
 
-                    {/* Confidence */}
-                    <TableCell>
-                      {tx.confidenceScore !== undefined ? (
-                        <Badge variant={tx.confidenceScore >= 90 ? 'success' : tx.confidenceScore >= 60 ? 'default' : 'destructive'}>
-                          {Math.round(tx.confidenceScore)}%
-                        </Badge>
-                      ) : 'N/A'}
-                    </TableCell>
+                      {/* Amount */}
+                      <TableCell className={isZero ? 'text-red-600 font-semibold' : ''}>
+                        {editingRowId === rowId ? (
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={tx.amount}
+                            onChange={(e) => handleTransactionChange(rowId, 'amount', e.target.value)}
+                            className={`w-[110px] ${isZero ? 'ring-1 ring-red-400' : ''}`}
+                          />
+                        ) : (
+                          Number(tx.amount).toFixed(2)
+                        )}
+                      </TableCell>
 
-                    {/* Duplicate details */}
-                    <TableCell>
-                      {dupCount > 0 ? (
-                        <Dialog>
-                          <DialogTrigger asChild>
-                            <Badge variant="destructive" className="cursor-pointer">View ({dupCount})</Badge>
-                          </DialogTrigger>
-                          <DialogContent>
-                            <DialogHeader>
-                              <DialogTitle>Potential duplicates ({dupCount})</DialogTitle>
-                              <DialogDescription>These existing transactions look similar. Uncheck “Import?” to skip.</DialogDescription>
-                            </DialogHeader>
-                            <div className="space-y-2 mt-2">
-                              {tx.duplicateMatches!.map((m, i) => (
-                                <div key={i} className="border rounded p-2 text-sm">
-                                  <div><strong>Amount:</strong> R {m.amount.toFixed(2)}</div>
-                                  <div><strong>Date:</strong> {m.date}</div>
-                                  <div className="truncate"><strong>Desc:</strong> {m.description}</div>
-                                  <div><strong>Similarity:</strong> {(m.score * 100).toFixed(0)}%</div>
-                                </div>
-                              ))}
-                            </div>
-                          </DialogContent>
-                        </Dialog>
-                      ) : (
-                        <Badge variant="outline">No duplicate</Badge>
-                      )}
-                    </TableCell>
+                      {/* Description */}
+                      <TableCell className="max-w-[240px] truncate">
+                        {editingRowId === rowId ? (
+                          <Textarea
+                            value={tx.description}
+                            onChange={(e) => handleTransactionChange(rowId, 'description', e.target.value)}
+                            rows={2}
+                            className="w-[240px]"
+                          />
+                        ) : (
+                          tx.description
+                        )}
+                      </TableCell>
 
-                    {/* Actions */}
-                    <TableCell className="flex space-x-2">
-                      {editingRowId === rowId ? (
-                        <>
-                          <Button variant="outline" size="sm" onClick={() => setEditingRowId(null)} className="flex items-center" disabled={isBusy}>
-                            <XCircle size={16} className="mr-1" /> Cancel
-                          </Button>
-                          <Button size="sm" onClick={() => setEditingRowId(null)} className="flex items-center" disabled={isBusy}>
-                            <CheckCircle size={16} className="mr-1" /> Save
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          <Button variant="outline" size="sm" onClick={() => setEditingRowId(rowId)} className="flex items-center" disabled={isBusy}>
-                            <Edit3 size={16} className="mr-1" /> Edit
-                          </Button>
-                          <Button variant="destructive" size="sm" onClick={() => handleTransactionDelete(rowId)} className="flex items-center" disabled={isBusy}>
-                            <Trash2 size={16} className="mr-1" /> Delete
-                          </Button>
-                        </>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+                      {/* Date */}
+                      <TableCell>
+                        {editingRowId === rowId ? (
+                          <Input
+                            type="date"
+                            value={tx.date}
+                            onChange={(e) => handleTransactionChange(rowId, 'date', e.target.value)}
+                            className="w-[150px]"
+                          />
+                        ) : (
+                          tx.date
+                        )}
+                      </TableCell>
+
+                      {/* Category */}
+                      <TableCell>
+                        {editingRowId === rowId ? (
+                          <SearchableCategorySelect
+                            value={tx.category}
+                            onChange={(val) => handleTransactionChange(rowId, 'category', val)}
+                            categories={categories}
+                          />
+                        ) : (
+                          tx.category
+                        )}
+                      </TableCell>
+
+                      {/* Account */}
+                      <TableCell>
+                        {editingRowId === rowId ? (
+                          <SearchableAccountSelect
+                            value={tx.account_id}
+                            onChange={(val) => handleTransactionChange(rowId, 'account_id', val)}
+                            accounts={accounts}
+                          />
+                        ) : (
+                          accounts.find(acc => String(acc.id) === String(tx.account_id))?.name || 'N/A'
+                        )}
+                      </TableCell>
+
+                      {/* Confidence */}
+                      <TableCell>
+                        {tx.confidenceScore !== undefined ? (
+                          <Badge
+                            variant={
+                              tx.confidenceScore >= 90 ? 'success' :
+                              tx.confidenceScore >= 60 ? 'default' : 'destructive'
+                            }
+                          >
+                            {Math.round(tx.confidenceScore)}%
+                          </Badge>
+                        ) : 'N/A'}
+                      </TableCell>
+
+                      {/* Duplicate details */}
+                      <TableCell>
+                        {dupCount > 0 ? (
+                          <Dialog>
+                            <DialogTrigger asChild>
+                              <Badge variant="destructive" className="cursor-pointer">
+                                View ({dupCount})
+                              </Badge>
+                            </DialogTrigger>
+                            <DialogContent>
+                              <DialogHeader>
+                                <DialogTitle>Potential duplicates ({dupCount})</DialogTitle>
+                                <DialogDescription>
+                                  These existing transactions look similar. Uncheck “Import?” to skip.
+                                </DialogDescription>
+                              </DialogHeader>
+                              <div className="space-y-2 mt-2">
+                                {tx.duplicateMatches!.map((m, i) => (
+                                  <div key={i} className="border rounded p-2 text-sm">
+                                    <div><strong>Amount:</strong> R {m.amount.toFixed(2)}</div>
+                                    <div><strong>Date:</strong> {m.date}</div>
+                                    <div className="truncate"><strong>Desc:</strong> {m.description}</div>
+                                    <div><strong>Similarity:</strong> {(m.score * 100).toFixed(0)}%</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </DialogContent>
+                          </Dialog>
+                        ) : (
+                          <Badge variant="outline">No duplicate</Badge>
+                        )}
+                      </TableCell>
+
+                      {/* Actions */}
+                      <TableCell className="flex space-x-2">
+                        {editingRowId === rowId ? (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setEditingRowId(null)}
+                              className="flex items-center"
+                              disabled={isBusy}
+                            >
+                              <XCircle size={16} className="mr-1" /> Cancel
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() => setEditingRowId(null)}
+                              className="flex items-center"
+                              disabled={isBusy}
+                            >
+                              <CheckCircle size={16} className="mr-1" /> Save
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setEditingRowId(rowId)}
+                              className="flex items-center"
+                              disabled={isBusy}
+                            >
+                              <Edit3 size={16} className="mr-1" /> Edit
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => handleTransactionDelete(rowId)}
+                              className="flex items-center"
+                              disabled={isBusy}
+                            >
+                              <Trash2 size={16} className="mr-1" /> Delete
+                            </Button>
+                          </>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
         </div>
 
-        {/* Always-visible horizontal scrollbar (sticky) */}
-        <div
-          ref={bottomStripRef}
-          className="sticky bottom-0 left-0 right-0 h-5 overflow-x-auto overflow-y-hidden bg-white/90 backdrop-blur border-t border-gray-200"
-          style={{ scrollbarGutter: 'stable both-edges' }}
-          aria-label="Horizontal scroll"
-        >
-          <div style={{ width: contentWidth, height: 1 }} />
-        </div>
+        {/* BOTTOM sticky scrollbar */}
       </div>
 
       <div className="flex justify-between items-center mt-4">
@@ -840,15 +981,16 @@ const handleConfirmOnce = () => {
           <Button variant="secondary" onClick={onCancel} disabled={isBusy}>
             <XCircle size={18} className="mr-2" /> Cancel Review
           </Button>
-<Button
-  onClick={handleConfirmOnce}
-  disabled={isCancelled || isBusy || confirmClicked}
-  aria-busy={isBusy}
->
-  <CheckCircle size={18} className="mr-2" />
-  {isBusy ? 'Working…' : confirmClicked ? 'Submitted' : 'Confirm & Submit Selected'}
-</Button>
-
+          <Button
+            onClick={handleConfirmOnce}
+            disabled={isCancelled || isBusy || confirmClicked || hasZeroSelected}
+            aria-disabled={isCancelled || isBusy || confirmClicked || hasZeroSelected}
+            aria-busy={isBusy}
+            title={hasZeroSelected ? 'Fix zero-amount rows first' : undefined}
+          >
+            <CheckCircle size={18} className="mr-2" />
+            {isBusy ? 'Working…' : confirmClicked ? 'Submitted' : 'Confirm & Submit Selected'}
+          </Button>
         </div>
       </div>
     </div>
@@ -865,6 +1007,7 @@ const ChatInterface = () => {
   const [existingTxs, setExistingTxs] = useState<ExistingTx[]>([]);
   const [typedDescription, setTypedDescription] = useState('');
   const [file, setFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
@@ -921,15 +1064,6 @@ const ChatInterface = () => {
     fetchAccounts();
   }, [isAuthenticated, token, getAuthHeaders]);
 
-
-
-//message stuff 
-
-
-
-
-
-  
   // Load recent existing transactions (for dup check)
   useEffect(() => {
     const fetchExisting = async () => {
@@ -962,8 +1096,6 @@ const ChatInterface = () => {
   const addUserMessage = (content: string) =>
     setMessages(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, sender: 'user', content }]);
 
-
-  
   // Helpers for files
   const isExcelFile = (f: File | null) => {
     if (!f) return false;
@@ -1432,6 +1564,26 @@ const ChatInterface = () => {
       return;
     }
 
+    // ---- PRECHECK: Block zero-amount rows before any API calls ----
+    const zeroRows = toSubmit.filter(t => Number(t.amount) === 0);
+    if (zeroRows.length) {
+      addAssistantMessage(
+        <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
+          <div className="font-semibold mb-1">Amounts can’t be zero</div>
+          <div>{zeroRows.length} selected row{zeroRows.length > 1 ? 's' : ''} have an amount of 0. Update the amount or uncheck “Import?”.</div>
+          <ul className="list-disc ml-5 mt-1">
+            {zeroRows.slice(0,5).map((t, i) => (
+              <li key={i}>{t.date} — {t.description}</li>
+            ))}
+          </ul>
+          {zeroRows.length > 5 && <div className="mt-1">…and {zeroRows.length - 5} more.</div>}
+        </div>
+      );
+      setImportBusy(false);
+      sendProgress('posting', 'error');
+      return;
+    }
+
     try {
       // STAGING
       sendProgress('staging', 'running');
@@ -1527,29 +1679,54 @@ const ChatInterface = () => {
       const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
       sendProgress('posting', 'done');
 
-addAssistantMessage(
-  <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
-    <div className="font-semibold mb-1">Journal posting complete</div>
-    <div>{result.posted} posted, {result.skipped} skipped.</div>
-    <div className="mt-2 text-sm">
-      To see financial statements, go to the{' '}
-      <Link to="/financials" className="underline font-medium text-green-800">
-        Financials
-      </Link>{' '}
-      tab.
-    </div>
-  </div>
-);
+      addAssistantMessage(
+        <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+          <div className="font-semibold mb-1">Journal posting complete</div>
+          <div>{result.posted} posted, {result.skipped} skipped.</div>
+          <div className="mt-2 text-sm">
+            To see financial statements, go to the{' '}
+            <Link to="/financials" className="underline font-medium text-green-800">
+              Financials
+            </Link>{' '}
+            tab.
+          </div>
+        </div>
+      );
 
     } catch (e: any) {
       console.error('[IMPORT] Import failed:', e);
-      const msg = e?.message || String(e);
-      addAssistantMessage(
-        <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200">
-          <div className="font-semibold mb-1">Import failed</div>
-          <div className="text-sm">{msg}</div>
-        </div>
-      );
+
+      // Try to translate DB constraint errors (e.g., 23514 / check constraint) to a friendly message
+      let raw = e?.message || '';
+      try {
+        const parsed = JSON.parse(raw);
+        raw = parsed.detail || parsed.error || raw;
+      } catch {
+        // keep raw
+      }
+      const looksLikeZeroAmount =
+        e?.code === '23514' ||
+        /check constraint/i.test(raw) ||
+        /journal_lines_check1/i.test(raw) ||
+        /0\.00/.test(raw);
+
+      if (looksLikeZeroAmount) {
+        addAssistantMessage(
+          <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
+            <div className="font-semibold mb-1">Import failed: zero amounts detected</div>
+            <div>One or more selected transactions have an amount of 0. Please edit the amount or uncheck “Import?” and try again.</div>
+          </div>
+        );
+      } else {
+        const msg = raw || String(e);
+        addAssistantMessage(
+          <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200">
+            <div className="font-semibold mb-1">Import failed</div>
+            <div className="text-sm">{msg}</div>
+          </div>
+        );
+      }
+
       // flip the appropriate stage to error if we can’t tell which; mark overall
       sendProgress('posting', 'error');
     } finally {
@@ -1603,18 +1780,26 @@ addAssistantMessage(
       {/* Chat Input Area */}
       <div className="p-4 bg-white border-t shadow flex items-center space-x-2">
         <label htmlFor="file-upload-input" className="cursor-pointer">
-          {/* Accept PDF + Excel */}
-          <Input
-            id="file-upload-input"
-            type="file"
-            className="sr-only"
-            onChange={handleFileChange}
-            accept=".pdf,.xlsx,.xls,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          />
-          <Button asChild variant="ghost" className="rounded-full p-2 text-gray-600 hover:bg-gray-100" aria-label="Attach File">
-            <span><Paperclip size={20} className="text-gray-600" /></span>
-          </Button>
+{/* Hidden file input (PDF + Excel) */}
+<Input
+  ref={fileInputRef}
+  id="file-upload-input"
+  type="file"
+  className="hidden"
+  onChange={handleFileChange}
+  accept=".pdf,.xlsx,.xls,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+/>
         </label>
+{/* Paperclip button that triggers the hidden input */}
+<Button
+  type="button"
+  onClick={() => fileInputRef.current?.click()}
+  variant="ghost"
+  className="rounded-full p-2 text-gray-600 hover:bg-gray-100"
+  aria-label="Attach File"
+>
+  <Paperclip size={20} className="text-gray-600" />
+</Button>
 
         {isRecording ? (
           <Button onClick={stopRecording} variant="ghost" className="rounded-full p-2 text-red-500 hover:bg-red-100 animate-pulse" aria-label="Stop Recording">

@@ -61,32 +61,61 @@ interface BalanceSheetLineItem {
   isAdjustment?: boolean;
 }
 
-// --- UPDATED: New interface for the enhanced balance sheet response ---
+// --- UPDATED: Enhanced balance sheet response (matches what your API returns) ---
 interface ApiBalanceSheetResponse {
   asOf: string;
+  periodStart?: string | null;
   sections: ApiBalanceSheetSection[];
-  openingEquity: number;
-  netProfitLoss: number;
-  closingEquity: number;
-  assets: {
-    current: number;
-    non_current: number;
+
+  openingEquity: number | string;
+  netProfitLoss: number | string;
+  closingEquity?: number | string;
+
+  assets: { current: number | string; non_current: number | string; };
+  liabilities: { current: number | string; non_current: number | string; };
+
+  otherEquityMovements?: number | string;
+
+  equityBreakdown?: {
+    opening?: number | string;
+    priorRetained?: number | string;
+    periodProfit?: number | string;
+    sinceInception?: number | string;
+    equityAccounts?: number | string;
+    totalComputed?: number | string;
   };
-  liabilities: {
-    current: number;
-    non_current: number;
+
+  control?: {
+    assetsTotal?: number | string;
+    liabilitiesTotal?: number | string;
+    equityTotal?: number | string;
+    liabPlusEquity?: number | string;
+    diff?: number | string;
+    effective?: {
+      equityComputed?: number | string;
+      liabPlusEquityComputed?: number | string;
+      diffComputed?: number | string;
+    };
   };
+
+  debug?: any;
 }
 // --- END UPDATED ---
 
 interface BalanceSheetData {
   assets: BalanceSheetLineItem[];
   liabilities: BalanceSheetLineItem[];
-  equity: BalanceSheetLineItem[]; // This will now contain the detailed breakdown
+  equity: BalanceSheetLineItem[];
+  totals: {
+    totalAssets: number;
+    totalLiabilities: number;
+    totalEquity: number;
+    totalEquityAndLiabilities: number;
+    diff: number;
+  };
 }
 
 // Interfaces for the data returned by the specific API endpoints
-// --- FIXED: Updated ApiIncomeStatementSection to match the new backend response
 interface ApiIncomeStatementSection {
   section: string;
   amount: number;
@@ -160,7 +189,10 @@ const Financials = () => {
 
   const [trialBalanceData, setTrialBalanceData] = useState<ApiTrialBalanceItem[]>([]);
   const [incomeStatementData, setIncomeStatementData] = useState<{ item: string; amount: number | ''; type?: string }[]>([]);
-  const [balanceSheetData, setBalanceSheetData] = useState<BalanceSheetData>({ assets: [], liabilities: [], equity: [] });
+  const [balanceSheetData, setBalanceSheetData] = useState<BalanceSheetData>({
+    assets: [], liabilities: [], equity: [],
+    totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
+  });
   const [cashflowData, setCashflowData] = useState<{ category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[]>([]);
 
   const [activeTab, setActiveTab] = useState<'trial-balance' | 'income-statement' | 'balance-sheet' | 'cash-flow-statement'>('income-statement');
@@ -173,15 +205,76 @@ const Financials = () => {
     { id: 'balance-sheet', label: 'Balance Sheet' },
     { id: 'cash-flow-statement', label: 'Cashflow Statement' },
   ] as const;
+  type ReportId = typeof reportTypes[number]['id'];
 
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
 
-  const formatCurrency = (amount: number | null | undefined): string => {
-    if (amount === null || amount === undefined) return 'R 0.00';
-    const absoluteAmount = Math.abs(Number(amount));
-    return `R ${parseFloat(absoluteAmount.toFixed(2)).toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`;
+  // ---------- Helpers (updated to blank zero values) ----------
+  const ZEPS = 0.005; // ~half-cent; treat tiny values as zero
+
+  const num = (n: any) => {
+    const parsed = parseFloat(String(n));
+    return isNaN(parsed) ? 0 : parsed;
   };
+
+  const isZeroish = (n: any) => Math.abs(Number(n) || 0) < ZEPS;
+  const nonZero = (n: number) => !isZeroish(n);
+
+  const toMoney = (val: number): string =>
+    `R ${Math.abs(Number(val)).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // Use this in cells: blank if zero/empty, otherwise formatted
+  const moneyOrBlank = (amount: number | null | undefined): string => {
+    if (amount === null || amount === undefined) return '';
+    const v = Number(amount);
+    if (!isFinite(v) || isZeroish(v)) return '';
+    return toMoney(v);
+  };
+
+  // For totals / equality lines (always show)
+  const formatCurrency = (amount: number | null | undefined): string => {
+    if (amount === null || amount === undefined) return '';
+    return toMoney(Number(amount));
+  };
+  // ---------- End helpers ----------
+
+  // ---------- CSV helpers (front-end only) ----------
+  const csvEscape = (v: any) => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const rowsToCsvString = (rows: (string | number | null | undefined)[][]) =>
+    rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
+
+  const saveBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
+
+  const saveCsv = (filename: string, rows: (string | number | null | undefined)[][]) => {
+    const csv = rowsToCsvString(rows);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    saveBlob(blob, filename);
+  };
+
+  // blank zero-ish values; otherwise 2dp number (no currency symbol in CSV)
+  const csvAmount = (val: number | string | null | undefined, { alwaysShow = false } = {}) => {
+    if (val === null || val === undefined) return '';
+    const n = Number(val);
+    if (!isFinite(n)) return '';
+    if (!alwaysShow && isZeroish(n)) return '';
+    return Math.abs(n).toFixed(2);
+  };
+  // ---------- end CSV helpers ----------
 
   const fetchAllData = useCallback(async () => {
     if (!token) {
@@ -233,13 +326,6 @@ const Financials = () => {
     }
   }, [fetchAllData, isAuthenticated, token]);
 
-  // --- Helpers ---
-  const num = (n: any) => {
-    const parsed = parseFloat(String(n));
-    return isNaN(parsed) ? 0 : parsed;
-  };
-  const nonZero = (n: number) => Number(n) !== 0;
-
   // --- Income Statement ---
   const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undefined) => {
     const lines: { item: string; amount: number | ''; type?: string }[] = [];
@@ -275,7 +361,7 @@ const Financials = () => {
     const totalRevenue = revenueSection?.amount || 0;
     const totalCogs = cogsSection?.amount || 0;
     const grossProfit = totalRevenue - totalCogs;
-    lines.push({ item: 'Gross Profit', amount: grossProfit, type: 'subtotal' });
+    if (nonZero(grossProfit)) lines.push({ item: 'Gross Profit', amount: grossProfit, type: 'subtotal' });
 
     // Other Income
     const otherIncomeSection = sectionMap['other_income'];
@@ -312,7 +398,7 @@ const Financials = () => {
     }
 
     // Net Profit/Loss
-    const netProfitLoss = grossProfit + (otherIncomeSection?.amount || 0) - totalExpenses;
+    const netProfitLoss = (revenueSection?.amount || 0) - (cogsSection?.amount || 0) + (otherIncomeSection?.amount || 0) - totalExpenses;
     lines.push({
       item: netProfitLoss >= 0 ? 'NET PROFIT for the period' : 'NET LOSS for the period',
       amount: Math.abs(netProfitLoss),
@@ -322,50 +408,106 @@ const Financials = () => {
     return lines;
   };
 
-  // --- Balance Sheet ---
+  // --- Balance Sheet (derive everything needed on client) ---
   const normalizeBalanceSheetFromServer = (response: ApiBalanceSheetResponse | undefined): BalanceSheetData => {
     const assets: BalanceSheetLineItem[] = [];
     const liabilities: BalanceSheetLineItem[] = [];
     const equity: BalanceSheetLineItem[] = [];
 
-    if (!response || !Array.isArray(response.sections)) {
-      console.warn("Invalid balance sheet data received:", response);
-      return { assets, liabilities, equity };
+    if (!response) {
+      console.warn("No balance sheet payload");
+      return {
+        assets, liabilities, equity,
+        totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
+      };
     }
 
-    const { openingEquity, netProfitLoss, closingEquity, assets: assetsData, liabilities: liabilitiesData } = response;
+    // Safely coerce numbers
+    const openingEquity = num(response.equityBreakdown?.opening ?? response.openingEquity);
+    const periodProfit = num(response.equityBreakdown?.periodProfit ?? response.netProfitLoss);
+    const priorRetained = num(response.equityBreakdown?.priorRetained ?? 0);
+    const sinceInception = num(response.equityBreakdown?.sinceInception ?? 0);
+    const equityAccounts = num(response.equityBreakdown?.equityAccounts ?? response.closingEquity ?? 0);
+    const otherEquityMovements = num(response.otherEquityMovements ?? 0);
 
-    // Assets
+    const currentAssets = num(response.assets?.current ?? 0);
+    const nonCurrentAssets = num(response.assets?.non_current ?? 0);
+    const currentLiabs = num(response.liabilities?.current ?? 0);
+    const nonCurrentLiabs = num(response.liabilities?.non_current ?? 0);
+
+    const totalAssets = currentAssets + nonCurrentAssets;
+    const totalLiabilities = currentLiabs + nonCurrentLiabs;
+
+    const totalEquityPreferred =
+      num(response.control?.effective?.equityComputed) ||
+      num(response.equityBreakdown?.totalComputed) ||
+      (equityAccounts + sinceInception) ||
+      (openingEquity + periodProfit + otherEquityMovements);
+
+    const totalEquityAndLiabilities = totalLiabilities + totalEquityPreferred;
+    const diff = Number((totalAssets - totalEquityAndLiabilities).toFixed(2));
+
+    // Assets section
     assets.push({ item: 'Current Assets', amount: 0, isSubheader: true });
-    if (assetsData.current !== undefined) assets.push({ item: '  Current Assets', amount: assetsData.current });
-    if (assetsData.current !== undefined) assets.push({ item: 'Total Current Assets', amount: assetsData.current, isTotal: true });
+    if (nonZero(currentAssets)) assets.push({ item: '  Current Assets', amount: currentAssets });
+    assets.push({ item: 'Total Current Assets', amount: currentAssets, isTotal: true });
 
     assets.push({ item: 'Non-current Assets', amount: 0, isSubheader: true });
-    if (assetsData.non_current !== undefined) assets.push({ item: '  Non-current Assets', amount: assetsData.non_current });
-    if (assetsData.non_current !== undefined) assets.push({ item: 'Total Non-Current Assets', amount: assetsData.non_current, isTotal: true });
+    if (nonZero(nonCurrentAssets)) assets.push({ item: '  Non-current Assets', amount: nonCurrentAssets });
+    assets.push({ item: 'Total Non-Current Assets', amount: nonCurrentAssets, isTotal: true });
 
-    const totalAssets = (assetsData.current || 0) + (assetsData.non_current || 0);
     assets.push({ item: 'TOTAL ASSETS', amount: totalAssets, isTotal: true, isSubheader: true });
 
-    // Liabilities
+    // Liabilities section
     liabilities.push({ item: 'Current Liabilities', amount: 0, isSubheader: true });
-    if (liabilitiesData.current !== undefined) liabilities.push({ item: '  Current Liabilities', amount: liabilitiesData.current });
-    if (liabilitiesData.current !== undefined) liabilities.push({ item: 'Total Current Liabilities', amount: liabilitiesData.current, isTotal: true });
+    if (nonZero(currentLiabs)) liabilities.push({ item: '  Current Liabilities', amount: currentLiabs });
+    liabilities.push({ item: 'Total Current Liabilities', amount: currentLiabs, isTotal: true });
 
     liabilities.push({ item: 'Non-Current Liabilities', amount: 0, isSubheader: true });
-    if (liabilitiesData.non_current !== undefined) liabilities.push({ item: '  Non-Current Liabilities', amount: liabilitiesData.non_current });
-    if (liabilitiesData.non_current !== undefined) liabilities.push({ item: 'Total Non-Current Liabilities', amount: liabilitiesData.non_current, isTotal: true });
+    if (nonZero(nonCurrentLiabs)) liabilities.push({ item: '  Non-Current Liabilities', amount: nonCurrentLiabs });
+    liabilities.push({ item: 'Total Non-Current Liabilities', amount: nonCurrentLiabs, isTotal: true });
 
-    const totalLiabilities = (liabilitiesData.current || 0) + (liabilitiesData.non_current || 0);
     liabilities.push({ item: 'TOTAL LIABILITIES', amount: totalLiabilities, isTotal: true, isSubheader: true });
 
-    // Equity
+    // Equity section
     equity.push({ item: 'Equity', amount: 0, isSubheader: true });
-    equity.push({ item: '  Opening Balance', amount: openingEquity });
-    equity.push({ item: netProfitLoss >= 0 ? '  Net Profit for Period' : '  Net Loss for Period', amount: Math.abs(netProfitLoss) });
-    equity.push({ item: 'TOTAL EQUITY', amount: closingEquity, isTotal: true, isSubheader: true });
+    equity.push({ item: '  Contributed / Opening Equity', amount: openingEquity });
+    if (nonZero(priorRetained)) {
+      equity.push({ item: '  Retained Earnings (prior periods)', amount: priorRetained });
+    }
+    equity.push({
+      item: periodProfit >= 0 ? '  Net Profit for Period' : '  Net Loss for Period',
+      amount: Math.abs(periodProfit)
+    });
+    if (nonZero(otherEquityMovements)) {
+      equity.push({
+        item: '  Other Equity Movements (Owner contributions/drawings)',
+        amount: otherEquityMovements,
+        isAdjustment: true
+      });
+    }
+    equity.push({ item: 'TOTAL EQUITY', amount: totalEquityPreferred, isTotal: true, isSubheader: true });
 
-    return { assets, liabilities, equity };
+    // Append combined total under liabilities block
+    const liabilitiesWithGrand = [...liabilities, {
+      item: 'TOTAL EQUITY AND LIABILITIES',
+      amount: totalEquityAndLiabilities,
+      isTotal: true,
+      isSubheader: true
+    }];
+
+    return {
+      assets,
+      liabilities: liabilitiesWithGrand,
+      equity,
+      totals: {
+        totalAssets,
+        totalLiabilities,
+        totalEquity: totalEquityPreferred,
+        totalEquityAndLiabilities,
+        diff
+      }
+    };
   };
 
   // --- Cashflow ---
@@ -384,12 +526,11 @@ const Financials = () => {
       if (Array.isArray(itemsRaw)) {
         const items = itemsRaw
           .map(i => ({ item: i.line, amount: num(i.amount) }))
-          .filter(i => nonZero(i.amount)); // hide zero cashflow lines
+          .filter(i => nonZero(i.amount));
 
         const total = items.reduce((sum, item) => sum + item.amount, 0);
         netChange += total;
 
-        // only keep a section if it has items or non-zero total
         if (items.length > 0 || nonZero(total)) {
           sections.push({
             category: `${cat.charAt(0).toUpperCase() + cat.slice(1)} Activities`,
@@ -412,7 +553,7 @@ const Financials = () => {
   };
 
   const fetchServerStatement = useCallback(
-    async (type: typeof reportTypes[number]['id']) => {
+    async (type: ReportId) => {
       if (!token) return;
 
       try {
@@ -424,7 +565,7 @@ const Financials = () => {
             url = `${API_BASE_URL}/reports/income-statement?start=${fromDate}&end=${toDate}`;
             break;
           case 'balance-sheet':
-            url = `${API_BASE_URL}/reports/balance-sheet?asOf=${toDate}`;
+            url = `${API_BASE_URL}/reports/balance-sheet?asOf=${toDate}&start=${fromDate}&debug=1`;
             break;
           case 'trial-balance':
             url = `${API_BASE_URL}/reports/trial-balance?start=${fromDate}&end=${toDate}`;
@@ -464,25 +605,7 @@ const Financials = () => {
         if (type === 'balance-sheet') {
           const response = payload as ApiBalanceSheetResponse | undefined;
           const normalized = normalizeBalanceSheetFromServer(response);
-
-          const totalAssets = normalized.assets.find(i => i.item === 'TOTAL ASSETS')?.amount || 0;
-          const totalLiabilities = normalized.liabilities.find(i => i.item === 'TOTAL LIABILITIES')?.amount || 0;
-          const totalEquity = normalized.equity.find(i => i.item === 'TOTAL EQUITY')?.amount || 0;
-          const totalEquityAndLiabilities = totalLiabilities + totalEquity;
-
-          const liabilitiesWithTotal = [...normalized.liabilities];
-          liabilitiesWithTotal.push({
-            item: 'TOTAL EQUITY AND LIABILITIES',
-            amount: totalEquityAndLiabilities,
-            isTotal: true,
-            isSubheader: true
-          });
-
-          setBalanceSheetData({
-            assets: normalized.assets,
-            liabilities: liabilitiesWithTotal,
-            equity: normalized.equity
-          });
+          setBalanceSheetData(normalized);
         }
 
         if (type === 'cash-flow-statement') {
@@ -500,7 +623,12 @@ const Financials = () => {
         switch (type) {
           case 'income-statement': setIncomeStatementData([]); break;
           case 'trial-balance': setTrialBalanceData([]); break;
-          case 'balance-sheet': setBalanceSheetData({ assets: [], liabilities: [], equity: [] }); break;
+          case 'balance-sheet':
+            setBalanceSheetData({
+              assets: [], liabilities: [], equity: [],
+              totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
+            });
+            break;
           case 'cash-flow-statement': setCashflowData([]); break;
         }
       }
@@ -508,12 +636,22 @@ const Financials = () => {
     [fromDate, toDate, token, toast]
   );
 
+  // Keep old behavior (load when tab changes)
   useEffect(() => {
     if (!isAuthenticated || !token) return;
     fetchServerStatement(activeTab);
   }, [activeTab, fromDate, toDate, fetchServerStatement, isAuthenticated, token]);
 
-  const handleDownload = async () => {
+  // NEW: prefetch all four so CSV/ZIP always has data without swapping tabs
+  useEffect(() => {
+    if (!isAuthenticated || !token) return;
+    (['income-statement','trial-balance','balance-sheet','cash-flow-statement'] as ReportId[])
+      .forEach((t) => fetchServerStatement(t));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromDate, toDate, isAuthenticated, token]);
+
+  // ------- PDF (existing) -------
+  const handleDownloadPdf = async () => {
     if (!token) {
       toast({
         title: "Authentication Required",
@@ -567,6 +705,170 @@ const Financials = () => {
         description: err?.message || "There was an error generating the report. Please try again.",
         variant: "destructive",
       });
+    }
+  };
+
+  // ------- CSV builders (front-end only) -------
+  const buildCsvRowsFor = (type: ReportId) => {
+    const rows: (string | number | null | undefined)[][] = [];
+    const periodStr = `${new Date(fromDate).toLocaleDateString('en-ZA')} to ${new Date(toDate).toLocaleDateString('en-ZA')}`;
+    const pushBlank = () => rows.push(['']);
+
+    if (type === 'income-statement') {
+      rows.push(['Income Statement']);
+      rows.push([`For the period ${periodStr}`]);
+      pushBlank();
+      rows.push(['Item', 'Amount (R)']);
+
+      const filtered = (incomeStatementData || []).filter(
+        l => typeof l.amount !== 'number' || nonZero(Number(l.amount))
+      );
+
+      filtered.forEach(l => {
+        const isTotalish = l.type === 'total' || l.type === 'subtotal';
+        rows.push([
+          l.item,
+          csvAmount(typeof l.amount === 'number' ? l.amount : null, { alwaysShow: isTotalish })
+        ]);
+      });
+      return rows;
+    }
+
+    if (type === 'trial-balance') {
+      rows.push(['Trial Balance']);
+      rows.push([`As of ${new Date(toDate).toLocaleDateString('en-ZA')}`]);
+      pushBlank();
+      rows.push(['Account', 'Debit (R)', 'Credit (R)']);
+
+      const filtered = (trialBalanceData || []).filter(
+        i => nonZero(num(i.balance_debit)) || nonZero(num(i.balance_credit))
+      );
+
+      filtered.forEach(i => {
+        rows.push([
+          `${i.code} - ${i.name}`,
+          csvAmount(num(i.balance_debit)),
+          csvAmount(num(i.balance_credit)),
+        ]);
+      });
+
+      // Totals
+      const totalDebit = (trialBalanceData || []).reduce((s, i) => s + num(i.balance_debit), 0);
+      const totalCredit = (trialBalanceData || []).reduce((s, i) => s + num(i.balance_credit), 0);
+      rows.push(['TOTALS', csvAmount(totalDebit, { alwaysShow: true }), csvAmount(totalCredit, { alwaysShow: true })]);
+
+      return rows;
+    }
+
+    if (type === 'balance-sheet') {
+      rows.push(['Balance Sheet']);
+      rows.push([`As of ${new Date(toDate).toLocaleDateString('en-ZA')}`]);
+      pushBlank();
+
+      // Assets
+      rows.push(['ASSETS']);
+      rows.push(['Item', 'Amount (R)']);
+      (balanceSheetData.assets || [])
+        .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
+        .forEach(li => rows.push([
+          li.item,
+          li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })
+        ]));
+
+      pushBlank();
+
+      // Equity & Liabilities
+      rows.push(['EQUITY AND LIABILITIES']);
+      rows.push(['Item', 'Amount (R)']);
+      (balanceSheetData.liabilities || [])
+        .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
+        .forEach(li => rows.push([
+          li.item,
+          li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })
+        ]));
+
+      (balanceSheetData.equity || [])
+        .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
+        .forEach(li => rows.push([
+          li.item,
+          li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })
+        ]));
+
+      pushBlank();
+      rows.push(['TOTAL ASSETS', csvAmount(balanceSheetData.totals.totalAssets, { alwaysShow: true })]);
+      rows.push(['TOTAL EQUITY AND LIABILITIES', csvAmount(balanceSheetData.totals.totalEquityAndLiabilities, { alwaysShow: true })]);
+
+      return rows;
+    }
+
+    if (type === 'cash-flow-statement') {
+      rows.push(['Cash Flow Statement']);
+      rows.push([`For the period ${periodStr}`]);
+      pushBlank();
+
+      const filteredSections = (cashflowData || []).filter(section => {
+        const isNet = section.category === 'Net Increase / (Decrease) in Cash';
+        return isNet || section.items.length > 0 || nonZero(section.total);
+      });
+
+      filteredSections.forEach(section => {
+        rows.push([section.category]);
+        if (section.items.length > 0) {
+          rows.push(['Item', 'Amount (R)']);
+          section.items.forEach(it => rows.push([it.item, csvAmount(it.amount)]));
+          rows.push([
+            section.total >= 0 ? `Net cash from ${section.category}` : `Net cash used in ${section.category}`,
+            csvAmount(section.total, { alwaysShow: true })
+          ]);
+          pushBlank();
+        } else {
+          // Net line only
+          rows.push(['', csvAmount(section.total, { alwaysShow: true })]);
+          pushBlank();
+        }
+      });
+
+      return rows;
+    }
+
+    rows.push(['No data available.']);
+    return rows;
+  };
+
+  const handleDownloadCsv = () => {
+    const id = selectedDocumentType as ReportId;
+
+    if (!id) {
+      toast({ title: "Missing type", description: "Choose a document type first.", variant: "destructive" });
+      return;
+    }
+
+    const rows = buildCsvRowsFor(id);
+    const filename = `${id}_${fromDate}_to_${toDate}.csv`.replace(/-/g, '_');
+    saveCsv(filename, rows);
+    toast({ title: "CSV ready", description: `Saved ${filename}` });
+  };
+
+  const handleDownloadCsvZip = async () => {
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+
+      const ids: ReportId[] = ['income-statement','trial-balance','balance-sheet','cash-flow-statement'];
+      ids.forEach((id) => {
+        const rows = buildCsvRowsFor(id);
+        const csv = rowsToCsvString(rows);
+        const fname = `${id}_${fromDate}_to_${toDate}.csv`.replace(/-/g, '_');
+        zip.file(fname, csv);
+      });
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const zipName = `reports_${fromDate}_to_${toDate}.zip`.replace(/-/g, '_');
+      saveBlob(blob, zipName);
+      toast({ title: "ZIP ready", description: `Saved ${zipName}` });
+    } catch (err: any) {
+      console.error('ZIP export failed:', err);
+      toast({ title: "ZIP export failed", description: err?.message || 'Unexpected error', variant: 'destructive' });
     }
   };
 
@@ -651,9 +953,19 @@ const Financials = () => {
                   </SelectContent>
                 </Select>
               </div>
-              <Button onClick={handleDownload} className="w-full sm:w-auto mt-7">
-                Download Report
-              </Button>
+
+              {/* PDF / CSV / ZIP buttons */}
+              <div className="flex gap-2 mt-7">
+                <Button onClick={handleDownloadPdf} className="w-full sm:w-auto">
+                  Download PDF
+                </Button>
+                <Button onClick={handleDownloadCsv} variant="secondary" className="w-full sm:w-auto">
+                  Download CSV
+                </Button>
+                <Button onClick={handleDownloadCsvZip} variant="outline" className="w-full sm:w-auto">
+                  Download CSV (ZIP)
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -693,7 +1005,6 @@ const Financials = () => {
                   <TableBody>
                     {incomeStatementData && incomeStatementData.length > 0 ? (
                       (incomeStatementData
-                        // keep headers/subheaders; hide numeric-zero rows
                         .filter(l => typeof l.amount !== 'number' || nonZero(l.amount))
                       ).map((item, index) => {
                         const isTotalish = item.type === 'total' || item.type === 'subtotal';
@@ -712,7 +1023,7 @@ const Financials = () => {
                               {item.item}
                             </TableCell>
                             <TableCell className="text-right">
-                              {typeof item.amount === 'number' ? formatCurrency(item.amount) : ''}
+                              {typeof item.amount === 'number' ? moneyOrBlank(item.amount) : ''}
                             </TableCell>
                           </TableRow>
                         );
@@ -756,8 +1067,8 @@ const Financials = () => {
                           .map((item, index) => (
                             <TableRow key={index}>
                               <TableCell>{item.code} - {item.name}</TableCell>
-                              <TableCell className="text-right">{formatCurrency(num(item.balance_debit))}</TableCell>
-                              <TableCell className="text-right">{formatCurrency(num(item.balance_credit))}</TableCell>
+                              <TableCell className="text-right">{moneyOrBlank(num(item.balance_debit))}</TableCell>
+                              <TableCell className="text-right">{moneyOrBlank(num(item.balance_credit))}</TableCell>
                             </TableRow>
                           ))}
                         <TableRow className="font-bold border-t-2">
@@ -811,7 +1122,7 @@ const Financials = () => {
                             >
                               <span>{item.item}</span>
                               <span className="font-mono">
-                                {item.isSubheader ? '' : formatCurrency(item.amount)}
+                                {item.isSubheader ? '' : moneyOrBlank(item.amount)}
                               </span>
                             </div>
                           ))
@@ -839,7 +1150,7 @@ const Financials = () => {
                             >
                               <span>{item.item}</span>
                               <span className="font-mono">
-                                {item.isSubheader ? '' : formatCurrency(item.amount)}
+                                {item.isSubheader ? '' : moneyOrBlank(item.amount)}
                               </span>
                             </div>
                           ))
@@ -847,7 +1158,7 @@ const Financials = () => {
                         <p className="text-gray-500">No liability data available.</p>
                       )}
 
-                      {/* Equity - Show detailed breakdown */}
+                      {/* Equity */}
                       {balanceSheetData.equity && balanceSheetData.equity.length > 0 ? (
                         balanceSheetData.equity
                           .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
@@ -861,13 +1172,25 @@ const Financials = () => {
                             >
                               <span>{item.item}</span>
                               <span className="font-mono">
-                                {item.isSubheader ? '' : formatCurrency(item.amount)}
+                                {item.isSubheader ? '' : moneyOrBlank(item.amount)}
                               </span>
                             </div>
                           ))
                       ) : (
                         <p className="text-gray-500">No equity data available.</p>
                       )}
+                    </div>
+                  </div>
+
+                  {/* Equality Check */}
+                  <div className="mt-6 border-t pt-3">
+                    <div className="flex justify-between">
+                      <span className="font-semibold">TOTAL ASSETS</span>
+                      <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalAssets)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="font-semibold">TOTAL EQUITY AND LIABILITIES</span>
+                      <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalEquityAndLiabilities)}</span>
                     </div>
                   </div>
                 </div>

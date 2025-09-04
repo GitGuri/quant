@@ -367,57 +367,50 @@ export function InvoiceList() {
         }
     };
 
+// Replace the whole function in InvoiceList.tsx with this:
 const promptSendInvoiceEmail = async (invoice: Invoice) => {
-    if (!token) {
-        console.warn('No token found. Cannot prepare email.');
-        toast({
-            title: 'Authentication Error',
-            description: 'You are not authenticated. Please log in to send emails.',
-            variant: 'destructive',
-        });
-        return;
+  // Always allow opening the modal
+  setInvoiceToSendEmail(invoice);
+  setEmailProcessingInvoiceId(invoice.id);
+
+  try {
+    // Try to prefill with whatever we already have
+    let customerEmail = invoice.customer_email || '';
+
+    // If we don't have an email on the invoice, try fetching it quietly.
+    // IMPORTANT: do not block on failures here—just open the modal anyway.
+    if (!customerEmail && token) {
+      const resp = await fetch(`${API_BASE_URL}/api/customers/${invoice.customer_id}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      if (resp.ok) {
+        const customerData: Customer = await resp.json();
+        customerEmail = customerData?.email || '';
+      }
     }
 
-    setInvoiceToSendEmail(invoice);
-    setEmailProcessingInvoiceId(invoice.id);
-    try {
-        let customerEmail = invoice.customer_email;
-
-        if (!customerEmail) {
-            const customerResponse = await fetch(`${API_BASE_URL}/api/customers/${invoice.customer_id}`, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`,
-                },
-            });
-            if (!customerResponse.ok) {
-                const errorData = await customerResponse.json();
-                throw new Error(errorData.error || `Failed to fetch customer details for ${invoice.customer_name}`);
-            }
-            const customerData: Customer = await customerResponse.json();
-            customerEmail = customerData.email;
-        }
-
-        if (!customerEmail) {
-            // New specific error for missing customer email
-            throw new Error(`Customer email not found for ${invoice.customer_name}. Please add it before sending the invoice.`);
-        }
-
-        setEmailRecipient(customerEmail || '');
-        setEmailSubject(`Invoice #${invoice.invoice_number} from ${userProfile?.company || 'Your Company'}`);
-        setEmailBody(`Dear ${invoice.customer_name},\n\nPlease find attached your invoice (Invoice ID: #${invoice.invoice_number}).\n\nTotal amount: ${invoice.currency} ${invoice.total_amount.toFixed(2)}\nDue Date: ${new Date(invoice.due_date || '').toLocaleDateString('en-ZA')}\n\nThank you for your business!\n\nSincerely,\n${userProfile?.company || 'Your Company'}\n${userProfile?.contact_person || ''}`);
-        setShowSendEmailModal(true);
-    } catch (error: any) {
-        console.error('Error preparing email:', error);
-        toast({
-            title: 'Error',
-            description: error.message || 'Failed to prepare email. Please try again.',
-            variant: 'destructive',
-        });
-    } finally {
-        setEmailProcessingInvoiceId(null);
-    }
+    setEmailRecipient(customerEmail); // may be '' (user can type it)
+    setEmailSubject(`Invoice #${invoice.invoice_number} from ${userProfile?.company || 'Your Company'}`);
+    setEmailBody(
+      `Dear ${invoice.customer_name},\n\n` +
+      `Please find attached your invoice (Invoice ID: #${invoice.invoice_number}).\n\n` +
+      `Total amount: ${invoice.currency} ${invoice.total_amount.toFixed(2)}\n` +
+      `Due Date: ${new Date(invoice.due_date || '').toLocaleDateString('en-ZA')}\n\n` +
+      `Thank you for your business!\n\nSincerely,\n` +
+      `${userProfile?.company || 'Your Company'}\n${userProfile?.contact_person || ''}`
+    );
+  } catch (err) {
+    // No toasts, no blocking—just log and continue
+    console.warn('Could not prefill customer email for invoice:', err);
+  } finally {
+    setShowSendEmailModal(true);      // <-- Always open the modal
+    setEmailProcessingInvoiceId(null);
+  }
 };
+
 
 const confirmSendInvoiceEmail = async () => {
     // This new validation block prevents the API call if required fields are missing.
