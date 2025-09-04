@@ -1,5 +1,5 @@
 // ImportScreen.tsx
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import {
   Mic,
   Paperclip,
@@ -9,7 +9,6 @@ import {
   CheckCircle,
   XCircle,
   Edit3,
-  FileText,
   Loader2,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -45,6 +44,8 @@ import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../AuthPage';
 import { SearchableAccountSelect } from '../components/SearchableAccountSelect';
 import { SearchableCategorySelect } from '../components/SearchableCategorySelect';
+import { Link, useNavigate } from 'react-router-dom';
+
 
 declare global {
   interface Window {
@@ -94,8 +95,7 @@ interface DupMatch {
 
 // --- Import pipeline helpers (stage → preview → (optional PATCH) → commit) ---
 
-// a stable, per-row idempotency key (prevents double-posting on re-import)
-// a stable, short idempotency key: date|amount + 8-char hash of description
+// a stable, per-row idempotency key: date|amount + 8-char hash of description
 const sourceUidOf = (t: Transaction) => {
   const d = (t.date || '').slice(0, 10);
   const a = Number(t.amount || 0).toFixed(2);
@@ -103,10 +103,9 @@ const sourceUidOf = (t: Transaction) => {
   // tiny deterministic hash (djb2)
   let h = 5381;
   for (let i = 0; i < desc.length; i++) h = ((h << 5) + h) ^ desc.charCodeAt(i);
-  const hx = Math.abs(h >>> 0).toString(36).slice(0, 8); // 8 chars
-  return `${d}|${a}|${hx}`; // always short (≤ 10 + 1 + 5 + 1 + 8 = ≤ 25 chars)
+  const hx = Math.abs(h >>> 0).toString(36).slice(0, 8);
+  return `${d}|${a}|${hx}`;
 };
-
 
 async function stageSelected(API_BASE_URL: string, authHeaders: any, rows: Array<{sourceUid:string; date:string; description:string; amount:number;}>) {
   const res = await fetch(`${API_BASE_URL}/imports/bank/stage`, {
@@ -191,7 +190,7 @@ const isPotentialDuplicate = (incoming: Transaction, existing: ExistingTx) => {
 };
 
 // IMPORTANT: default selection is TRUE for everything,
-// BUT if a row already specifies includeInImport, respect it (for sales-preview rows)
+// BUT if a row already specifies includeInImport, respect it
 const markDuplicates = (newTxs: Transaction[], existingTxs: ExistingTx[]): Transaction[] => {
   return newTxs.map(tx => {
     const matches: DupMatch[] = [];
@@ -347,11 +346,9 @@ const suggestAccountForUpload = (
     if (acc) return { accountId: String(acc.id), confidence: 60 };
   }
 
-  // --- NEW FALLBACK ---
+  // Fallbacks
   const generalExpense = accounts.find(acc => safeText(acc.name).includes('general expense') && safeText(acc.type) === 'expense');
-  if (generalExpense) {
-      return { accountId: String(generalExpense.id), confidence: 30 };
-  }
+  if (generalExpense) return { accountId: String(generalExpense.id), confidence: 30 };
   const defaultBank = accounts.find(acc => safeText(acc.name).includes('bank') && safeText(acc.type) === 'asset');
   if (defaultBank) return { accountId: String(defaultBank.id), confidence: 40 };
   const defaultCash = accounts.find(acc => safeText(acc.name).includes('cash') && safeText(acc.type) === 'asset');
@@ -377,25 +374,22 @@ const suggestAccountForText = (
   let bestMatch: Account | null = null;
   let highestScore = -1;
 
-  // NEW RULE: Add a specific, high-confidence rule for "Fuel Expense"
+  // rules
   const fuelAccount = accounts.find(acc => safeText(acc.name).includes('fuel expense') && safeText(acc.type) === 'expense');
   if (fuelAccount && (lowerCategory.includes('fuel') || lowerDescription.includes('fuel') || lowerDescription.includes('petrol'))) {
-      return { accountId: String(fuelAccount.id), confidence: 95 };
+    return { accountId: String(fuelAccount.id), confidence: 95 };
   }
 
-  // FIX: Add a specific, high-confidence rule for "Salaries and wages"
   const salariesAccount = accounts.find(acc => safeText(acc.name).includes('salaries and wages') && safeText(acc.type) === 'expense');
   if (salariesAccount && (lowerCategory.includes('salaries and wages') || lowerDescription.includes('salary') || lowerDescription.includes('wages') || lowerDescription.includes('payroll'))) {
-      return { accountId: String(salariesAccount.id), confidence: 95 };
+    return { accountId: String(salariesAccount.id), confidence: 95 };
   }
 
-  // FIX: Add a specific, high-confidence rule for "Rent Expense"
   const rentAccount = accounts.find(acc => safeText(acc.name).includes('rent expense') && safeText(acc.type) === 'expense');
   if (rentAccount && (lowerCategory.includes('rent expense') || lowerDescription.includes('rent') || lowerDescription.includes('rental'))) {
-      return { accountId: String(rentAccount.id), confidence: 95 };
+    return { accountId: String(rentAccount.id), confidence: 95 };
   }
 
-  // Rest of the existing logic follows here...
   for (const account of accounts) {
     const lowerAccName = safeText(account.name);
     const lowerAccType = safeText(account.type);
@@ -404,7 +398,7 @@ const suggestAccountForText = (
     if (lowerDescription.includes(lowerAccName) && lowerAccName.length > 3) currentScore += 100;
     if (lowerCategory.includes(lowerAccName) && lowerAccName.length > 3) currentScore += 80;
 
-    // a few contextual boosts (kept short)
+    // contextual boosts
     if (lowerDescription.includes('bank loan') && lowerAccName.includes('bank loan payable') && lowerAccType === 'liability') currentScore += 70;
     if (lowerDescription.includes('revenue') && lowerAccName.includes('sales revenue') && lowerAccType === 'income') currentScore += 70;
     if (lowerDescription.includes('rent') && lowerAccName.includes('rent expense') && lowerAccType === 'expense') currentScore += 70;
@@ -443,16 +437,113 @@ const suggestAccountForText = (
 
   if (byType) return { accountId: String((byType as Account).id), confidence: 40 };
 
-  // --- NEW FALLBACK ---
   const generalExpense = accounts.find(acc => safeText(acc.name).includes('general expense') && safeText(acc.type) === 'expense');
-  if (generalExpense) {
-      return { accountId: String(generalExpense.id), confidence: 30 };
-  }
+  if (generalExpense) return { accountId: String(generalExpense.id), confidence: 30 };
 
   const bankOrCash = accounts.find(a => (safeText(a.name).includes('bank') || safeText(a.name).includes('cash')) && safeText(a.type) === 'asset');
   if (bankOrCash) return { accountId: String(bankOrCash.id), confidence: 20 };
 
   return accounts.length ? { accountId: String(accounts[0].id), confidence: 10 } : { accountId: null, confidence: 0 };
+};
+
+// --- Scroll sync helpers (for sticky bottom scrollbar) ---
+function useResizeObserver<T extends HTMLElement>(
+  ref: React.RefObject<T>,
+  onSize: (w: number) => void
+) {
+  useLayoutEffect(() => {
+    if (!ref.current) return;
+    const el = ref.current;
+    const ro = new ResizeObserver(() => onSize(el.scrollWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref, onSize]);
+}
+
+// ---------------- Progress UI ----------------
+type Stage = 'staging' | 'preview' | 'mapping' | 'posting';
+type StageStatus = 'idle' | 'running' | 'done' | 'error';
+
+type ProgressState = Record<Stage, StageStatus> & { overall: 'idle' | 'running' | 'done' | 'error' };
+
+// A small bus using CustomEvent so we can update one widget without rewriting message history
+const PROGRESS_EVENT = 'import-progress-event';
+function sendProgress(stage: Stage, status: StageStatus) {
+  window.dispatchEvent(new CustomEvent(PROGRESS_EVENT, { detail: { stage, status } }));
+}
+
+const StageRow: React.FC<{ label: string; status: StageStatus }> = ({ label, status }) => (
+  <div className="flex items-center gap-2 text-sm">
+    {status === 'running' && <Loader2 className="h-4 w-4 animate-spin" />}
+    {status === 'done' && <CheckCircle className="h-4 w-4 text-green-600" />}
+    {status === 'error' && <XCircle className="h-4 w-4 text-red-600" />}
+    {status === 'idle' && <span className="h-4 w-4 inline-block rounded-full bg-gray-300" />}
+    <span>{label}</span>
+  </div>
+);
+
+const ImportProgressBubble: React.FC = () => {
+  const [state, setState] = useState<ProgressState>({
+    staging: 'idle',
+    preview: 'idle',
+    mapping: 'idle',
+    posting: 'idle',
+    overall: 'idle',
+  });
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { stage, status } = (e as CustomEvent).detail as { stage: Stage; status: StageStatus };
+      setState(prev => {
+        const next = { ...prev, [stage]: status };
+        const anyError = (['staging','preview','mapping','posting'] as Stage[]).some(s => next[s] === 'error');
+        const allDone = (['staging','preview','mapping','posting'] as Stage[]).every(s => next[s] === 'done');
+        next.overall = anyError ? 'error' : allDone ? 'done' : 'running';
+        return next;
+      });
+    };
+    window.addEventListener(PROGRESS_EVENT, handler as any);
+    return () => window.removeEventListener(PROGRESS_EVENT, handler as any);
+  }, []);
+
+  return (
+    <div className="p-3 rounded-2xl shadow-md bg-gray-200 text-gray-800 min-w-[260px]">
+      <div className="font-medium mb-2">Import progress</div>
+      <div className="space-y-1.5">
+        <StageRow label="Staging selected rows" status={state.staging} />
+        <StageRow label="Generating preview" status={state.preview} />
+        <StageRow label="Applying account mappings" status={state.mapping} />
+        <StageRow label="Posting journal entries" status={state.posting} />
+      </div>
+      <div className="mt-2 text-xs text-gray-600">
+        {state.overall === 'done' ? 'All steps complete.' : state.overall === 'error' ? 'Something went wrong.' : 'Working…'}
+      </div>
+    </div>
+  );
+};
+
+// --- Loading bubble shown while table is being prepared ---
+const TableLoading: React.FC<{ message?: string }> = ({ message = 'Preparing your preview table…' }) => {
+  const [pct, setPct] = useState(8);
+  useEffect(() => {
+    const id = setInterval(() => setPct(p => Math.min(98, p + Math.max(1, Math.round(Math.random() * 7)))), 300);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="p-3 rounded-2xl shadow-md bg-gray-200 text-gray-800 min-w-[260px]">
+      <div className="flex items-center gap-2 mb-2">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        <span className="font-medium">{message}</span>
+      </div>
+      <div className="w-full h-2 bg-gray-300 rounded">
+        <div
+          className="h-2 bg-blue-600 rounded transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="mt-2 text-xs text-gray-600">This won’t take long.</p>
+    </div>
+  );
 };
 
 // ------------ Editable table ------------
@@ -473,21 +564,53 @@ const EditableTransactionTable = ({
   onConfirm: (txs: Transaction[]) => void;
   isBusy?: boolean;
   onCancel: () => void;
-  forceCash: boolean;                       // NEW
-  onToggleForceCash: (val: boolean) => void; // NEW
+  forceCash: boolean;
+  onToggleForceCash: (val: boolean) => void;
 }) => {
   const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
-  const [isCancelled, setIsCancelled] = useState(false); // Track cancellation state
+  const [isCancelled, setIsCancelled] = useState(false);
   const [localForceCash, setLocalForceCash] = useState(!!forceCash);
-    useEffect(() => {
-    // sync if parent sends a different initial value
+  const [confirmClicked, setConfirmClicked] = useState(false);
+  
+  useEffect(() => { setConfirmClicked(false); }, [initialTransactions]);
+
+const handleConfirmOnce = () => {
+  if (confirmClicked || isBusy) return;   // ignore double taps
+  setConfirmClicked(true);                // disable instantly
+  onConfirm(transactions);                // parent still sets importBusy
+};
+
+  // sticky horizontal bar sync
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const bottomStripRef = useRef<HTMLDivElement | null>(null);
+  const [contentWidth, setContentWidth] = useState<number>(0);
+  useResizeObserver(scrollAreaRef, (w) => setContentWidth(w));
+
+  useEffect(() => {
     setLocalForceCash(!!forceCash);
   }, [forceCash]);
- const [isImporting, setIsImporting] = useState(false);
+
   useEffect(() => {
     setTransactions(initialTransactions);
   }, [initialTransactions]);
+
+  useEffect(() => {
+    const area = scrollAreaRef.current;
+    const strip = bottomStripRef.current;
+    if (!area || !strip) return;
+
+    const onAreaScroll = () => { strip.scrollLeft = area.scrollLeft; };
+    const onStripScroll = () => { area.scrollLeft = strip.scrollLeft; };
+
+    area.addEventListener('scroll', onAreaScroll, { passive: true });
+    strip.addEventListener('scroll', onStripScroll, { passive: true });
+
+    return () => {
+      area.removeEventListener('scroll', onAreaScroll);
+      strip.removeEventListener('scroll', onStripScroll);
+    };
+  }, []);
 
   const handleTransactionChange = (id: string, field: keyof Transaction, value: any) => {
     setTransactions(prev =>
@@ -506,189 +629,202 @@ const EditableTransactionTable = ({
   };
 
   const handleCancel = () => {
-    setIsCancelled(true); // Set cancellation state
-    onCancel(); // Call the original onCancel prop
+    setIsCancelled(true);
+    onCancel();
   };
 
   return (
     <div className="p-4 bg-white rounded-lg shadow-md">
       <h4 className="text-lg font-semibold mb-3">Review & Edit Transactions:</h4>
-       {/* NEW: Cash override toggle */}
-  <div className="mb-3 flex items-center gap-2">
-    <input
-      id="force-cash-toggle"
-      type="checkbox"
-      checked={localForceCash}
-      onChange={(e) => {
-        setLocalForceCash(e.target.checked);   // update UI immediately
-        onToggleForceCash(e.target.checked);   // update parent state
-      }}
-    />
-    <label htmlFor="force-cash-toggle" className="text-sm">
-      Treat the balancing leg as <strong>Cash</strong> instead of Bank for all rows
-    </label>
-  </div>
 
+      {/* Cash override toggle */}
+      <div className="mb-3 flex items-center gap-2">
+        <input
+          id="force-cash-toggle"
+          type="checkbox"
+          checked={localForceCash}
+          onChange={(e) => {
+            setLocalForceCash(e.target.checked);
+            onToggleForceCash(e.target.checked);
+          }}
+        />
+        <label htmlFor="force-cash-toggle" className="text-sm">
+          Treat the balancing leg as <strong>Cash</strong> instead of Bank for all rows
+        </label>
+      </div>
 
-      <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Import?</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Amount (R)</TableHead>
-              <TableHead>Description</TableHead>
-              <TableHead>Date</TableHead>
-              <TableHead>Category</TableHead>
-              <TableHead>Account</TableHead>
-              <TableHead>Confidence</TableHead>
-              <TableHead>Duplicate</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {transactions.map((tx) => {
-              const rowId = tx.id || tx._tempId!;
-              const dupCount = tx.duplicateMatches?.length || 0;
+      {/* Table with sticky bottom scrollbar */}
+      <div className="relative">
+        <div
+          ref={scrollAreaRef}
+          className="overflow-x-auto overflow-y-auto max-h-[400px] pb-6"
+        >
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Import?</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Amount (R)</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead>Date</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Account</TableHead>
+                <TableHead>Confidence</TableHead>
+                <TableHead>Duplicate</TableHead>
+                <TableHead>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {transactions.map((tx) => {
+                const rowId = tx.id || tx._tempId!;
+                const dupCount = tx.duplicateMatches?.length || 0;
 
-              return (
-                <TableRow key={rowId}>
-                  {/* Import checkbox (defaults to true, but preview rows default to false) */}
-                  <TableCell>
-                    <input
-                      type="checkbox"
-                      checked={tx.includeInImport !== false}
-                      onChange={() => toggleInclude(rowId)}
-                      aria-label="Include in import"
-                    />
-                  </TableCell>
-
-                  {/* Type */}
-                  <TableCell>
-                    {editingRowId === rowId ? (
-                      <Select value={tx.type} onValueChange={(value) => handleTransactionChange(rowId, 'type', value)}>
-                        <SelectTrigger className="w-[100px]"><SelectValue placeholder="Type" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="income">Income</SelectItem>
-                          <SelectItem value="expense">Expense</SelectItem>
-                          <SelectItem value="debt">Debt</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    ) : (tx.type)}
-                  </TableCell>
-
-                  {/* Amount */}
-                  <TableCell>
-                    {editingRowId === rowId ? (
-                      <Input type="number" step="0.01" value={tx.amount} onChange={(e) => handleTransactionChange(rowId, 'amount', e.target.value)} className="w-[110px]" />
-                    ) : (Number(tx.amount).toFixed(2))}
-                  </TableCell>
-
-                  {/* Description */}
-                  <TableCell className="max-w-[240px] truncate">
-                    {editingRowId === rowId ? (
-                      <Textarea value={tx.description} onChange={(e) => handleTransactionChange(rowId, 'description', e.target.value)} rows={2} className="w-[240px]" />
-                    ) : (
-                      <>
-                        {tx.description}
-                      </>
-                    )}
-                  </TableCell>
-
-                  {/* Date */}
-                  <TableCell>
-                    {editingRowId === rowId ? (
-                      <Input type="date" value={tx.date} onChange={(e) => handleTransactionChange(rowId, 'date', e.target.value)} className="w-[150px]" />
-                    ) : (tx.date)}
-                  </TableCell>
-
-                  {/* Category */}
-                  <TableCell>
-                    {editingRowId === rowId ? (
-                      <SearchableCategorySelect
-                        value={tx.category}
-                        onChange={(val) => handleTransactionChange(rowId, 'category', val)}
-                        categories={categories}
+                return (
+                  <TableRow key={rowId}>
+                    {/* Import checkbox */}
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        checked={tx.includeInImport !== false}
+                        onChange={() => toggleInclude(rowId)}
+                        aria-label="Include in import"
+                        disabled={isBusy}
                       />
-                    ) : (tx.category)}
-                  </TableCell>
+                    </TableCell>
 
-                  {/* Account */}
-                  <TableCell>
-                    {editingRowId === rowId ? (
-                      <SearchableAccountSelect
-                        value={tx.account_id}
-                        onChange={(val) => handleTransactionChange(rowId, 'account_id', val)}
-                        accounts={accounts}
-                      />
-                    ) : (accounts.find(acc => String(acc.id) === String(tx.account_id))?.name || 'N/A')}
-                  </TableCell>
+                    {/* Type */}
+                    <TableCell>
+                      {editingRowId === rowId ? (
+                        <Select value={tx.type} onValueChange={(value) => handleTransactionChange(rowId, 'type', value)}>
+                          <SelectTrigger className="w-[100px]"><SelectValue placeholder="Type" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="income">Income</SelectItem>
+                            <SelectItem value="expense">Expense</SelectItem>
+                            <SelectItem value="debt">Debt</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : (tx.type)}
+                    </TableCell>
 
-                  {/* Confidence */}
-                  <TableCell>
-                    {tx.confidenceScore !== undefined ? (
-                      <Badge variant={tx.confidenceScore >= 90 ? 'success' : tx.confidenceScore >= 60 ? 'default' : 'destructive'}>
-                        {Math.round(tx.confidenceScore)}%
-                      </Badge>
-                    ) : 'N/A'}
-                  </TableCell>
+                    {/* Amount */}
+                    <TableCell>
+                      {editingRowId === rowId ? (
+                        <Input type="number" step="0.01" value={tx.amount} onChange={(e) => handleTransactionChange(rowId, 'amount', e.target.value)} className="w-[110px]" />
+                      ) : (Number(tx.amount).toFixed(2))}
+                    </TableCell>
 
-                  {/* Duplicate details */}
-                  <TableCell>
-                    {dupCount > 0 ? (
-                      <Dialog>
-                        <DialogTrigger asChild>
-                          <Badge variant="destructive" className="cursor-pointer">View ({dupCount})</Badge>
-                        </DialogTrigger>
-                        <DialogContent>
-                          <DialogHeader>
-                            <DialogTitle>Potential duplicates ({dupCount})</DialogTitle>
-                            <DialogDescription>These existing transactions look similar. Uncheck “Import?” to skip.</DialogDescription>
-                          </DialogHeader>
-                          <div className="space-y-2 mt-2">
-                            {tx.duplicateMatches!.map((m, i) => (
-                              <div key={i} className="border rounded p-2 text-sm">
-                                <div><strong>Amount:</strong> R {m.amount.toFixed(2)}</div>
-                                <div><strong>Date:</strong> {m.date}</div>
-                                <div className="truncate"><strong>Desc:</strong> {m.description}</div>
-                                <div><strong>Similarity:</strong> {(m.score * 100).toFixed(0)}%</div>
-                              </div>
-                            ))}
-                          </div>
-                        </DialogContent>
-                      </Dialog>
-                    ) : (
-                      <Badge variant="outline">No duplicate</Badge>
-                    )}
-                  </TableCell>
+                    {/* Description */}
+                    <TableCell className="max-w-[240px] truncate">
+                      {editingRowId === rowId ? (
+                        <Textarea value={tx.description} onChange={(e) => handleTransactionChange(rowId, 'description', e.target.value)} rows={2} className="w-[240px]" />
+                      ) : (tx.description)}
+                    </TableCell>
 
-                  {/* Actions */}
-                  <TableCell className="flex space-x-2">
-                    {editingRowId === rowId ? (
-                      <>
-                        <Button variant="outline" size="sm" onClick={() => setEditingRowId(null)} className="flex items-center">
-                          <XCircle size={16} className="mr-1" /> Cancel
-                        </Button>
-                        <Button size="sm" onClick={() => setEditingRowId(null)} className="flex items-center">
-                          <CheckCircle size={16} className="mr-1" /> Save
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button variant="outline" size="sm" onClick={() => setEditingRowId(rowId)} className="flex items-center">
-                          <Edit3 size={16} className="mr-1" /> Edit
-                        </Button>
-                        <Button variant="destructive" size="sm" onClick={() => handleTransactionDelete(rowId)} className="flex items-center">
-                          <Trash2 size={16} className="mr-1" /> Delete
-                        </Button>
-                      </>
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+                    {/* Date */}
+                    <TableCell>
+                      {editingRowId === rowId ? (
+                        <Input type="date" value={tx.date} onChange={(e) => handleTransactionChange(rowId, 'date', e.target.value)} className="w-[150px]" />
+                      ) : (tx.date)}
+                    </TableCell>
+
+                    {/* Category */}
+                    <TableCell>
+                      {editingRowId === rowId ? (
+                        <SearchableCategorySelect
+                          value={tx.category}
+                          onChange={(val) => handleTransactionChange(rowId, 'category', val)}
+                          categories={categories}
+                        />
+                      ) : (tx.category)}
+                    </TableCell>
+
+                    {/* Account */}
+                    <TableCell>
+                      {editingRowId === rowId ? (
+                        <SearchableAccountSelect
+                          value={tx.account_id}
+                          onChange={(val) => handleTransactionChange(rowId, 'account_id', val)}
+                          accounts={accounts}
+                        />
+                      ) : (accounts.find(acc => String(acc.id) === String(tx.account_id))?.name || 'N/A')}
+                    </TableCell>
+
+                    {/* Confidence */}
+                    <TableCell>
+                      {tx.confidenceScore !== undefined ? (
+                        <Badge variant={tx.confidenceScore >= 90 ? 'success' : tx.confidenceScore >= 60 ? 'default' : 'destructive'}>
+                          {Math.round(tx.confidenceScore)}%
+                        </Badge>
+                      ) : 'N/A'}
+                    </TableCell>
+
+                    {/* Duplicate details */}
+                    <TableCell>
+                      {dupCount > 0 ? (
+                        <Dialog>
+                          <DialogTrigger asChild>
+                            <Badge variant="destructive" className="cursor-pointer">View ({dupCount})</Badge>
+                          </DialogTrigger>
+                          <DialogContent>
+                            <DialogHeader>
+                              <DialogTitle>Potential duplicates ({dupCount})</DialogTitle>
+                              <DialogDescription>These existing transactions look similar. Uncheck “Import?” to skip.</DialogDescription>
+                            </DialogHeader>
+                            <div className="space-y-2 mt-2">
+                              {tx.duplicateMatches!.map((m, i) => (
+                                <div key={i} className="border rounded p-2 text-sm">
+                                  <div><strong>Amount:</strong> R {m.amount.toFixed(2)}</div>
+                                  <div><strong>Date:</strong> {m.date}</div>
+                                  <div className="truncate"><strong>Desc:</strong> {m.description}</div>
+                                  <div><strong>Similarity:</strong> {(m.score * 100).toFixed(0)}%</div>
+                                </div>
+                              ))}
+                            </div>
+                          </DialogContent>
+                        </Dialog>
+                      ) : (
+                        <Badge variant="outline">No duplicate</Badge>
+                      )}
+                    </TableCell>
+
+                    {/* Actions */}
+                    <TableCell className="flex space-x-2">
+                      {editingRowId === rowId ? (
+                        <>
+                          <Button variant="outline" size="sm" onClick={() => setEditingRowId(null)} className="flex items-center" disabled={isBusy}>
+                            <XCircle size={16} className="mr-1" /> Cancel
+                          </Button>
+                          <Button size="sm" onClick={() => setEditingRowId(null)} className="flex items-center" disabled={isBusy}>
+                            <CheckCircle size={16} className="mr-1" /> Save
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button variant="outline" size="sm" onClick={() => setEditingRowId(rowId)} className="flex items-center" disabled={isBusy}>
+                            <Edit3 size={16} className="mr-1" /> Edit
+                          </Button>
+                          <Button variant="destructive" size="sm" onClick={() => handleTransactionDelete(rowId)} className="flex items-center" disabled={isBusy}>
+                            <Trash2 size={16} className="mr-1" /> Delete
+                          </Button>
+                        </>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+
+        {/* Always-visible horizontal scrollbar (sticky) */}
+        <div
+          ref={bottomStripRef}
+          className="sticky bottom-0 left-0 right-0 h-5 overflow-x-auto overflow-y-hidden bg-white/90 backdrop-blur border-t border-gray-200"
+          style={{ scrollbarGutter: 'stable both-edges' }}
+          aria-label="Horizontal scroll"
+        >
+          <div style={{ width: contentWidth, height: 1 }} />
+        </div>
       </div>
 
       <div className="flex justify-between items-center mt-4">
@@ -701,12 +837,18 @@ const EditableTransactionTable = ({
           })()}
         </div>
         <div className="space-x-2">
-          <Button variant="secondary" onClick={handleCancel}>
+          <Button variant="secondary" onClick={onCancel} disabled={isBusy}>
             <XCircle size={18} className="mr-2" /> Cancel Review
           </Button>
-          <Button onClick={() => onConfirm(transactions)} disabled={isCancelled || isBusy}>
-            <CheckCircle size={18} className="mr-2" /> {isBusy ? 'Working…' : 'Confirm & Submit Selected'}
-          </Button>
+<Button
+  onClick={handleConfirmOnce}
+  disabled={isCancelled || isBusy || confirmClicked}
+  aria-busy={isBusy}
+>
+  <CheckCircle size={18} className="mr-2" />
+  {isBusy ? 'Working…' : confirmClicked ? 'Submitted' : 'Confirm & Submit Selected'}
+</Button>
+
         </div>
       </div>
     </div>
@@ -731,17 +873,12 @@ const ChatInterface = () => {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
-  
+
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const [showDocumentGeneration, setShowDocumentGeneration] = useState(false);
-  const [selectedDocumentType, setSelectedDocumentType] = useState('');
-  const [documentStartDate, setDocumentStartDate] = useState(new Date().toISOString().split('T')[0]);
-  const [documentEndDate, setDocumentEndDate] = useState(new Date().toISOString().split('T')[0]);
-  const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
-  const [isLoadingAccounts, setIsLoadingAccounts] = useState(true);
+  // NEW: prevent double-submit on import
+  const [importBusy, setImportBusy] = useState(false);
 
-  // ✅ Auth is used INSIDE the component (fix)
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
   const getAuthHeaders = useCallback(() => (token ? { Authorization: `Bearer ${token}` } : {}), [token]);
@@ -755,22 +892,6 @@ const ChatInterface = () => {
     'Computer internet and Telephone','Website hosting fees','Credit Facility'
   ];
 
-  // >>>>>>>>>>>>>>>>>>>> NEW: Sales queue state + REF (hybrid) <<<<<<<<<<<<<<<<<<<<
-  const [pendingSales, setPendingSales] = useState<Array<{
-    customer_name: string;
-    office?: string | null;
-    date: string;
-    description: string;
-    amount: number; // Net = revenue
-  }>>([]);
-  const pendingSalesRef = useRef<Array<{
-    customer_name: string;
-    office?: string | null;
-    date: string;
-    description: string;
-    amount: number;
-  }>>([]);
-
   // auto-scroll
   useEffect(() => {
     if (chatContainerRef.current) chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
@@ -783,11 +904,9 @@ const ChatInterface = () => {
     const fetchAccounts = async () => {
       if (!isAuthenticated || !token) {
         setAccounts([]);
-        setIsLoadingAccounts(false);
         addAssistantMessage('Please log in to load accounts and import transactions.');
         return;
       }
-      setIsLoadingAccounts(true);
       try {
         const response = await fetch(`${API_BASE_URL}/accounts`, { headers: getAuthHeaders() });
         const data: Account[] = await response.json();
@@ -796,14 +915,21 @@ const ChatInterface = () => {
       } catch (error: any) {
         console.error('Failed to fetch accounts:', error);
         setAccounts([]);
-        addAssistantMessage(`Failed to load accounts: ${error.message || 'Network error'}. Please ensure your backend server is running and you are logged in.`);
-      } finally {
-        setIsLoadingAccounts(false);
+        addAssistantMessage(`Failed to load accounts: ${error.message || 'Network error'}. Please ensure your backend is running and you are logged in.`);
       }
     };
     fetchAccounts();
   }, [isAuthenticated, token, getAuthHeaders]);
 
+
+
+//message stuff 
+
+
+
+
+
+  
   // Load recent existing transactions (for dup check)
   useEffect(() => {
     const fetchExisting = async () => {
@@ -814,7 +940,7 @@ const ChatInterface = () => {
         const res = await fetch(`${API_BASE_URL}/transactions?${params.toString()}`, {
           headers: { 'Content-Type':'application/json', ...getAuthHeaders() },
         });
-        if (res.status === 401) { setExistingTxs([]); return; } // graceful if not logged-in/expired
+        if (res.status === 401) { setExistingTxs([]); return; }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setExistingTxs(Array.isArray(data) ? data.map((t:any) => ({
@@ -836,131 +962,9 @@ const ChatInterface = () => {
   const addUserMessage = (content: string) =>
     setMessages(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, sender: 'user', content }]);
 
-  // submit one transaction
-  const submitTransaction = async (dataToSubmit: Transaction) => {
-    if (!isAuthenticated || !token) return { success: false, error: 'Authentication required to submit transactions.' };
 
-    const payload = {
-      id: dataToSubmit.id || undefined,
-      type: dataToSubmit.type || 'expense',
-      amount: Number(dataToSubmit.amount) || 0,
-      date: dataToSubmit.date || new Date().toISOString().split('T')[0],
-      description: dataToSubmit.description || 'Imported Transaction',
-      category: dataToSubmit.category || 'Uncategorized',
-      account_id: dataToSubmit.account_id ? String(dataToSubmit.account_id) : (accounts[0]?.id ? String(accounts[0].id) : null),
-      original_text: dataToSubmit.original_text || null,
-      source: dataToSubmit.source || 'manual',
-      is_verified: dataToSubmit.is_verified !== undefined ? dataToSubmit.is_verified : true,
-    };
-
-    if (payload.amount === 0) return { success: false, error: 'Amount cannot be zero. Please enter a valid amount.' };
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/transactions/manual`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json();
-
-      return response.ok
-        ? { success: true, transaction: result }
-        : ({ success: false, error: result.detail || 'Failed to submit transaction' } as const);
-    } catch (error: any) {
-      console.error('Error submitting transaction:', error);
-      return { success: false, error: error.message || 'Network error or server unavailable.' };
-    }
-  };
-
-  // ----------------- NEW: Customer + Sales helpers -----------------
-  const ensureCustomer = async (customer_name: string, office?: string | null) => {
-    if (!isAuthenticated || !token) throw new Error('Authentication required.');
-
-    // Try GET /customers?name=...
-    try {
-      const qs = new URLSearchParams({ name: customer_name }).toString();
-      const findRes = await fetch(`${API_BASE_URL}/customers?${qs}`, {
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      });
-      if (findRes.ok) {
-        const list = await findRes.json();
-        if (Array.isArray(list) && list.length > 0) return list[0];
-      }
-      // fall through to POST if not found/empty
-    } catch (_) { /* ignore; create below */ }
-
-    // POST /customers (your provided endpoint)
-    const createRes = await fetch(`${API_BASE_URL}/customers`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({
-        name: customer_name,
-        contact_person: null,
-        email: null,
-        phone: null,
-        address: office || null, // store 'office' into address
-        tax_id: null
-      }),
-    });
-    if (!createRes.ok) {
-      const t = await createRes.text();
-      throw new Error(`Failed to create customer "${customer_name}": ${createRes.status} ${t}`);
-    }
-    return await createRes.json();
-  };
-
-  const submitSale = async (sale: {
-    customer_name: string;
-    office?: string | null;
-    date: string;
-    description: string;
-    amount: number;
-  }) => {
-    if (!isAuthenticated || !token) throw new Error('Authentication required.');
-
-    // Ensure customer exists
-    const customer = await ensureCustomer(sale.customer_name, sale.office);
-
-    // Default policy for Excel imports: treat as Credit sale (AR)
-    const paymentType = 'Bank';
-
-    // Minimal cart line as custom service (so backend won’t touch inventory/COGS)
-    const cart = [{
-      id: 'custom-excel',
-      name: sale.description || `Sale for ${sale.customer_name}`,
-      quantity: 1,
-      unit_price: Number(sale.amount) || 0,
-      subtotal: Number(sale.amount) || 0,
-      tax_rate_value: 0,
-      is_service: true
-    }];
-
-    const payload = {
-      cart,
-      paymentType,
-      total: Number(sale.amount) || 0,
-      customer: { id: customer.id, name: customer.name },
-      amountPaid: 0,
-      change: 0,
-      dueDate: null,
-      tellerName: 'Excel Import',
-      branch: sale.office || null,
-      companyName: null,
-    };
-
-    const res = await fetch(`${API_BASE_URL}/api/sales`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const t = await res.text();
-      throw new Error(`Sale post failed: ${res.status} ${t}`);
-    }
-    return await res.json();
-  };
-
-  // ----------------- Helpers for files -----------------
+  
+  // Helpers for files
   const isExcelFile = (f: File | null) => {
     if (!f) return false;
     const name = f.name.toLowerCase();
@@ -974,7 +978,7 @@ const ChatInterface = () => {
     );
   };
 
-  // -------------- File change (allow PDF & Excel) --------------
+  // File change (PDF & Excel)
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0] || null;
     if (!selectedFile) { addAssistantMessage('No file selected.'); return; }
@@ -993,12 +997,11 @@ const ChatInterface = () => {
     e.target.value = '';
   };
 
-  // -------------- PDF upload (unchanged) --------------
+  // PDF upload
   const handleFileUpload = async () => {
     if (!file) { addAssistantMessage('No file selected for upload.'); return; }
     if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to upload files.'); return; }
 
-    // If the selected file is Excel, route to Excel flow
     if (isExcelFile(file)) {
       await handleExcelUpload();
       return;
@@ -1010,18 +1013,17 @@ const ChatInterface = () => {
     }
 
     addUserMessage(`Initiating PDF upload: ${file.name}...`);
-    addAssistantMessage(`Processing PDF: ${file.name}...`);
+    addAssistantMessage(<TableLoading message="Extracting transactions from PDF…" />);
 
     try {
       const formData = new FormData();
       formData.append('file', file);
       const response = await fetch(`${RAIRO_API_BASE_URL}/process-pdf`, { method: 'POST', body: formData });
-      console.log(response)
       const result = await response.json();
-      console.log('Raw API result:', result);
-      
+
       if (response.ok) {
-        addAssistantMessage('PDF processed successfully! Please review the extracted transactions.');
+        addAssistantMessage('PDF processed successfully! Building preview…');
+
         const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
           const transactionType = tx.Type?.toLowerCase() || 'expense';
 
@@ -1057,19 +1059,19 @@ const ChatInterface = () => {
           };
         });
 
-        // DUP CHECK (but keep all selected)
         const flagged = markDuplicates(transformed, existingTxs);
 
         addAssistantMessage(
-<EditableTransactionTable
-  transactions={flagged}
-  accounts={accounts}
-  categories={categories}
-  onConfirm={handleConfirmProcessedTransaction}
-  onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-  forceCash={forceCash}
-  onToggleForceCash={setForceCash}
-/>
+          <EditableTransactionTable
+            transactions={flagged}
+            accounts={accounts}
+            categories={categories}
+            onConfirm={handleConfirmProcessedTransaction}
+            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+            forceCash={forceCash}
+            onToggleForceCash={setForceCash}
+            isBusy={importBusy}
+          />
         );
       } else {
         addAssistantMessage(`Error processing file: ${result.error || 'Unknown error'}`);
@@ -1089,14 +1091,14 @@ const ChatInterface = () => {
     if (!isExcelFile(file)) { addAssistantMessage('Please select a valid Excel file (.xlsx/.xls).'); return; }
 
     addUserMessage(`Initiating Excel import: ${file.name}...`);
-    addAssistantMessage(`Processing Excel: ${file.name}...`);
+    addAssistantMessage(<TableLoading message="Parsing Excel and preparing preview…" />);
 
     try {
       const XLSX = await import('xlsx');
 
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });
-      const sheetName = wb.SheetNames[0]; // first sheet (e.g., "Office Rem")
+      const sheetName = wb.SheetNames[0];
       const ws = wb.Sheets[sheetName];
       const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
@@ -1111,7 +1113,6 @@ const ChatInterface = () => {
       }> = [];
 
       for (const row of rows) {
-        // Normalize headers per row
         const rowNorm: Record<string, any> = {};
         Object.keys(row).forEach(k => { rowNorm[k.trim().toLowerCase()] = row[k]; });
 
@@ -1125,18 +1126,12 @@ const ChatInterface = () => {
           0;
 
         const revenue = num(netRaw);
-
-        // Skip if net is zero/blank
         if (!revenue) continue;
 
-        // Default date to today (sheet has no date column)
         const date = new Date().toISOString().slice(0,10);
-
-        // Description: default + tags
         const tag = [client && `Client: ${client}`, office && `Office: ${office}`].filter(Boolean).join(' | ');
         const baseDesc = 'Agent Import' + (tag ? ` [${tag}]` : '');
 
-        // 2) Revenue -> queue a Sale + preview row
         const customer_name = client || 'Walk-in';
         salesQueue.push({
           customer_name,
@@ -1146,20 +1141,19 @@ const ChatInterface = () => {
           amount: Math.abs(revenue),
         });
 
-        // --- PREVIEW ROW so user can see the sale in the table ---
         prepared.push({
           _tempId: crypto.randomUUID(),
           type: 'income',
           amount: Math.abs(revenue),
           description: (baseDesc || `Sale for ${customer_name}`) + ' [Sales Preview]',
           date,
-          category: 'Sales Revenue', // Updated category name
+          category: 'Sales Revenue',
           account_id: '',
           original_text: JSON.stringify(row),
-          source: 'sales-preview',     // marker
+          source: 'sales-preview',
           is_verified: true,
           confidenceScore: 100,
-          includeInImport: true,      // Now defaults to checked
+          includeInImport: true,
         });
       }
 
@@ -1168,11 +1162,6 @@ const ChatInterface = () => {
         return;
       }
 
-      // Save queued sales for submit time (STATE + REF hybrid)
-      setPendingSales(salesQueue);
-      pendingSalesRef.current = salesQueue;
-
-      // Show a quick summary so the user knows sales will be posted via /api/sales
       const salesTotal = salesQueue.reduce((sum, s) => sum + Number(s.amount || 0), 0);
       addAssistantMessage(
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
@@ -1181,20 +1170,19 @@ const ChatInterface = () => {
         </div>
       );
 
-      // duplicate check (keeps all selected) for preview rows,
-      // but markDuplicates now respects existing includeInImport=false
       const flagged = markDuplicates(prepared, existingTxs);
 
       addAssistantMessage(
-<EditableTransactionTable
-  transactions={flagged}
-  accounts={accounts}
-  categories={categories}
-  onConfirm={handleConfirmProcessedTransaction}
-  onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-  forceCash={forceCash}
-  onToggleForceCash={setForceCash}
-/>
+        <EditableTransactionTable
+          transactions={flagged}
+          accounts={accounts}
+          categories={categories}
+          onConfirm={handleConfirmProcessedTransaction}
+          onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+          forceCash={forceCash}
+          onToggleForceCash={setForceCash}
+          isBusy={importBusy}
+        />
       );
     } catch (err: any) {
       console.error('Excel parse error:', err);
@@ -1205,14 +1193,14 @@ const ChatInterface = () => {
     }
   };
 
-  // -------------- Text input --------------
+  // Text input
   const handleTypedDescriptionSubmit = async () => {
     if (!typedDescription.trim()) { addAssistantMessage('Please enter a description.'); return; }
     if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to process text.'); return; }
 
     const userMessageContent = typedDescription;
     addUserMessage(userMessageContent);
-    addAssistantMessage('Analyzing description...');
+    addAssistantMessage(<TableLoading message="Analyzing your description…" />);
     setTypedDescription('');
 
     try {
@@ -1224,34 +1212,25 @@ const ChatInterface = () => {
       const result = await response.json();
 
       if (response.ok) {
-        addAssistantMessage('Description analyzed successfully! Please review the extracted transactions.');
+        addAssistantMessage('Description analyzed! Building preview…');
 
         const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
           const transactionType = tx.Type?.toLowerCase() || 'expense';
 
-          // FIX: Use Destination_of_funds first, then fall back to Customer_name
           let transactionCategory = tx.Destination_of_funds || tx.Customer_name || 'N/A';
           if (transactionType === 'income' && ['income','general income'].includes((transactionCategory || '').toLowerCase())) {
             transactionCategory = 'Sales Revenue';
           }
 
-          // New logic to infer and update the category if it's N/A
           let inferredCategory = transactionCategory;
           const lowerDescription = (tx.Description || '').toLowerCase();
-          if (inferredCategory.toLowerCase() === 'n/a' || !inferredCategory) {
-              if (lowerDescription.includes('rent') || lowerDescription.includes('rental')) {
-                inferredCategory = 'Rent Expense';
-              } else if (lowerDescription.includes('salary') || lowerDescription.includes('wages') || lowerDescription.includes('payroll')) {
-                inferredCategory = 'Salaries and wages';
-              } else if (lowerDescription.includes('fuel') || lowerDescription.includes('petrol')) {
-                inferredCategory = 'Fuel';
-              } else if (lowerDescription.includes('utilities') || lowerDescription.includes('water') || lowerDescription.includes('electricity')) {
-                inferredCategory = 'Utilities Expenses';
-              } else if (lowerDescription.includes('groceries') || lowerDescription.includes('shopping') || lowerDescription.includes('food')) {
-                inferredCategory = 'Groceries';
-              } else if (lowerDescription.includes('sale') || lowerDescription.includes('revenue') || lowerDescription.includes('money for services')) {
-                inferredCategory = 'Sales Revenue';
-              }
+          if (!inferredCategory || inferredCategory.toLowerCase() === 'n/a') {
+            if (lowerDescription.includes('rent') || lowerDescription.includes('rental')) inferredCategory = 'Rent Expense';
+            else if (lowerDescription.includes('salary') || lowerDescription.includes('wages') || lowerDescription.includes('payroll')) inferredCategory = 'Salaries and wages';
+            else if (lowerDescription.includes('fuel') || lowerDescription.includes('petrol')) inferredCategory = 'Fuel';
+            else if (lowerDescription.includes('utilities') || lowerDescription.includes('water') || lowerDescription.includes('electricity')) inferredCategory = 'Utilities Expenses';
+            else if (lowerDescription.includes('groceries') || lowerDescription.includes('shopping') || lowerDescription.includes('food')) inferredCategory = 'Groceries';
+            else if (lowerDescription.includes('sale') || lowerDescription.includes('revenue') || lowerDescription.includes('money for services')) inferredCategory = 'Sales Revenue';
           }
 
           let transactionDate: string;
@@ -1284,15 +1263,16 @@ const ChatInterface = () => {
         const flagged = markDuplicates(transformed, existingTxs);
 
         addAssistantMessage(
-<EditableTransactionTable
-  transactions={flagged}
-  accounts={accounts}
-  categories={categories}
-  onConfirm={handleConfirmProcessedTransaction}
-  onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-  forceCash={forceCash}
-  onToggleForceCash={setForceCash}
-/>
+          <EditableTransactionTable
+            transactions={flagged}
+            accounts={accounts}
+            categories={categories}
+            onConfirm={handleConfirmProcessedTransaction}
+            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+            forceCash={forceCash}
+            onToggleForceCash={setForceCash}
+            isBusy={importBusy}
+          />
         );
       } else {
         addAssistantMessage(`Error analyzing description: ${result.error || 'Unknown error'}`);
@@ -1303,9 +1283,9 @@ const ChatInterface = () => {
     }
   };
 
-  // -------------- Voice --------------
+  // Voice (unchanged except minor UX)
   const startRecording = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) { addAssistantMessage('Browser does not support speech recognition. Try Chrome.'); return; }
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
@@ -1313,16 +1293,14 @@ const ChatInterface = () => {
     recognition.interimResults = true;
     recognition.onstart = () => { setIsRecording(true); addUserMessage('Started voice input...'); };
     recognition.onresult = (event: any) => {
-      const interimTranscript = Array.from(event.results)
-        .map((result: any) => result[0].transcript)
-        .join('');
+      const interimTranscript = Array.from(event.results).map((r: any) => r[0].transcript).join('');
       setTranscribedText(interimTranscript);
       setTypedDescription(interimTranscript);
     };
-    recognition.onerror = (event: any) => { 
-      console.error('Speech recognition error:', event); 
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event);
       setIsRecording(false);
-      addAssistantMessage(`Speech recognition error: ${event.error}. Please try again.`); 
+      addAssistantMessage(`Speech recognition error: ${event.error}. Please try again.`);
     };
     recognitionRef.current = recognition;
     recognition.start();
@@ -1342,8 +1320,10 @@ const ChatInterface = () => {
     if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to process audio.'); return; }
 
     addUserMessage('Processing recorded audio...');
+    addAssistantMessage(<TableLoading message="Transcribing & analyzing your audio…" />);
 
     try {
+      // Stub: replace with real STT when available
       const simulatedTranscribedText = 'I paid fifty dollars for groceries on July fifth, two thousand twenty-five. I also received 1200 salary on the same day.';
       const processTextResponse = await fetch(`${RAIRO_API_BASE_URL}/process-text`, {
         method: 'POST',
@@ -1358,7 +1338,7 @@ const ChatInterface = () => {
           return;
         }
 
-        addAssistantMessage('Audio processed successfully! Please review the extracted transactions.');
+        addAssistantMessage('Audio processed! Building preview…');
 
         const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
           const transactionType = tx.Type === 'income' ? 'income' : 'expense';
@@ -1394,19 +1374,19 @@ const ChatInterface = () => {
           };
         });
 
-        // DUP CHECK (keep all selected)
         const flagged = markDuplicates(transformed, existingTxs);
 
         addAssistantMessage(
-<EditableTransactionTable
-  transactions={flagged}
-  accounts={accounts}
-  categories={categories}
-  onConfirm={handleConfirmProcessedTransaction}
-  onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-  forceCash={forceCash}
-  onToggleForceCash={setForceCash}
-/>
+          <EditableTransactionTable
+            transactions={flagged}
+            accounts={accounts}
+            categories={categories}
+            onConfirm={handleConfirmProcessedTransaction}
+            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+            forceCash={forceCash}
+            onToggleForceCash={setForceCash}
+            isBusy={importBusy}
+          />
         );
       } else {
         addAssistantMessage(`Error processing audio: ${result.error || 'Unknown error'}`);
@@ -1417,7 +1397,7 @@ const ChatInterface = () => {
     } finally {
       setAudioBlob(null);
       setAudioUrl(null);
-      if (audioPlayerRef.current) audioPlayerRef.current.src = '';
+      if (audioPlayerRef.current) (audioPlayerRef.current as any).src = '';
     }
   };
 
@@ -1429,206 +1409,156 @@ const ChatInterface = () => {
   };
 
   // -------------- Save Selected --------------
-// PIPELINE: stage -> preview -> (optional account PATCH) -> commit
-const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
-  const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
-  const authHeaders = getAuthHeaders();
+  // PIPELINE: stage -> preview -> (PATCH) -> commit
+  const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
+    const API_BASE_URL_REAL = 'https://quantnow-cu1v.onrender.com';
+    const authHeaders = getAuthHeaders();
 
-  // Only the rows the user kept checked
-  const toSubmit = (transactionsToSave || []).filter(t => t.includeInImport !== false);
+    if (importBusy) return;
+    setImportBusy(true);
 
-  if (toSubmit.length === 0) {
-    addAssistantMessage('Nothing selected to import.');
-    return;
-  }
+    // show the progress widget once
+    addAssistantMessage(<ImportProgressBubble />);
 
-  // --- Timers to help you debug where time is spent ---
-  const t0 = performance.now();
-  addAssistantMessage(`Staging ${toSubmit.length} transaction(s)...`);
+    const toSubmit = (transactionsToSave || []).filter(t => t.includeInImport !== false);
 
-  try {
-    // 1) Build payload for stage
-    const rows = toSubmit.map(tx => ({
-      sourceUid:   sourceUidOf(tx),
-      date:        tx.date || new Date().toISOString().slice(0,10),
-      description: tx.description || 'Imported',
-      amount:      Number(tx.amount || 0),
-    }));
-
-    // 2) Stage
-    const staged = await stageSelected(API_BASE_URL, authHeaders, rows);
-    const tStage = performance.now();
-    console.log('[IMPORT] Stage result:', staged, `(+${(tStage - t0).toFixed(0)}ms)`);
-    addAssistantMessage(`Stage complete (batch ${staged.batchId}). Inserted: ${staged.inserted}, duplicates skipped: ${staged.duplicates}.`);
-
-    // 3) Preview
-    addAssistantMessage('Analyzing & mapping accounts (preview)…');
-    const preview = await loadPreview(API_BASE_URL, authHeaders, staged.batchId);
-    const tPreview = performance.now();
-    console.log('[IMPORT] Preview items:', preview?.items?.length ?? 0, `(+${(tPreview - tStage).toFixed(0)}ms)`);
-
-    // 4) If backend couldn’t guess both sides, push the user’s chosen account
-// 4) If backend couldn’t guess both sides, push the user’s chosen account
-// 4) ALWAYS push a clear debit/credit mapping for each row.
-//    - Use the user's chosen account (original.account_id) as the non-cash leg
-//    - Balance against a Bank (preferred) or Cash account for the cash/bank leg
-let patchedCount = 0;
-
-// Pick a default cash/bank account for balancing
-// Pick a default cash/bank account for balancing, honoring the toggle
-// pickCashOrBank used during PATCH row mapping
-const pickCashOrBank = () => {
-  const toLower = (s?: string) => (s || '').toLowerCase();
-
-  const findBank = () =>
-    accounts.find(a =>
-      toLower(a.type) === 'asset' &&
-      /bank|cheque|current/.test(toLower(a.name))
-    );
-
-  const findCash = () =>
-    accounts.find(a =>
-      toLower(a.type) === 'asset' &&
-      /cash/.test(toLower(a.name))
-    );
-
-  if (forceCash) {
-    const cash = findCash();
-    if (cash) return Number(cash.id);
-    const bank = findBank();
-    return bank ? Number(bank.id) : null;
-  } else {
-    const bank = findBank();
-    if (bank) return Number(bank.id);
-    const cash = findCash();
-    return cash ? Number(cash.id) : null;
-  }
-};
-
-
-const cashOrBankId = pickCashOrBank();
-
-for (const p of preview.items) {
-  const original = toSubmit.find(t => sourceUidOf(t) === p.sourceUid);
-  if (!original) continue;
-
-  const chosenId = Number(original.account_id || 0) || null;
-  if (!chosenId) continue;
-
-  // Decide the side based on transaction type:
-  // - income:   Dr Bank/Cash, Cr chosen (e.g. Sales Revenue)
-  // - expense:  Dr chosen (expense), Cr Bank/Cash
-  // - debt:     Treat like liability increase: Dr Bank/Cash, Cr chosen (liability)
-  // If we can't find a bank/cash, still push the user's chosen side and let backend guess the other.
-  let debitId: number | null = null;
-  let creditId: number | null = null;
-
-  const ttype = (original.type || '').toLowerCase();
-  if (ttype === 'income') {
-    debitId = cashOrBankId;
-    creditId = chosenId;
-  } else if (ttype === 'expense') {
-    debitId = chosenId;
-    creditId = cashOrBankId;
-  } else if (ttype === 'debt') {
-    debitId = cashOrBankId;
-    creditId = chosenId;
-  } else {
-    // Unknown type → fall back to income-shape
-    debitId = cashOrBankId;
-    creditId = chosenId;
-  }
-
-  // If we have at least one side, push both where possible.
-  await patchRowMapping(
-    API_BASE_URL,
-    authHeaders,
-    p.rowId,
-    debitId || undefined,
-    creditId || undefined
-  );
-  patchedCount++;
-}
-
-addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
-
-
-    const tPatched = performance.now();
-    console.log('[IMPORT] Patch phase done:', { patchedCount }, `(+${(tPatched - tPreview).toFixed(0)}ms)`);
-
-    // 5) Commit
-    addAssistantMessage('Posting journal entries…');
-    const result = await commitBatch(API_BASE_URL, authHeaders, staged.batchId);
-    const tCommit = performance.now();
-    console.log('[IMPORT] Commit result:', result, `(+${(tCommit - tPatched).toFixed(0)}ms)`);
-    console.log('[IMPORT] Total time:', `${(tCommit - t0).toFixed(0)}ms`);
-
-    addAssistantMessage(`Journal posting done: ${result.posted} posted, ${result.skipped} skipped.`);
-
-    // Show the “Generate Financial Document” panel
-    setShowDocumentGeneration(true);
-  } catch (e: any) {
-    console.error('[IMPORT] Import failed:', e);
-    // If backend returned JSON {error: "..."} as text, show that text
-    const msg = e?.message || String(e);
-    addAssistantMessage(`Import failed: ${msg}`);
-  }
-};
-
-
-  // -------------- Generate Docs --------------
-  const handleGenerateFinancialDocument = async () => {
-    if (!selectedDocumentType) { addAssistantMessage('Please select a document type to generate.'); return; }
-    if (!documentStartDate || !documentEndDate) { addAssistantMessage('Please select both start and end dates for the document.'); return; }
-    if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to generate documents.'); return; }
-
-    setIsGeneratingDocument(true);
-    addUserMessage(`Please generate a ${selectedDocumentType} for the period ${documentStartDate} to ${documentEndDate}.`);
-    addAssistantMessage(
-      <div className="p-4 bg-blue-100 rounded-md shadow-sm">
-        <p className="font-semibold text-blue-800">Generating your financial document...</p>
-      </div>
-    );
+    if (toSubmit.length === 0) {
+      addAssistantMessage('Nothing selected to import.');
+      setImportBusy(false);
+      sendProgress('staging', 'done');
+      sendProgress('preview', 'done');
+      sendProgress('mapping', 'done');
+      sendProgress('posting', 'done');
+      return;
+    }
 
     try {
-      const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
-      const downloadUrl = `${API_BASE_URL}/generate-financial-document?documentType=${selectedDocumentType}&startDate=${documentStartDate}&endDate=${documentEndDate}`;
-      const response = await fetch(downloadUrl, { method: 'GET', headers: getAuthHeaders() });
+      // STAGING
+      sendProgress('staging', 'running');
+      const rows = toSubmit.map(tx => ({
+        sourceUid:   sourceUidOf(tx),
+        date:        tx.date || new Date().toISOString().slice(0,10),
+        description: tx.description || 'Imported',
+        amount:      Number(tx.amount || 0),
+      }));
+      const staged = await stageSelected(API_BASE_URL_REAL, authHeaders, rows);
+      sendProgress('staging', 'done');
+      addAssistantMessage(`Stage complete (batch ${staged.batchId}). Inserted: ${staged.inserted}, duplicates skipped: ${staged.duplicates}.`);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Failed to generate document: ${response.status} ${response.statusText} - ${errorText}`);
+      // PREVIEW
+      sendProgress('preview', 'running');
+      const preview = await loadPreview(API_BASE_URL_REAL, authHeaders, staged.batchId);
+      sendProgress('preview', 'done');
+
+      // MAPPING
+      sendProgress('mapping', 'running');
+      // pick cash/bank account (honor toggle)
+      const pickCashOrBank = () => {
+        const toLower = (s?: string) => (s || '').toLowerCase();
+
+        const findBank = () =>
+          accounts.find(a =>
+            toLower(a.type) === 'asset' &&
+            /bank|cheque|current/.test(toLower(a.name))
+          );
+
+        const findCash = () =>
+          accounts.find(a =>
+            toLower(a.type) === 'asset' &&
+            /cash/.test(toLower(a.name))
+          );
+
+        if (forceCash) {
+          const cash = findCash();
+          if (cash) return Number(cash.id);
+          const bank = findBank();
+          return bank ? Number(bank.id) : null;
+        } else {
+          const bank = findBank();
+          if (bank) return Number(bank.id);
+          const cash = findCash();
+          return cash ? Number(cash.id) : null;
+        }
+      };
+
+      const cashOrBankId = pickCashOrBank();
+      let patchedCount = 0;
+
+      for (const p of preview.items) {
+        const original = toSubmit.find(t => sourceUidOf(t) === p.sourceUid);
+        if (!original) continue;
+
+        const chosenId = Number(original.account_id || 0) || null;
+        if (!chosenId) continue;
+
+        let debitId: number | null = null;
+        let creditId: number | null = null;
+
+        const ttype = (original.type || '').toLowerCase();
+        if (ttype === 'income') {
+          debitId = cashOrBankId;
+          creditId = chosenId;
+        } else if (ttype === 'expense') {
+          debitId = chosenId;
+          creditId = cashOrBankId;
+        } else if (ttype === 'debt') {
+          debitId = cashOrBankId;
+          creditId = chosenId;
+        } else {
+          debitId = cashOrBankId;
+          creditId = chosenId;
+        }
+
+        await patchRowMapping(
+          API_BASE_URL_REAL,
+          authHeaders,
+          p.rowId,
+          debitId || undefined,
+          creditId || undefined
+        );
+        patchedCount++;
       }
 
-      const blob = await response.blob();
-      const filename = response.headers.get('Content-Disposition')?.split('filename=')[1]?.replace(/"/g, '') || `${selectedDocumentType}-${documentStartDate}-to-${documentEndDate}.pdf`;
+      addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
+      sendProgress('mapping', 'done');
 
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
-      window.URL.revokeObjectURL(url);
+      // POSTING
+      sendProgress('posting', 'running');
+      const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
+      sendProgress('posting', 'done');
 
+addAssistantMessage(
+  <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+    <div className="font-semibold mb-1">Journal posting complete</div>
+    <div>{result.posted} posted, {result.skipped} skipped.</div>
+    <div className="mt-2 text-sm">
+      To see financial statements, go to the{' '}
+      <Link to="/financials" className="underline font-medium text-green-800">
+        Financials
+      </Link>{' '}
+      tab.
+    </div>
+  </div>
+);
+
+    } catch (e: any) {
+      console.error('[IMPORT] Import failed:', e);
+      const msg = e?.message || String(e);
       addAssistantMessage(
-        <div className="p-4 bg-green-100 rounded-md shadow-sm">
-          <p className="font-semibold mb-2">Document generated and download initiated!</p>
-          <p className="text-sm">If the download did not start automatically, please check your browser's download settings.</p>
+        <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200">
+          <div className="font-semibold mb-1">Import failed</div>
+          <div className="text-sm">{msg}</div>
         </div>
       );
-    } catch (error: any) {
-      console.error('Error generating financial document:', error);
-      addAssistantMessage(`Failed to generate document: ${error.message || 'Unknown error'}. Please try again.`);
+      // flip the appropriate stage to error if we can’t tell which; mark overall
+      sendProgress('posting', 'error');
     } finally {
-      setIsGeneratingDocument(false);
-      setSelectedDocumentType('');
-      setDocumentStartDate(new Date().toISOString().split('T')[0]);
-      setDocumentEndDate(new Date().toISOString().split('T')[0]);
-      setShowDocumentGeneration(false);
+      setImportBusy(false);
     }
   };
 
   const handleUnifiedSend = () => {
     if (file) {
-      // Route automatically based on file type
       if (isExcelFile(file)) {
         handleExcelUpload();
       } else {
@@ -1657,56 +1587,17 @@ addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
     <>
       {/* Chat Messages Display Area */}
       <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-        {isLoadingAccounts && (
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="flex justify-start">
-            <div className="max-w-[70%] p-3 rounded-2xl shadow-md bg-gray-200 text-gray-800">Loading accounts...</div>
-          </motion.div>
-        )}
-
         {messages.map((msg) => (
-          <motion.div key={msg.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+          <motion.div
+            key={msg.id}
+            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
+            className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+          >
             <div className={`max-w-[70%] p-3 rounded-2xl shadow-md ${msg.sender === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}`}>
               {typeof msg.content === 'string' ? msg.content : msg.content}
             </div>
           </motion.div>
         ))}
-
-        {/* Document Generation Section */}
-        {showDocumentGeneration && (
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="mt-8 p-6 bg-white rounded-xl shadow-lg border border-gray-200 self-center w-full max-w-md mx-auto">
-            <h3 className="text-xl font-bold text-gray-800 mb-4">Generate Financial Document</h3>
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="documentType">Document Type</Label>
-                <Select id="documentType" value={selectedDocumentType} onValueChange={setSelectedDocumentType}>
-                  <SelectTrigger><SelectValue placeholder="Select Document Type" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="income-statement">Income Statement</SelectItem>
-                    <SelectItem value="balance-sheet">Balance Sheet</SelectItem>
-                    <SelectItem value="trial-balance">Trial Balance</SelectItem>
-                    <SelectItem value="cash-flow-statement">Cash Flow Statement</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="documentStartDate">Start Date</Label>
-                  <Input type="date" id="documentStartDate" value={documentStartDate} onChange={(e) => setDocumentStartDate(e.target.value)} />
-                </div>
-                <div>
-                  <Label htmlFor="documentEndDate">End Date</Label>
-                  <Input type="date" id="documentEndDate" value={documentEndDate} onChange={(e) => setDocumentEndDate(e.target.value)} />
-                </div>
-              </div>
-
-              <Button onClick={handleGenerateFinancialDocument} className="w-full inline-flex justify-center py-3 px-6 border border-transparent shadow-sm text-base font-medium rounded-md text-white bg-green-600 hover:bg-green-700" disabled={isGeneratingDocument}>
-                {isGeneratingDocument ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <FileText size={18} className="mr-2" />}
-                {isGeneratingDocument ? 'Generating...' : 'Generate Document'}
-              </Button>
-            </div>
-          </motion.div>
-        )}
       </div>
 
       {/* Chat Input Area */}
@@ -1719,19 +1610,18 @@ addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
             className="sr-only"
             onChange={handleFileChange}
             accept=".pdf,.xlsx,.xls,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            disabled={isLoadingAccounts || !isAuthenticated}
           />
-        <Button asChild variant="ghost" className="rounded-full p-2 text-gray-600 hover:bg-gray-100" aria-label="Attach File" disabled={isLoadingAccounts || !isAuthenticated}>
+          <Button asChild variant="ghost" className="rounded-full p-2 text-gray-600 hover:bg-gray-100" aria-label="Attach File">
             <span><Paperclip size={20} className="text-gray-600" /></span>
           </Button>
         </label>
 
         {isRecording ? (
-          <Button onClick={stopRecording} variant="ghost" className="rounded-full p-2 text-red-500 hover:bg-red-100 animate-pulse" aria-label="Stop Recording" disabled={isLoadingAccounts || !isAuthenticated}>
+          <Button onClick={stopRecording} variant="ghost" className="rounded-full p-2 text-red-500 hover:bg-red-100 animate-pulse" aria-label="Stop Recording">
             <StopCircle size={20} />
           </Button>
         ) : (
-          <Button onClick={startRecording} variant="ghost" className="rounded-full p-2 text-purple-600 hover:bg-purple-100" aria-label="Start Recording" disabled={isLoadingAccounts || !isAuthenticated}>
+          <Button onClick={startRecording} variant="ghost" className="rounded-full p-2 text-purple-600 hover:bg-purple-100" aria-label="Start Recording">
             <Mic size={20} />
           </Button>
         )}
@@ -1739,16 +1629,15 @@ addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
         <Input
           type="text"
           className="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder={isLoadingAccounts ? 'Loading accounts...' : 'Type a transaction description or command (/audio, /text)...'}
+          placeholder="Type a transaction description or command (/audio, /text)..."
           value={typedDescription}
           onChange={(e) => setTypedDescription(e.target.value)}
-          onKeyPress={(e) => { if (e.key === 'Enter' && (typedDescription.trim() || file)) handleUnifiedSend(); }}
-          disabled={isLoadingAccounts || !isAuthenticated}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (typedDescription.trim() || file)) handleUnifiedSend(); }}
         />
 
         <Button
           onClick={handleUnifiedSend}
-          disabled={(!typedDescription.trim() && !file && !isRecording && !audioBlob) || isLoadingAccounts || !isAuthenticated}
+          disabled={(!typedDescription.trim() && !file && !isRecording && !audioBlob)}
           className="p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700"
           aria-label="Send Message"
         >

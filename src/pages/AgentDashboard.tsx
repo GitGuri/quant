@@ -107,29 +107,68 @@ const AgentDashboard: React.FC = () => {
     amount: app.total_amount ?? 0,
   });
 
-  const deriveStats = (apps: Application[]): AgentStats => {
-    const count = apps.length;
-    return {
-      total_registrations: count,
-      successful_payments: Math.floor(count * 0.85),
-      pending_payments: Math.floor(count * 0.10),
-      failed_payments: Math.floor(count * 0.05),
-      monthly_target: 50,
-      monthlyRegistrations: [
-        { month: 'Jan', count: 5 },
-        { month: 'Feb', count: 8 },
-        { month: 'Mar', count: 12 },
-        { month: 'Apr', count: 10 },
-        { month: 'May', count },
-      ],
-      weeklyPerformance: [
-        { week: 'Week 1', count: 85 },
-        { week: 'Week 2', count: 92 },
-        { week: 'Week 3', count: 78 },
-        { week: 'Week 4', count: 95 },
-      ],
-    };
+const deriveStats = (apps: Application[]): AgentStats => {
+  const totalRegistrations = apps.length;
+
+  const successfulPayments = apps.filter(app => app.status === 'Completed').length;
+  const pendingPayments = apps.filter(app => app.status === 'Pending').length;
+  const failedPayments = apps.filter(app => app.status === 'Failed').length;
+
+  // Use a map to count registrations per month
+  const monthlyCounts: { [key: string]: number } = {};
+  apps.forEach(app => {
+    const date = app.created_at ? new Date(app.created_at) : null;
+    if (date) {
+      const month = date.toLocaleString('en-ZA', { month: 'short' });
+      monthlyCounts[month] = (monthlyCounts[month] || 0) + 1;
+    }
+  });
+
+  // Convert the map to an array for the chart
+  const monthlyRegistrations = Object.keys(monthlyCounts).map(month => ({
+    month,
+    count: monthlyCounts[month],
+  })).sort((a, b) => {
+    const monthOrder = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return monthOrder.indexOf(a.month) - monthOrder.indexOf(b.month);
+  });
+
+  // Calculate weekly registrations for the last 4 weeks
+  const weeklyCounts: { [key: string]: number } = {};
+  const today = new Date();
+  const startOfLastFourWeeks = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 28);
+  const weekNumber = (date: Date) => Math.ceil(date.getDate() / 7);
+
+  apps.forEach(app => {
+    const date = app.created_at ? new Date(app.created_at) : null;
+    if (date && date >= startOfLastFourWeeks) {
+      const week = `Week ${weekNumber(date)}`;
+      weeklyCounts[week] = (weeklyCounts[week] || 0) + 1;
+    }
+  });
+
+  const weeklyPerformance = Object.keys(weeklyCounts).map(week => ({
+    week,
+    count: weeklyCounts[week],
+  })).sort((a, b) => {
+    const weekA = parseInt(a.week.replace('Week ', ''));
+    const weekB = parseInt(b.week.replace('Week ', ''));
+    return weekA - weekB;
+  });
+
+  // Monthly target is a business metric, not derived from data, so it remains a fixed value.
+  const monthlyTarget = 50;
+
+  return {
+    total_registrations: totalRegistrations,
+    successful_payments: successfulPayments,
+    pending_payments: pendingPayments,
+    failed_payments: failedPayments,
+    monthly_target: monthlyTarget,
+    monthlyRegistrations: monthlyRegistrations,
+    weeklyPerformance: weeklyPerformance,
   };
+};
 
   // fetch
   useEffect(() => {
@@ -198,15 +237,15 @@ const AgentDashboard: React.FC = () => {
 
   const barChartOptions = {
     responsive: true,
-    plugins: { legend: { position: 'top' as const }, title: { display: true, text: 'Monthly Registrations (Mocked)' } },
-    scales: { y: { beginAtZero: true, ticks: { stepSize: 5 } } },
+    plugins: { legend: { position: 'top' as const }, title: { display: true, text: 'Monthly Registrations' } },
+    scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
   };
 
   const lineChartData = useMemo(() => ({
     labels: agentStats?.weeklyPerformance.map(w => w.week) || [],
     datasets: [
       {
-        label: 'Performance %',
+        label: 'Registrations',
         data: agentStats?.weeklyPerformance.map(w => w.count) || [],
         fill: false,
         borderColor: 'rgb(75, 192, 192)',
@@ -218,7 +257,8 @@ const AgentDashboard: React.FC = () => {
 
   const lineChartOptions = {
     responsive: true,
-    plugins: { legend: { position: 'top' as const }, title: { display: true, text: 'Weekly Performance Trend (Mocked)' } },
+    plugins: { legend: { position: 'top' as const }, title: { display: true, text: 'Weekly Registrations Trend' } },
+    scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
   };
 
   const doughnutChartData = useMemo(() => ({
@@ -239,7 +279,7 @@ const AgentDashboard: React.FC = () => {
 
   const doughnutChartOptions = {
     responsive: true,
-    plugins: { legend: { position: 'top' as const }, title: { display: true, text: 'Payment Status Breakdown (Mocked)' } },
+    plugins: { legend: { position: 'top' as const }, title: { display: true, text: 'Payment Status Breakdown' } },
     cutout: '50%' as const,
   };
 
@@ -425,7 +465,7 @@ const AgentDashboard: React.FC = () => {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold text-green-600">{agentStats.successful_payments}</div>
-                  <p className="text-xs text-muted-foreground">Processed (Mocked)</p>
+                  <p className="text-xs text-muted-foreground">Processed</p>
                 </CardContent>
               </Card>
 
@@ -461,32 +501,50 @@ const AgentDashboard: React.FC = () => {
             </div>
 
 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <Card className="lg:col-span-2">
-                <CardHeader><CardTitle>Registration Trend</CardTitle><CardDescription>Your registration activity (Mocked).</CardDescription></CardHeader>
-                <CardContent>
-                  <div className="h-[300px]"> {/* 👈 Added wrapper with fixed height */}
-                    <Bar data={barChartData} options={barChartOptions} />
-                  </div>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader><CardTitle>Payment Status</CardTitle><CardDescription>Distribution of outcomes (Mocked).</CardDescription></CardHeader>
-                <CardContent>
-                  <div className="h-[300px]"> {/* 👈 Added wrapper with fixed height */}
-                    <Doughnut data={doughnutChartData} options={doughnutChartOptions} />
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+  <Card className="lg:col-span-2">
+    <CardHeader><CardTitle>Registration Trend</CardTitle><CardDescription>Your registration activity.</CardDescription></CardHeader>
+    <CardContent>
+      <div className="h-full">
+        {agentStats.monthlyRegistrations.length > 0 ? (
+          <Bar data={barChartData} options={barChartOptions} />
+        ) : (
+          <div className="flex items-center justify-center h-full text-muted-foreground">
+            No monthly registration data available.
+          </div>
+        )}
+      </div>
+    </CardContent>
+  </Card>
+  <Card>
+    <CardHeader><CardTitle>Payment Status</CardTitle><CardDescription>Distribution of outcomes.</CardDescription></CardHeader>
+    <CardContent>
+      <div className="h-full">
+        {agentStats.total_registrations > 0 ? (
+          <Doughnut data={doughnutChartData} options={doughnutChartOptions} />
+        ) : (
+          <div className="flex items-center justify-center h-full text-muted-foreground">
+            No payment data available.
+          </div>
+        )}
+      </div>
+    </CardContent>
+  </Card>
+</div>
 
-            <Card>
-              <CardHeader><CardTitle>Weekly Performance</CardTitle><CardDescription>Your performance trend (Mocked).</CardDescription></CardHeader>
-              <CardContent>
-                <div className="h-[300px]"> {/* 👈 Added wrapper with fixed height */}
-                  <Line data={lineChartData} options={lineChartOptions} />
-                </div>
-              </CardContent>
-            </Card>
+            <Card>
+              <CardHeader><CardTitle>Weekly Performance</CardTitle><CardDescription>Your performance trend.</CardDescription></CardHeader>
+              <CardContent>
+                <div className="h-full">
+                  {agentStats.weeklyPerformance.length > 0 ? (
+                    <Line data={lineChartData} options={lineChartOptions} />
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-muted-foreground">
+                      No weekly performance data available.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
           </motion.div>
         )}
 
@@ -589,37 +647,37 @@ const AgentDashboard: React.FC = () => {
         )}
       </div>
 
-     {/* Form dialog (View/Edit/New) */}
-{/* Form dialog (View/Edit/New) */}
-<Dialog open={isFormOpen} onOpenChange={(o) => !o && closeForm()}>
-  <DialogContent
-    // full screen modal (overrides shadcn's sm:max-w)
-    className="w-screen h-screen max-w-none sm:max-w-none p-0 overflow-hidden rounded-none"
-  >
-    <DialogHeader className="px-6 pt-6 pb-2">
-      <DialogTitle>
-        {formMode === 'view' ? 'View Application' : formMode === 'edit' ? 'Edit Application' : 'New Application'}
-      </DialogTitle>
-      <DialogDescription>
-        {formMode === 'view' ? 'Read-only preview of the application.' : 'Update details and save.'}
-      </DialogDescription>
-    </DialogHeader>
+      {/* Form dialog (View/Edit/New) */}
+      {/* Form dialog (View/Edit/New) */}
+      <Dialog open={isFormOpen} onOpenChange={(o) => !o && closeForm()}>
+        <DialogContent
+          // full screen modal (overrides shadcn's sm:max-w)
+          className="w-screen h-screen max-w-none sm:max-w-none p-0 overflow-hidden rounded-none"
+        >
+          <DialogHeader className="px-6 pt-6 pb-2">
+            <DialogTitle>
+              {formMode === 'view' ? 'View Application' : formMode === 'edit' ? 'Edit Application' : 'New Application'}
+            </DialogTitle>
+            <DialogDescription>
+              {formMode === 'view' ? 'Read-only preview of the application.' : 'Update details and save.'}
+            </DialogDescription>
+          </DialogHeader>
 
-    {/* fills remaining height of the full-screen sheet */}
-    <div className="h-[calc(100vh-88px)] overflow-auto px-4 pb-4">
-      {currentApp && (
-        <CustomerFormFullPage
-          application={currentApp}
-          embed                // 👈 NEW: tell the form it lives inside a modal
-          // @ts-expect-error if you wired a mode prop
-          mode={formMode}
-          onSave={async (a: any) => { try { await saveApp(a); } catch (e: any) { alert(e.message); } }}
-          onCancel={closeForm}
-        />
-      )}
-    </div>
-  </DialogContent>
-</Dialog>
+          {/* fills remaining height of the full-screen sheet */}
+          <div className="h-[calc(100vh-88px)] overflow-auto px-4 pb-4">
+            {currentApp && (
+              <CustomerFormFullPage
+                application={currentApp}
+                embed
+                // @ts-expect-error if you wired a mode prop
+                mode={formMode}
+                onSave={async (a: any) => { try { await saveApp(a); } catch (e: any) { alert(e.message); } }}
+                onCancel={closeForm}
+              />
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
 
       {/* Delete Confirmation */}

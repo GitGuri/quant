@@ -6,10 +6,10 @@ import { SupplierManagement } from './SupplierManagement'
 export function SystemTabs () {
   return (
     <Tabs defaultValue='customers' className='w-full'>
-      <TabsList className='grid w-full grid-cols-3'>
+      <TabsList className='grid w-full grid-cols-2'>
         <TabsTrigger value='customers'>Customers</TabsTrigger>
         <TabsTrigger value='suppliers'>Suppliers</TabsTrigger>
-        <TabsTrigger value='products'>Products</TabsTrigger>
+        //<TabsTrigger value='products'>Products</TabsTrigger>
       </TabsList>
 
       <TabsContent value='customers' className='space-y-4'>

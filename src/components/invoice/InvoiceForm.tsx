@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,27 +14,26 @@ import { Textarea } from '@/components/ui/textarea';
 import { Plus, XCircle, Loader2, ChevronLeft } from 'lucide-react';
 
 import { useToast } from '@/components/ui/use-toast';
-import { useAuth } from '../../AuthPage'; // Import useAuth
+import { useAuth } from '../../AuthPage';
 
-// --- ADD/MOVE THESE INTERFACE DEFINITIONS HERE ---
-// These interfaces are now defined and exported directly from InvoiceForm.tsx
+// --- Interfaces ---
 export interface InvoiceLineItem {
-  id?: string; // Optional for new line items, populated on edit
-  product_service_id: string | null; // Can be null for custom items
-  product_service_name?: string; // For display, comes from backend JOIN (not sent to backend)
+  id?: string;
+  product_service_id: string | null;
+  product_service_name?: string;
   description: string;
   quantity: number;
   unit_price: number;
   line_total: number;
-  tax_rate: number; // Decimal (e.g., 0.15)
+  tax_rate: number;
 }
 
 export interface Invoice {
   id: string;
   invoice_number: string;
-  customer_id: string | null; // Can be null if customer_name is used
+  customer_id: string | null;
   customer_name: string;
-  customer_email?: string; // Optional, might be from backend
+  customer_email?: string;
   invoice_date: string;
   due_date: string;
   total_amount: number;
@@ -43,14 +42,13 @@ export interface Invoice {
   notes: string | null;
   created_at: string;
   updated_at: string;
-  line_items?: InvoiceLineItem[]; // Optional in case it's not populated initially
+  line_items?: InvoiceLineItem[];
 }
 
-// --- InvoiceFormData and other interfaces remain as is ---
 interface InvoiceFormData {
   invoice_number: string;
-  customer_id: string | null; // Null if new customer or not yet selected
-  customer_name_manual?: string; // For new or free-text customer entry
+  customer_id: string | null;
+  customer_name_manual?: string;
   invoice_date: string;
   due_date: string;
   status: string;
@@ -76,38 +74,85 @@ interface ProductService {
 interface Customer {
   id: string;
   name: string;
-  // email: string; // Not strictly needed for form, but good to have if we ever pre-fill
 }
 
 interface InvoiceFormProps {
-  invoice?: Invoice; // Now using the locally defined Invoice interface
+  invoice?: Invoice;
   onClose: () => void;
   onSubmitSuccess: () => void;
 }
 
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // Define your API base URL
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 const generateInvoiceNumber = () => {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  const seconds = String(now.getSeconds()).padStart(2, '0');
-  const randomSuffix = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
-  return `INV-${year}${month}${day}-${hours}${minutes}${seconds}-${randomSuffix}`;
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  const r = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+  return `INV-${y}${m}${d}-${hh}${mm}${ss}-${r}`;
 };
 
 const VAT_OPTIONS = [
-  { value: 0.00, label: '0%' },
+  { value: 0.0, label: '0%' },
   { value: 0.15, label: '15%' },
 ];
 
+// ===== Banking helpers (same pattern as quotations) =====
+type BankDetails = {
+  accountName: string;
+  bankName: string;
+  accountNumber: string;
+  branchCode: string;
+  accountType?: string;
+  swift?: string;
+  referenceHint?: string;
+};
+
+const INVOICE_BANK_LOCAL_KEY = 'invoiceBankDefaults_v1';
+
+function renderBankBlock(bd: Partial<BankDetails>, currencySymbol: string) {
+  const lines: string[] = [];
+  if (bd.accountName) lines.push(`Account Name: ${bd.accountName}`);
+  if (bd.bankName) lines.push(`Bank: ${bd.bankName}`);
+  if (bd.accountNumber) lines.push(`Account Number: ${bd.accountNumber}`);
+  if (bd.branchCode) lines.push(`Branch Code: ${bd.branchCode}`);
+  if (bd.accountType) lines.push(`Account Type: ${bd.accountType}`);
+  if (bd.swift) lines.push(`SWIFT/BIC: ${bd.swift}`);
+  if (bd.referenceHint) lines.push(`Reference: ${bd.referenceHint}`);
+
+  if (!lines.length) return '';
+  return [
+    '— Payment Details —',
+    `Preferred Currency: ${currencySymbol}`,
+    ...lines,
+    '',
+  ].join('\n');
+}
+
+function upsertBankBlockIntoNotes(notes: string, newBlock: string) {
+  const startMarker = '— Payment Details —';
+  const re = new RegExp(`${startMarker}[\\s\\S]*?$`, 'm');
+  const trimmed = (notes || '').trim();
+  if (!newBlock.trim()) {
+    // remove if exists
+    return trimmed.replace(re, '').trim();
+  }
+  if (trimmed.includes(startMarker)) {
+    // replace existing block
+    return trimmed.replace(re, newBlock).trim();
+  }
+  // append
+  return [trimmed, newBlock].filter(Boolean).join('\n\n').trim();
+}
+
 export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormProps) {
   const { toast } = useToast();
-  const { isAuthenticated } = useAuth(); // Get authentication status
-  const token = localStorage.getItem('token'); // Retrieve the token
+  const { isAuthenticated } = useAuth();
+  const token = localStorage.getItem('token');
 
   const getDefaultDueDate = (invoiceDateString: string) => {
     const invoiceDate = new Date(invoiceDateString);
@@ -138,26 +183,55 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
   const [customerSuggestions, setCustomerSuggestions] = useState<Customer[]>([]);
   const [isSearchingCustomers, setIsSearchingCustomers] = useState(false);
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
-
   const customerInputRef = useRef<HTMLInputElement>(null);
 
+  // debounce
   const useDebounce = (value: string, delay: number) => {
     const [debouncedValue, setDebouncedValue] = useState(value);
     useEffect(() => {
-      const handler = setTimeout(() => {
-        setDebouncedValue(value);
-      }, delay);
-      return () => { clearTimeout(handler); };
+      const handler = setTimeout(() => setDebouncedValue(value), delay);
+      return () => clearTimeout(handler);
     }, [value, delay]);
     return debouncedValue;
   };
-
   const debouncedCustomerSearchQuery = useDebounce(customerSearchQuery, 500);
 
+  // ===== Banking UI state =====
+  const [bankDetails, setBankDetails] = useState<BankDetails>(() => {
+    try {
+      const raw = localStorage.getItem(INVOICE_BANK_LOCAL_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return {
+      accountName: '',
+      bankName: '',
+      accountNumber: '',
+      branchCode: '',
+      accountType: '',
+      swift: '',
+      referenceHint: 'Please use the invoice number as reference',
+    };
+  });
+  const [includeBankInNotes, setIncludeBankInNotes] = useState(true);
+  const [saveBankAsDefault, setSaveBankAsDefault] = useState(false);
+
+  const bankPreview = useMemo(
+    () => (includeBankInNotes ? renderBankBlock(bankDetails, formData.currency) : ''),
+    [includeBankInNotes, bankDetails, formData.currency]
+  );
+
+  useEffect(() => {
+    if (saveBankAsDefault) {
+      try {
+        localStorage.setItem(INVOICE_BANK_LOCAL_KEY, JSON.stringify(bankDetails));
+      } catch {}
+    }
+  }, [saveBankAsDefault, bankDetails]);
+
+  // Products load + edit hydrate
   useEffect(() => {
     const fetchProducts = async () => {
-      if (!token) {
-        console.warn('No token found. User is not authenticated for products/services.');
+      if (!isAuthenticated || !token) {
         setProductsServices([]);
         return;
       }
@@ -165,118 +239,121 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
         const res = await fetch(`${API_BASE_URL}/api/products`, {
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`, // Include the JWT token
+            Authorization: `Bearer ${token}`,
           },
         });
         if (!res.ok) {
-          const errorData = await res.json();
-          throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${res.status}`);
         }
         const data: ProductService[] = await res.json();
         setProductsServices(data);
-      } catch (error: any) {
-        console.error('Failed to fetch products/services:', error);
+      } catch (e: any) {
+        console.error('Failed to fetch products/services:', e);
         toast({
           title: 'Error',
-          description: error.message || 'Failed to load products and services. Please try again.',
+          description: e.message || 'Failed to load products and services.',
           variant: 'destructive',
         });
       }
     };
 
-    if (isAuthenticated && token) { // Only fetch if authenticated
+    if (isAuthenticated && token) {
       fetchProducts();
     } else {
       setProductsServices([]);
     }
 
-
+    // Hydrate when editing
     if (invoice) {
       setFormData({
         invoice_number: invoice.invoice_number || '',
         customer_id: invoice.customer_id || null,
         customer_name_manual: invoice.customer_id ? '' : (invoice.customer_name || ''),
-        invoice_date: invoice.invoice_date ? new Date(invoice.invoice_date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-        due_date: invoice.due_date ? new Date(invoice.due_date).toISOString().split('T')[0] : getDefaultDueDate(invoice.invoice_date || initialInvoiceDate),
+        invoice_date: invoice.invoice_date
+          ? new Date(invoice.invoice_date).toISOString().split('T')[0]
+          : initialInvoiceDate,
+        due_date: invoice.due_date
+          ? new Date(invoice.due_date).toISOString().split('T')[0]
+          : getDefaultDueDate(invoice.invoice_date || initialInvoiceDate),
         status: invoice.status || 'Draft',
         currency: invoice.currency || 'ZAR',
         notes: invoice.notes || '',
-        line_items: invoice.line_items?.map((item: any) => ({
-          ...item,
-          quantity: parseFloat(item.quantity) || 0,
-          unit_price: parseFloat(item.unit_price) || 0,
-          tax_rate: parseFloat(item.tax_rate) || 0,
-          line_total: parseFloat(item.line_total) || 0,
-        })) || [],
+        line_items:
+          invoice.line_items?.map((item: any) => ({
+            ...item,
+            quantity: parseFloat(item.quantity) || 0,
+            unit_price: parseFloat(item.unit_price) || 0,
+            tax_rate: parseFloat(item.tax_rate) || 0,
+            line_total: parseFloat(item.line_total) || 0,
+          })) || [],
       });
 
       if (invoice.customer_id) {
         const fetchInitialCustomer = async () => {
-          if (!token) return; // Ensure token exists for this fetch
+          if (!isAuthenticated || !token) return;
           try {
             const res = await fetch(`${API_BASE_URL}/api/customers/${invoice.customer_id}`, {
               headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`, // Include the JWT token
+                Authorization: `Bearer ${token}`,
               },
             });
             if (res.ok) {
               const data = await res.json();
               setCustomerSearchQuery(data.name);
             } else {
-              console.warn(`Customer with ID ${invoice.customer_id} not found.`);
               setCustomerSearchQuery(invoice.customer_name || '');
             }
-          } catch (err) {
-            console.error('Failed to fetch initial customer:', err);
+          } catch {
             setCustomerSearchQuery(invoice.customer_name || '');
           }
         };
-        if (isAuthenticated && token) { // Only fetch if authenticated
-          fetchInitialCustomer();
-        }
+        fetchInitialCustomer();
       } else if (invoice.customer_name) {
         setCustomerSearchQuery(invoice.customer_name);
       }
     }
-  }, [invoice, toast, initialInvoiceDate, isAuthenticated, token]); // Add isAuthenticated and token to dependencies
+  }, [invoice, toast, initialInvoiceDate, isAuthenticated, token]);
 
+  // Customer suggestions
   useEffect(() => {
     const fetchCustomerSuggestions = async () => {
+      if (!isAuthenticated || !token) {
+        setCustomerSuggestions([]);
+        setIsSearchingCustomers(false);
+        setShowCustomerSuggestions(false);
+        return;
+      }
       if (debouncedCustomerSearchQuery.length < 2) {
         setCustomerSuggestions([]);
         setIsSearchingCustomers(false);
         setShowCustomerSuggestions(false);
         return;
       }
-      if (!token) {
-        console.warn('No token found. User is not authenticated for customer search.');
-        setCustomerSuggestions([]);
-        setIsSearchingCustomers(false);
-        setShowCustomerSuggestions(false);
-        return;
-      }
-
       setIsSearchingCustomers(true);
       setShowCustomerSuggestions(true);
       try {
-        const res = await fetch(`${API_BASE_URL}/api/customers/search?query=${encodeURIComponent(debouncedCustomerSearchQuery)}`, {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`, // Include the JWT token
-          },
-        });
+        const res = await fetch(
+          `${API_BASE_URL}/api/customers/search?query=${encodeURIComponent(debouncedCustomerSearchQuery)}`,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
         if (!res.ok) {
-          const errorData = await res.json();
-          throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${res.status}`);
         }
         const data: Customer[] = await res.json();
         setCustomerSuggestions(data);
-      } catch (error: any) {
-        console.error('Failed to fetch customer suggestions:', error);
+      } catch (e: any) {
+        console.error('Failed to fetch customer suggestions:', e);
         toast({
           title: 'Error',
-          description: error.message || 'Failed to search customers. Please try again.',
+          description: e.message || 'Failed to search customers.',
           variant: 'destructive',
         });
         setCustomerSuggestions([]);
@@ -285,23 +362,21 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
       }
     };
 
-    if (isAuthenticated && token) { // Only fetch if authenticated
-      fetchCustomerSuggestions();
-    } else {
+    if (isAuthenticated && token) fetchCustomerSuggestions();
+    else {
       setCustomerSuggestions([]);
       setIsSearchingCustomers(false);
       setShowCustomerSuggestions(false);
     }
-  }, [debouncedCustomerSearchQuery, toast, isAuthenticated, token]); // Add isAuthenticated and token to dependencies
+  }, [debouncedCustomerSearchQuery, toast, isAuthenticated, token]);
 
+  // totals
   useEffect(() => {
-    const calculatedTotal = formData.line_items.reduce(
-      (sum, item) => sum + (item.line_total || 0),
-      0
-    );
-    setTotalAmount(calculatedTotal);
+    const total = formData.line_items.reduce((sum, item) => sum + (item.line_total || 0), 0);
+    setTotalAmount(total);
   }, [formData.line_items]);
 
+  // handlers
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
@@ -318,15 +393,21 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
     setShowCustomerSuggestions(true);
   };
 
+  useEffect(() => {
+    const onDocClick = (event: MouseEvent) => {
+      if (customerInputRef.current && !customerInputRef.current.contains(event.target as Node)) {
+        setShowCustomerSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
   const handleCustomerSuggestionClick = (customer: Customer | 'free-text-entry') => {
     if (customer === 'free-text-entry') {
-      const trimmedQuery = customerSearchQuery.trim();
-      setFormData(prev => ({
-        ...prev,
-        customer_id: null,
-        customer_name_manual: trimmedQuery,
-      }));
-      setCustomerSearchQuery(trimmedQuery);
+      const trimmed = customerSearchQuery.trim();
+      setFormData(prev => ({ ...prev, customer_id: null, customer_name_manual: trimmed }));
+      setCustomerSearchQuery(trimmed);
     } else {
       const selected = customerSuggestions.find(c => c.id === customer.id);
       if (selected) {
@@ -338,64 +419,50 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
     setShowCustomerSuggestions(false);
   };
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (customerInputRef.current && !customerInputRef.current.contains(event.target as Node)) {
-        setShowCustomerSuggestions(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, []);
-
   const handleLineItemChange = (index: number, field: keyof InvoiceLineItem, value: any) => {
-    const updatedItems = [...formData.line_items];
-    let itemToUpdate = { ...updatedItems[index] };
+    const updated = [...formData.line_items];
+    let item = { ...updated[index] };
 
-    if (['quantity', 'unit_price', 'tax_rate'].includes(field)) {
-        const parsedValue = parseFloat(value);
-        itemToUpdate[field] = isNaN(parsedValue) ? 0 : parsedValue;
+    if (field === 'quantity' || field === 'unit_price' || field === 'tax_rate') {
+      const parsed = parseFloat(value);
+      (item as any)[field] = isNaN(parsed) ? 0 : parsed;
     } else {
-      itemToUpdate[field] = value;
+      (item as any)[field] = value;
     }
 
-    const qty = itemToUpdate.quantity;
-    const price = itemToUpdate.unit_price;
-    const taxRate = itemToUpdate.tax_rate;
+    const qty = item.quantity || 0;
+    const price = item.unit_price || 0;
+    const tax = item.tax_rate || 0;
+    item.line_total = parseFloat((qty * price * (1 + tax)).toFixed(2));
 
-    const calculatedLineTotal = qty * price * (1 + taxRate);
-    itemToUpdate.line_total = parseFloat(calculatedLineTotal.toFixed(2));
-
-    updatedItems[index] = itemToUpdate;
-    setFormData(prev => ({ ...prev, line_items: updatedItems }));
+    updated[index] = item;
+    setFormData(prev => ({ ...prev, line_items: updated }));
   };
 
   const handleProductServiceSelect = (index: number, productId: string) => {
     const product = productsServices.find(p => p.id === productId);
-    const updatedItems = [...formData.line_items];
-    const item = { ...updatedItems[index] };
+    const updated = [...formData.line_items];
+    const item = { ...updated[index] };
 
     if (product) {
       item.product_service_id = product.id;
       item.description = product.name;
       item.unit_price = product.price;
       item.quantity = item.quantity || 1;
-      item.tax_rate = product.vatRate ?? 0.00;
+      item.tax_rate = product.vatRate ?? 0.0;
       item.line_total = parseFloat((item.quantity * item.unit_price * (1 + item.tax_rate)).toFixed(2));
     } else {
       item.product_service_id = null;
-      if (updatedItems[index].product_service_id && productsServices.some(p => p.id === updatedItems[index].product_service_id)) {
+      if (updated[index].product_service_id && productsServices.some(p => p.id === updated[index].product_service_id)) {
         item.description = '';
       }
       item.unit_price = 0;
       item.quantity = 0;
-      item.tax_rate = 0.00;
+      item.tax_rate = 0.0;
       item.line_total = 0;
     }
-    updatedItems[index] = item;
-    setFormData(prev => ({ ...prev, line_items: updatedItems }));
+    updated[index] = item;
+    setFormData(prev => ({ ...prev, line_items: updated }));
   };
 
   const addLineItem = () => {
@@ -409,7 +476,7 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
           quantity: 0,
           unit_price: 0,
           line_total: 0,
-          tax_rate: 0.15,
+          tax_rate: 0,
         },
       ],
     }));
@@ -422,12 +489,12 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
     }));
   };
 
+  // ===== submit =====
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
-    if (!token) {
-      console.warn('No token found. Cannot submit invoice.');
+    if (!isAuthenticated || !token) {
       toast({
         title: 'Authentication Error',
         description: 'You are not authenticated. Please log in to create/update invoices.',
@@ -437,12 +504,7 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
       return;
     }
 
-    if (
-      !formData.invoice_number ||
-      !formData.invoice_date ||
-      !formData.due_date ||
-      formData.line_items.length === 0
-    ) {
+    if (!formData.invoice_number || !formData.invoice_date || !formData.due_date || formData.line_items.length === 0) {
       toast({
         title: 'Validation Error',
         description: 'Please fill in all required invoice details and add at least one line item.',
@@ -462,10 +524,8 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
       return;
     }
 
-    const invalidLineItem = formData.line_items.some(item =>
-      !item.description?.trim() || item.quantity <= 0 || item.unit_price <= 0
-    );
-    if (invalidLineItem) {
+    const invalid = formData.line_items.some(i => !i.description?.trim() || i.quantity <= 0 || i.unit_price <= 0);
+    if (invalid) {
       toast({
         title: 'Line Item Error',
         description: 'Each line item must have a description, a positive quantity, and a positive unit price.',
@@ -475,26 +535,39 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
       return;
     }
 
-    const payload: Omit<InvoiceFormData, 'customer_name_manual'> & { customer_name?: string; total_amount: number; } = {
-        ...formData,
-        total_amount: totalAmount,
+    // Build notes incl. Payment Details block
+    let finalNotes = formData.notes || '';
+    if (includeBankInNotes) {
+      const block = renderBankBlock(bankDetails, formData.currency);
+      finalNotes = upsertBankBlockIntoNotes(finalNotes, block);
+    } else {
+      // remove if user disabled appending
+      finalNotes = upsertBankBlockIntoNotes(finalNotes, '');
+    }
+
+    const total_amount = formData.line_items.reduce((sum, i) => sum + (i.line_total || 0), 0);
+
+    const payload: Omit<InvoiceFormData, 'customer_name_manual'> & { customer_name?: string; total_amount: number } = {
+      ...formData,
+      notes: finalNotes,
+      total_amount,
     };
 
     if (payload.customer_id) {
-        delete payload.customer_name_manual;
+      delete (payload as any).customer_name_manual;
     } else {
-        payload.customer_name = formData.customer_name_manual?.trim();
-        if (!payload.customer_name) {
-            toast({
-                title: 'Validation Error',
-                description: 'Customer name is required for new customers if no existing customer is selected.',
-                variant: 'destructive',
-            });
-            setIsLoading(false);
-            return;
-        }
-        delete payload.customer_id;
-        delete payload.customer_name_manual;
+      payload.customer_name = formData.customer_name_manual?.trim();
+      if (!payload.customer_name) {
+        toast({
+          title: 'Validation Error',
+          description: 'Customer name is required for new customers if no existing customer is selected.',
+          variant: 'destructive',
+        });
+        setIsLoading(false);
+        return;
+      }
+      delete (payload as any).customer_id;
+      delete (payload as any).customer_name_manual;
     }
 
     const url = invoice ? `${API_BASE_URL}/api/invoices/${invoice.id}` : `${API_BASE_URL}/api/invoices`;
@@ -502,10 +575,10 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
 
     try {
       const response = await fetch(url, {
-        method: method,
+        method,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`, // Include the JWT token
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(payload),
       });
@@ -513,6 +586,12 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error occurred.' }));
         throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
+      }
+
+      if (saveBankAsDefault) {
+        try {
+          localStorage.setItem(INVOICE_BANK_LOCAL_KEY, JSON.stringify(bankDetails));
+        } catch {}
       }
 
       toast({
@@ -523,11 +602,11 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
 
       onSubmitSuccess();
       onClose();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Submission error:', error);
       toast({
         title: 'Submission Failed',
-        description: `Failed to ${invoice ? 'update' : 'create'} invoice: ${error instanceof Error ? error.message : String(error)}.`,
+        description: `Failed to ${invoice ? 'update' : 'create'} invoice: ${error?.message || String(error)}.`,
         variant: 'destructive',
       });
     } finally {
@@ -535,39 +614,35 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
     }
   };
 
+  // ===== render =====
   return (
-    <form onSubmit={handleSubmit} className='space-y-6'>
+    <form onSubmit={handleSubmit} className="space-y-6">
       <Card>
         <CardHeader className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={onClose}
-              className="rounded-full"
-            >
+            <Button type="button" variant="ghost" size="icon" onClick={onClose} className="rounded-full" disabled={isLoading}>
               <ChevronLeft className="h-6 w-6" />
             </Button>
             <CardTitle>Invoice Details</CardTitle>
           </div>
         </CardHeader>
-        <CardContent className='space-y-4'>
-          <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <Label htmlFor='invoice_number'>Invoice Number</Label>
+              <Label htmlFor="invoice_number">Invoice Number</Label>
               <Input
-                id='invoice_number'
-                name='invoice_number'
+                id="invoice_number"
+                name="invoice_number"
                 value={formData.invoice_number}
                 onChange={handleInputChange}
-                placeholder='e.g., INV-2024-001'
+                placeholder="e.g., INV-2024-001"
                 required
+                disabled={isLoading}
               />
             </div>
             <div>
-              <Label htmlFor='customer_search'>Customer</Label>
-              <div className="relative">
+              <Label htmlFor="customer_search">Customer</Label>
+              <div className="relative" ref={customerInputRef}>
                 <Input
                   id="customer_search"
                   type="text"
@@ -576,8 +651,8 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
                   onFocus={() => setShowCustomerSuggestions(true)}
                   placeholder="Search or enter customer name"
                   className="mb-2"
-                  ref={customerInputRef}
                   autoComplete="off"
+                  disabled={isLoading}
                 />
                 {isSearchingCustomers && customerSearchQuery.length >= 2 && (
                   <div className="flex items-center text-sm text-gray-500 mt-1">
@@ -587,7 +662,6 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
                 {customerSearchQuery.length < 2 && !formData.customer_id && !isSearchingCustomers && (
                   <p className="text-sm text-muted-foreground mt-1">Type at least 2 characters to search for customers.</p>
                 )}
-
                 {showCustomerSuggestions && (customerSuggestions.length > 0 || customerSearchQuery.length >= 2) && (
                   <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-y-auto mt-1">
                     {customerSuggestions.length > 0 ? (
@@ -627,55 +701,59 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
               </div>
             </div>
             <div>
-              <Label htmlFor='invoice_date'>Invoice Date</Label>
+              <Label htmlFor="invoice_date">Invoice Date</Label>
               <Input
-                id='invoice_date'
-                name='invoice_date'
-                type='date'
+                id="invoice_date"
+                name="invoice_date"
+                type="date"
                 value={formData.invoice_date}
                 onChange={handleInputChange}
                 required
+                disabled={isLoading}
               />
             </div>
             <div>
-              <Label htmlFor='due_date'>Due Date</Label>
+              <Label htmlFor="due_date">Due Date</Label>
               <Input
-                id='due_date'
-                name='due_date'
-                type='date'
+                id="due_date"
+                name="due_date"
+                type="date"
                 value={formData.due_date}
                 onChange={handleInputChange}
                 required
+                disabled={isLoading}
               />
             </div>
             <div>
-              <Label htmlFor='status'>Status</Label>
+              <Label htmlFor="status">Status</Label>
               <Select
-                name='status'
+                name="status"
                 value={formData.status}
                 onValueChange={value => handleSelectChange('status', value)}
                 required
+                disabled={isLoading}
               >
-                <SelectTrigger id='status'>
-                  <SelectValue placeholder='Select Status' />
+                <SelectTrigger id="status">
+                  <SelectValue placeholder="Select Status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value='Draft'>Draft</SelectItem>
-                  <SelectItem value='Sent'>Sent</SelectItem>
-                  <SelectItem value='Paid'>Paid</SelectItem>
-                  <SelectItem value='Overdue'>Overdue</SelectItem>
+                  <SelectItem value="Draft">Draft</SelectItem>
+                  <SelectItem value="Sent">Sent</SelectItem>
+                  <SelectItem value="Paid">Paid</SelectItem>
+                  <SelectItem value="Overdue">Overdue</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label htmlFor='currency'>Currency</Label>
+              <Label htmlFor="currency">Currency</Label>
               <Input
-                id='currency'
-                name='currency'
+                id="currency"
+                name="currency"
                 value={formData.currency}
                 onChange={handleInputChange}
-                placeholder='e.g., ZAR'
+                placeholder="e.g., ZAR"
                 required
+                disabled={isLoading}
               />
             </div>
           </div>
@@ -686,17 +764,147 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
         <CardHeader>
           <CardTitle>Additional Information</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
           <div>
-            <Label htmlFor='notes'>Notes</Label>
+            <Label htmlFor="notes">Notes</Label>
             <Textarea
-              id='notes'
-              name='notes'
+              id="notes"
+              name="notes"
               value={formData.notes}
               onChange={handleInputChange}
-              placeholder='Any additional notes for the invoice...'
+              placeholder="Any additional notes for the invoice..."
               rows={3}
+              disabled={isLoading}
             />
+            {includeBankInNotes && bankPreview && (
+              <div className="mt-2 rounded-md border bg-muted/50 p-3 text-sm">
+                <div className="font-medium mb-1">Will append:</div>
+                <pre className="whitespace-pre-wrap">{bankPreview}</pre>
+              </div>
+            )}
+          </div>
+
+          {/* Banking details */}
+          <div className="space-y-3 rounded-lg border p-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <Label className="text-base">Payment / Banking Details</Label>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeBankInNotes}
+                    onChange={(e) => setIncludeBankInNotes(e.target.checked)}
+                  />
+                  Append to notes
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={saveBankAsDefault}
+                    onChange={(e) => setSaveBankAsDefault(e.target.checked)}
+                  />
+                  Save as default
+                </label>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <Label>Account Name</Label>
+                <Input
+                  value={bankDetails.accountName}
+                  onChange={(e) => setBankDetails({ ...bankDetails, accountName: e.target.value })}
+                  placeholder="e.g., Q Analytics (Pty) Ltd"
+                  disabled={isLoading}
+                />
+              </div>
+              <div>
+                <Label>Bank</Label>
+                <Input
+                  value={bankDetails.bankName}
+                  onChange={(e) => setBankDetails({ ...bankDetails, bankName: e.target.value })}
+                  placeholder="e.g., FNB / ABSA / Standard Bank"
+                  disabled={isLoading}
+                />
+              </div>
+              <div>
+                <Label>Account Number</Label>
+                <Input
+                  value={bankDetails.accountNumber}
+                  onChange={(e) => setBankDetails({ ...bankDetails, accountNumber: e.target.value })}
+                  placeholder="e.g., 1234567890"
+                  disabled={isLoading}
+                />
+              </div>
+              <div>
+                <Label>Branch Code</Label>
+                <Input
+                  value={bankDetails.branchCode}
+                  onChange={(e) => setBankDetails({ ...bankDetails, branchCode: e.target.value })}
+                  placeholder="e.g., 250655"
+                  disabled={isLoading}
+                />
+              </div>
+              <div>
+                <Label>Account Type (optional)</Label>
+                <Input
+                  value={bankDetails.accountType || ''}
+                  onChange={(e) => setBankDetails({ ...bankDetails, accountType: e.target.value })}
+                  placeholder="Cheque / Savings / Business"
+                  disabled={isLoading}
+                />
+              </div>
+              <div>
+                <Label>SWIFT/BIC (optional)</Label>
+                <Input
+                  value={bankDetails.swift || ''}
+                  onChange={(e) => setBankDetails({ ...bankDetails, swift: e.target.value })}
+                  placeholder="For international payments"
+                  disabled={isLoading}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <Label>Reference Hint (optional)</Label>
+                <Input
+                  value={bankDetails.referenceHint || ''}
+                  onChange={(e) => setBankDetails({ ...bankDetails, referenceHint: e.target.value })}
+                  placeholder="e.g., Use invoice number as reference"
+                  disabled={isLoading}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  const block = renderBankBlock(bankDetails, formData.currency);
+                  setFormData(fd => ({ ...fd, notes: upsertBankBlockIntoNotes(fd.notes || '', block) }));
+                }}
+                disabled={isLoading}
+              >
+                Insert into notes now
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() =>
+                  setBankDetails({
+                    accountName: '',
+                    bankName: '',
+                    accountNumber: '',
+                    branchCode: '',
+                    accountType: '',
+                    swift: '',
+                    referenceHint: '',
+                  })
+                }
+                disabled={isLoading}
+              >
+                Clear fields
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -705,18 +913,19 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
         <CardHeader>
           <CardTitle>Line Items</CardTitle>
         </CardHeader>
-        <CardContent className='space-y-4'>
+        <CardContent className="space-y-4">
           {formData.line_items.map((item, index) => (
-            <div key={item.id || index} className='grid grid-cols-1 md:grid-cols-6 gap-3 items-end border-b pb-4 last:border-b-0 last:pb-0'>
-              <div className='md:col-span-2'>
+            <div key={item.id || index} className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end border-b pb-4 last:border-b-0 last:pb-0">
+              <div className="md:col-span-2">
                 <Label htmlFor={`product_service_id-${index}`}>Product/Service</Label>
                 <Select
                   name={`product_service_id-${index}`}
                   value={item.product_service_id || 'custom-item'}
-                  onValueChange={value => handleProductServiceSelect(index, value === 'custom-item' ? '' : value)}
+                  onValueChange={(value) => handleProductServiceSelect(index, value === 'custom-item' ? '' : value)}
+                  disabled={isLoading}
                 >
                   <SelectTrigger id={`product_service_id-${index}`}>
-                    <SelectValue placeholder='Select Product/Service' />
+                    <SelectValue placeholder="Select Product/Service" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="custom-item">Custom Item</SelectItem>
@@ -732,50 +941,54 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
                 <Label htmlFor={`description-${index}`}>Description</Label>
                 <Input
                   id={`description-${index}`}
-                  name='description'
+                  name="description"
                   value={item.description}
                   onChange={e => handleLineItemChange(index, 'description', e.target.value)}
-                  placeholder='Description'
+                  placeholder="Description"
                   required
+                  disabled={isLoading}
                 />
               </div>
               <div>
                 <Label htmlFor={`quantity-${index}`}>Qty</Label>
                 <Input
                   id={`quantity-${index}`}
-                  name='quantity'
-                  type='number'
+                  name="quantity"
+                  type="number"
                   value={item.quantity}
                   onChange={e => handleLineItemChange(index, 'quantity', e.target.value)}
-                  placeholder='Qty'
-                  min='0'
-                  step='0.01'
+                  placeholder="Qty"
+                  min="0"
+                  step="0.01"
                   required
+                  disabled={isLoading}
                 />
               </div>
               <div>
                 <Label htmlFor={`unit_price-${index}`}>Unit Price</Label>
                 <Input
                   id={`unit_price-${index}`}
-                  name='unit_price'
-                  type='number'
+                  name="unit_price"
+                  type="number"
                   value={item.unit_price}
                   onChange={e => handleLineItemChange(index, 'unit_price', e.target.value)}
-                  placeholder='Price'
-                  min='0'
-                  step='0.01'
+                  placeholder="Price"
+                  min="0"
+                  step="0.01"
                   required
+                  disabled={isLoading}
                 />
               </div>
               <div>
                 <Label htmlFor={`tax_rate-${index}`}>Tax Rate</Label>
                 <Select
-                  name='tax_rate'
+                  name="tax_rate"
                   value={item.tax_rate.toString()}
                   onValueChange={value => handleLineItemChange(index, 'tax_rate', value)}
+                  disabled={isLoading}
                 >
                   <SelectTrigger id={`tax_rate-${index}`}>
-                    <SelectValue placeholder='Select VAT' />
+                    <SelectValue placeholder="Select VAT" />
                   </SelectTrigger>
                   <SelectContent>
                     {VAT_OPTIONS.map((option) => (
@@ -786,32 +999,32 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
                   </SelectContent>
                 </Select>
               </div>
-              <div className='flex items-center justify-end gap-2'>
-                <Label className='whitespace-nowrap'>
+              <div className="flex items-center justify-end gap-2">
+                <Label className="whitespace-nowrap">
                   Total: {formData.currency}{(item.line_total ?? 0).toFixed(2)}
                 </Label>
-                <Button type='button' variant='ghost' size='sm' onClick={() => removeLineItem(index)}>
-                  <XCircle className='h-4 w-4 text-red-500' />
+                <Button type="button" variant="ghost" size="sm" onClick={() => removeLineItem(index)} disabled={isLoading}>
+                  <XCircle className="h-4 w-4 text-red-500" />
                 </Button>
               </div>
             </div>
           ))}
-          <Button type='button' variant='outline' onClick={addLineItem} className='w-full'>
-            <Plus className='h-4 w-4 mr-2' /> Add Line Item
+          <Button type="button" variant="outline" onClick={addLineItem} className="w-full" disabled={isLoading}>
+            <Plus className="h-4 w-4 mr-2" /> Add Line Item
           </Button>
         </CardContent>
       </Card>
 
-      <div className='text-right text-xl font-bold mt-4'>
+      <div className="text-right text-xl font-bold mt-4">
         Total Invoice Amount: {formData.currency}{totalAmount.toFixed(2)}
       </div>
 
-      <div className='flex justify-end gap-2 mt-6'>
-        <Button type='button' variant='outline' onClick={onClose} disabled={isLoading}>
+      <div className="flex justify-end gap-2 mt-6">
+        <Button type="button" variant="outline" onClick={onClose} disabled={isLoading}>
           Cancel
         </Button>
-        <Button type='submit' disabled={isLoading}>
-          {isLoading && <Loader2 className='mr-2 h-4 w-4 animate-spin' />}
+        <Button type="submit" disabled={isLoading}>
+          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {invoice ? 'Update Invoice' : 'Create Invoice'}
         </Button>
       </div>

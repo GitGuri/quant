@@ -21,6 +21,8 @@ interface User {
   email: string;
   // The backend now returns an array of roles
   roles: string[];
+  // Add officeCode to the user interface
+  officeCode?: string;
 }
 
 // A predefined list of roles for the select dropdowns
@@ -70,8 +72,8 @@ export default function UserManagementPage() {
   const [editUserRoles, setEditUserRoles] = useState<string[]>([]);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  // Initial state for new user data, now includes password
-  const [newUserData, setNewUserData] = useState({ displayName: '', email: '', password: '', role: 'user' });
+  // Initial state for new user data, now includes password and officeCode
+  const [newUserData, setNewUserData] = useState({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
 
   // Refactored to fetch users from your local backend API
   const fetchUsers = useCallback(async () => {
@@ -247,7 +249,7 @@ export default function UserManagementPage() {
 
   // Handler for opening the add new user modal
   const openAddModal = () => {
-    setNewUserData({ displayName: '', email: '', password: '', role: 'user' });
+    setNewUserData({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
     setIsAddModalOpen(true);
   };
 
@@ -256,13 +258,22 @@ export default function UserManagementPage() {
     if (!token) return;
     setLoading(true);
     try {
+      // Updated the payload to include officeCode
+      const payload = {
+        displayName: newUserData.displayName,
+        email: newUserData.email,
+        password: newUserData.password,
+        role: newUserData.role,
+        officeCode: newUserData.officeCode,
+      };
+
       const response = await fetch(`${API_BASE_URL}/users`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify(newUserData),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -492,6 +503,16 @@ export default function UserManagementPage() {
               placeholder='Set a password'
               required
             />
+            <Label htmlFor='add-office-code'>Office Code</Label>
+            <Input
+              id='add-office-code'
+              type='text'
+              name='officeCode'
+              value={newUserData.officeCode}
+              onChange={(e) => setNewUserData({ ...newUserData, officeCode: e.target.value })}
+              placeholder='e.g., QUANT001'
+              required
+            />
             <Label htmlFor='add-role'>Role</Label>
             <Select
               name='role'
@@ -514,7 +535,7 @@ export default function UserManagementPage() {
                 variant='outline'
                 onClick={() => {
                   setIsAddModalOpen(false);
-                  setNewUserData({ displayName: '', email: '', role: 'user', password: '' });
+                  setNewUserData({ displayName: '', email: '', role: 'user', password: '', officeCode: '' });
                 }}
               >
                 Cancel

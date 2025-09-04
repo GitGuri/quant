@@ -1424,7 +1424,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
                 name="customProductTaxRate"
                 label="Tax Rate"
                 required
-                initialValue="0.15"
+                initialValue="0"
               >
                 <Select
                   style={{ width: '100%' }}

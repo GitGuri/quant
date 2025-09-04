@@ -89,7 +89,7 @@ interface BalanceSheetData {
 // --- FIXED: Updated ApiIncomeStatementSection to match the new backend response
 interface ApiIncomeStatementSection {
   section: string;
-  amount: number; // The new backend should return a number, not a string
+  amount: number;
   accounts: {
     name: string;
     amount: number;
@@ -159,7 +159,7 @@ const Financials = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [trialBalanceData, setTrialBalanceData] = useState<ApiTrialBalanceItem[]>([]);
-  const [incomeStatementData, setIncomeStatementData] = useState<{ item: string; amount: number; type?: string }[]>([]);
+  const [incomeStatementData, setIncomeStatementData] = useState<{ item: string; amount: number | ''; type?: string }[]>([]);
   const [balanceSheetData, setBalanceSheetData] = useState<BalanceSheetData>({ assets: [], liabilities: [], equity: [] });
   const [cashflowData, setCashflowData] = useState<{ category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[]>([]);
 
@@ -233,215 +233,179 @@ const Financials = () => {
     }
   }, [fetchAllData, isAuthenticated, token]);
 
-
-  // --- Helper functions for data processing ---
+  // --- Helpers ---
   const num = (n: any) => {
     const parsed = parseFloat(String(n));
     return isNaN(parsed) ? 0 : parsed;
   };
+  const nonZero = (n: number) => Number(n) !== 0;
 
-  // --- Data Normalization Functions ---
-  // --- FIXED: Updated buildIncomeStatementLines to handle new data structure
-// --- Data Normalization Functions ---
-const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undefined) => {
-  const lines: { item: string; amount: number; type?: string }[] = [];
-  if (!sections || !Array.isArray(sections)) {
-    console.warn("Invalid income statement data received:", sections);
-    return lines;
-  }
-
-  const sectionMap: Record<string, ApiIncomeStatementSection> = {};
-  sections.forEach(s => {
-    sectionMap[s.section] = s;
-  });
-
-  // 1. Revenue Section
-  lines.push({ item: 'Revenue', amount: 0, type: 'header' });
-  const revenueSection = sectionMap['revenue'];
-  if (revenueSection && revenueSection.accounts) {
-    revenueSection.accounts.forEach(acc => {
-      lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail' });
-    });
-  }
-  const totalRevenue = revenueSection?.amount || 0;
-  lines.push({ item: 'Total Revenue', amount: totalRevenue, type: 'subtotal' });
-
-  // 2. Cost of Goods Sold Section
-  const cogsSection = sectionMap['cogs'];
-  if (cogsSection && cogsSection.accounts.length > 0) {
-    lines.push({ item: 'Less: Cost of Goods Sold', amount: 0, type: 'header' });
-    cogsSection.accounts.forEach(acc => {
-      // COGS amounts should be negative to be subtracted
-      lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail-expense' });
-    });
-  }
-  const totalCogs = cogsSection?.amount || 0;
-  if (totalCogs > 0) {
-    lines.push({ item: 'Total Cost of Goods Sold', amount: totalCogs, type: 'subtotal' });
-  }
-
-  // 3. Gross Profit (calculated as Revenue - COGS)
-  const grossProfit = totalRevenue - totalCogs;
-  lines.push({ item: 'Gross Profit', amount: grossProfit, type: 'subtotal' });
-
-  // 4. Other Income Section
-  const otherIncomeSection = sectionMap['other_income'];
-  if (otherIncomeSection && otherIncomeSection.accounts && otherIncomeSection.accounts.length > 0) {
-    lines.push({ item: 'Other Income', amount: 0, type: 'header' });
-    otherIncomeSection.accounts.forEach(acc => {
-      lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail' });
-    });
-    lines.push({ item: 'Total Other Income', amount: otherIncomeSection.amount, type: 'subtotal' });
-  }
-
-  // 5. Expenses Section
-  lines.push({ item: 'Less: Expenses', amount: 0, type: 'header' });
-  let totalExpenses = 0;
-  Object.keys(sectionMap).forEach(key => {
-    const section = sectionMap[key];
-    // Exclude 'revenue', 'cogs', and 'other_income' which are handled separately
-    if (key !== 'revenue' && key !== 'cogs' && key !== 'other_income' && section.accounts.length > 0) {
-      lines.push({ item: `  ${key.replace(/_/g, ' ')}`, amount: 0, type: 'subheader' });
-      section.accounts.forEach(acc => {
-        lines.push({ item: `    ${acc.name}`, amount: acc.amount, type: 'detail-expense' });
-      });
-      totalExpenses += section.amount;
-      lines.push({ item: `  Total ${key.replace(/_/g, ' ')}`, amount: section.amount, type: 'subtotal' });
+  // --- Income Statement ---
+  const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undefined) => {
+    const lines: { item: string; amount: number | ''; type?: string }[] = [];
+    if (!sections || !Array.isArray(sections)) {
+      console.warn("Invalid income statement data received:", sections);
+      return lines;
     }
-  });
 
-  lines.push({ item: 'Total Expenses', amount: totalExpenses, type: 'subtotal' });
+    const sectionMap: Record<string, ApiIncomeStatementSection> = {};
+    sections.forEach(s => { sectionMap[s.section] = s; });
 
-  // 6. Net Profit/Loss
-  const netProfitLoss = grossProfit + (otherIncomeSection?.amount || 0)-totalExpenses;
-  lines.push({
-    item: netProfitLoss >= 0 ? 'NET PROFIT for the period' : 'NET LOSS for the period',
-    amount: Math.abs(netProfitLoss),
-    type: 'total'
-  });
+    // Revenue
+    const revenueSection = sectionMap['revenue'];
+    if (revenueSection && revenueSection.accounts?.length > 0) {
+      lines.push({ item: 'Revenue', amount: '', type: 'header' });
+      revenueSection.accounts.forEach(acc => {
+        if (nonZero(acc.amount)) lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail' });
+      });
+      if (nonZero(revenueSection.amount)) lines.push({ item: 'Total Revenue', amount: revenueSection.amount, type: 'subtotal' });
+    }
 
-  return lines;
-};
-  // --- END FIXED ---
+    // COGS
+    const cogsSection = sectionMap['cogs'];
+    if (cogsSection && cogsSection.accounts.some(a => nonZero(a.amount))) {
+      lines.push({ item: 'Less: Cost of Goods Sold', amount: '', type: 'header' });
+      cogsSection.accounts.forEach(acc => {
+        if (nonZero(acc.amount)) lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail-expense' });
+      });
+      if (nonZero(cogsSection.amount)) lines.push({ item: 'Total Cost of Goods Sold', amount: cogsSection.amount, type: 'subtotal' });
+    }
 
-  // --- UPDATED: Enhanced Balance Sheet Normalization ---
+    // Gross Profit
+    const totalRevenue = revenueSection?.amount || 0;
+    const totalCogs = cogsSection?.amount || 0;
+    const grossProfit = totalRevenue - totalCogs;
+    lines.push({ item: 'Gross Profit', amount: grossProfit, type: 'subtotal' });
+
+    // Other Income
+    const otherIncomeSection = sectionMap['other_income'];
+    if (otherIncomeSection && otherIncomeSection.accounts.some(a => nonZero(a.amount))) {
+      lines.push({ item: 'Other Income', amount: '', type: 'header' });
+      otherIncomeSection.accounts.forEach(acc => {
+        if (nonZero(acc.amount)) lines.push({ item: `  ${acc.name}`, amount: acc.amount, type: 'detail' });
+      });
+      if (nonZero(otherIncomeSection.amount)) lines.push({ item: 'Total Other Income', amount: otherIncomeSection.amount, type: 'subtotal' });
+    }
+
+    // Expenses
+    let totalExpenses = 0;
+    const expenseKeys = Object.keys(sectionMap).filter(k => !['revenue', 'cogs', 'other_income'].includes(k));
+    const hasExpenseSections = expenseKeys.some(k => sectionMap[k].accounts.some(a => nonZero(a.amount)));
+
+    if (hasExpenseSections) {
+      lines.push({ item: 'Less: Expenses', amount: '', type: 'header' });
+
+      expenseKeys.forEach(key => {
+        const section = sectionMap[key];
+        if (section && section.accounts.some(a => nonZero(a.amount))) {
+          const title = key.replace(/_/g, ' ');
+          lines.push({ item: `  ${title}`, amount: '', type: 'subheader' });
+          section.accounts.forEach(acc => {
+            if (nonZero(acc.amount)) lines.push({ item: `    ${acc.name}`, amount: acc.amount, type: 'detail-expense' });
+          });
+          if (nonZero(section.amount)) lines.push({ item: `  Total ${title}`, amount: section.amount, type: 'subtotal' });
+          totalExpenses += section.amount;
+        }
+      });
+
+      if (nonZero(totalExpenses)) lines.push({ item: 'Total Expenses', amount: totalExpenses, type: 'subtotal' });
+    }
+
+    // Net Profit/Loss
+    const netProfitLoss = grossProfit + (otherIncomeSection?.amount || 0) - totalExpenses;
+    lines.push({
+      item: netProfitLoss >= 0 ? 'NET PROFIT for the period' : 'NET LOSS for the period',
+      amount: Math.abs(netProfitLoss),
+      type: 'total'
+    });
+
+    return lines;
+  };
+
+  // --- Balance Sheet ---
   const normalizeBalanceSheetFromServer = (response: ApiBalanceSheetResponse | undefined): BalanceSheetData => {
     const assets: BalanceSheetLineItem[] = [];
     const liabilities: BalanceSheetLineItem[] = [];
     const equity: BalanceSheetLineItem[] = [];
 
     if (!response || !Array.isArray(response.sections)) {
-        console.warn("Invalid balance sheet data received:", response);
-        return { assets, liabilities, equity };
+      console.warn("Invalid balance sheet data received:", response);
+      return { assets, liabilities, equity };
     }
 
-    const { sections, openingEquity, netProfitLoss, closingEquity, assets: assetsData, liabilities: liabilitiesData } = response;
+    const { openingEquity, netProfitLoss, closingEquity, assets: assetsData, liabilities: liabilitiesData } = response;
 
-    // Group sections by type for easier access
-    const sectionMap: Record<string, number> = {};
-    sections.forEach(s => {
-        sectionMap[s.section] = num(s.value);
-    });
-
-    // --- ASSETS ---
+    // Assets
     assets.push({ item: 'Current Assets', amount: 0, isSubheader: true });
-    if (assetsData.current !== undefined) {
-        assets.push({ item: '  Current Assets', amount: assetsData.current });
-    }
-    if (assetsData.current !== undefined) {
-        assets.push({ item: 'Total Current Assets', amount: assetsData.current, isTotal: true });
-    }
+    if (assetsData.current !== undefined) assets.push({ item: '  Current Assets', amount: assetsData.current });
+    if (assetsData.current !== undefined) assets.push({ item: 'Total Current Assets', amount: assetsData.current, isTotal: true });
 
     assets.push({ item: 'Non-current Assets', amount: 0, isSubheader: true });
-    if (assetsData.non_current !== undefined) {
-        assets.push({ item: '  Non-current Assets', amount: assetsData.non_current });
-    }
-    if (assetsData.non_current !== undefined) {
-        assets.push({ item: 'Total Non-Current Assets', amount: assetsData.non_current, isTotal: true });
-    }
+    if (assetsData.non_current !== undefined) assets.push({ item: '  Non-current Assets', amount: assetsData.non_current });
+    if (assetsData.non_current !== undefined) assets.push({ item: 'Total Non-Current Assets', amount: assetsData.non_current, isTotal: true });
 
     const totalAssets = (assetsData.current || 0) + (assetsData.non_current || 0);
-    assets.push({
-        item: 'TOTAL ASSETS',
-        amount: totalAssets,
-        isTotal: true,
-        isSubheader: true,
-    });
+    assets.push({ item: 'TOTAL ASSETS', amount: totalAssets, isTotal: true, isSubheader: true });
 
-    // --- LIABILITIES ---
+    // Liabilities
     liabilities.push({ item: 'Current Liabilities', amount: 0, isSubheader: true });
-    if (liabilitiesData.current !== undefined) {
-        liabilities.push({ item: '  Current Liabilities', amount: liabilitiesData.current });
-    }
-    if (liabilitiesData.current !== undefined) {
-        liabilities.push({ item: 'Total Current Liabilities', amount: liabilitiesData.current, isTotal: true });
-    }
+    if (liabilitiesData.current !== undefined) liabilities.push({ item: '  Current Liabilities', amount: liabilitiesData.current });
+    if (liabilitiesData.current !== undefined) liabilities.push({ item: 'Total Current Liabilities', amount: liabilitiesData.current, isTotal: true });
 
     liabilities.push({ item: 'Non-Current Liabilities', amount: 0, isSubheader: true });
-    if (liabilitiesData.non_current !== undefined) {
-        liabilities.push({ item: '  Non-Current Liabilities', amount: liabilitiesData.non_current });
-    }
-    if (liabilitiesData.non_current !== undefined) {
-        liabilities.push({ item: 'Total Non-Current Liabilities', amount: liabilitiesData.non_current, isTotal: true });
-    }
+    if (liabilitiesData.non_current !== undefined) liabilities.push({ item: '  Non-Current Liabilities', amount: liabilitiesData.non_current });
+    if (liabilitiesData.non_current !== undefined) liabilities.push({ item: 'Total Non-Current Liabilities', amount: liabilitiesData.non_current, isTotal: true });
 
     const totalLiabilities = (liabilitiesData.current || 0) + (liabilitiesData.non_current || 0);
     liabilities.push({ item: 'TOTAL LIABILITIES', amount: totalLiabilities, isTotal: true, isSubheader: true });
 
-    // --- EQUITY (MODIFIED to show detailed breakdown) ---
+    // Equity
     equity.push({ item: 'Equity', amount: 0, isSubheader: true });
-    
-    // Show the detailed breakdown as requested
     equity.push({ item: '  Opening Balance', amount: openingEquity });
-    equity.push({ 
-      item: netProfitLoss >= 0 ? '  Net Profit for Period' : '  Net Loss for Period', 
-      amount: Math.abs(netProfitLoss) 
-    });
-    equity.push({ 
-      item: 'TOTAL EQUITY', 
-      amount: closingEquity, 
-      isTotal: true, 
-      isSubheader: true 
-    });
+    equity.push({ item: netProfitLoss >= 0 ? '  Net Profit for Period' : '  Net Loss for Period', amount: Math.abs(netProfitLoss) });
+    equity.push({ item: 'TOTAL EQUITY', amount: closingEquity, isTotal: true, isSubheader: true });
 
     return { assets, liabilities, equity };
   };
-  // --- END UPDATED ---
 
+  // --- Cashflow ---
   const normalizeCashflow = (groupedSections: ApiCashFlowGrouped | undefined) => {
     const sections: { category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[] = [];
-
     if (!groupedSections || typeof groupedSections !== 'object') {
-        console.warn("Invalid cash flow data received:", groupedSections);
-        return sections;
+      console.warn("Invalid cash flow data received:", groupedSections);
+      return sections;
     }
 
-    const categories = ['operating', 'investing', 'financing'];
+    const categories = ['operating', 'investing', 'financing'] as const;
     let netChange = 0;
 
     categories.forEach(cat => {
-        const itemsRaw = groupedSections[cat as keyof ApiCashFlowGrouped];
-        if (Array.isArray(itemsRaw)) {
-            const items = itemsRaw.map(i => ({
-                item: i.line,
-                amount: num(i.amount)
-            }));
-            const total = items.reduce((sum, item) => sum + item.amount, 0);
-            netChange += total;
-            sections.push({
-                category: `${cat.charAt(0).toUpperCase() + cat.slice(1)} Activities`,
-                items,
-                total,
-                showSubtotal: true
-            });
+      const itemsRaw = groupedSections[cat];
+      if (Array.isArray(itemsRaw)) {
+        const items = itemsRaw
+          .map(i => ({ item: i.line, amount: num(i.amount) }))
+          .filter(i => nonZero(i.amount)); // hide zero cashflow lines
+
+        const total = items.reduce((sum, item) => sum + item.amount, 0);
+        netChange += total;
+
+        // only keep a section if it has items or non-zero total
+        if (items.length > 0 || nonZero(total)) {
+          sections.push({
+            category: `${cat.charAt(0).toUpperCase() + cat.slice(1)} Activities`,
+            items,
+            total,
+            showSubtotal: true
+          });
         }
+      }
     });
 
     sections.push({
-        category: 'Net Increase / (Decrease) in Cash',
-        items: [],
-        total: netChange,
-        showSubtotal: false
+      category: 'Net Increase / (Decrease) in Cash',
+      items: [],
+      total: netChange,
+      showSubtotal: false
     });
 
     return sections;
@@ -485,10 +449,8 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
         }
 
         const payload = await res.json();
-        console.log(`Fetched raw data for ${type}:`, payload);
 
         if (type === 'income-statement') {
-          // --- FIXED: Use the new payload structure
           const sections = payload?.sections as ApiIncomeStatementSection[] | undefined;
           const lines = buildIncomeStatementLines(sections);
           setIncomeStatementData(lines);
@@ -499,33 +461,29 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
           setTrialBalanceData(items || []);
         }
 
-        // --- UPDATED: Handle the new balance sheet response structure ---
         if (type === 'balance-sheet') {
           const response = payload as ApiBalanceSheetResponse | undefined;
           const normalized = normalizeBalanceSheetFromServer(response);
-          
-          // Calculate and add the final total line
-          const totalAssets = normalized.assets.find(item => item.item === 'TOTAL ASSETS')?.amount || 0;
-          const totalLiabilities = normalized.liabilities.find(item => item.item === 'TOTAL LIABILITIES')?.amount || 0;
-          const totalEquity = normalized.equity.find(item => item.item === 'TOTAL EQUITY')?.amount || 0;
+
+          const totalAssets = normalized.assets.find(i => i.item === 'TOTAL ASSETS')?.amount || 0;
+          const totalLiabilities = normalized.liabilities.find(i => i.item === 'TOTAL LIABILITIES')?.amount || 0;
+          const totalEquity = normalized.equity.find(i => i.item === 'TOTAL EQUITY')?.amount || 0;
           const totalEquityAndLiabilities = totalLiabilities + totalEquity;
-          
-          // Add the final total line to liabilities section for display
+
           const liabilitiesWithTotal = [...normalized.liabilities];
-          liabilitiesWithTotal.push({ 
-            item: 'TOTAL EQUITY AND LIABILITIES', 
-            amount: totalEquityAndLiabilities, 
-            isTotal: true, 
-            isSubheader: true 
+          liabilitiesWithTotal.push({
+            item: 'TOTAL EQUITY AND LIABILITIES',
+            amount: totalEquityAndLiabilities,
+            isTotal: true,
+            isSubheader: true
           });
-          
+
           setBalanceSheetData({
             assets: normalized.assets,
             liabilities: liabilitiesWithTotal,
             equity: normalized.equity
           });
         }
-        // --- END UPDATED ---
 
         if (type === 'cash-flow-statement') {
           const groupedSections = payload?.sections as ApiCashFlowGrouped | undefined;
@@ -540,10 +498,10 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
           variant: 'destructive',
         });
         switch (type) {
-            case 'income-statement': setIncomeStatementData([]); break;
-            case 'trial-balance': setTrialBalanceData([]); break;
-            case 'balance-sheet': setBalanceSheetData({ assets: [], liabilities: [], equity: [] }); break;
-            case 'cash-flow-statement': setCashflowData([]); break;
+          case 'income-statement': setIncomeStatementData([]); break;
+          case 'trial-balance': setTrialBalanceData([]); break;
+          case 'balance-sheet': setBalanceSheetData({ assets: [], liabilities: [], equity: [] }); break;
+          case 'cash-flow-statement': setCashflowData([]); break;
         }
       }
     },
@@ -703,9 +661,7 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
         <Tabs
           defaultValue="income-statement"
           value={activeTab}
-          onValueChange={(v) =>
-            setActiveTab(v as typeof activeTab)
-          }
+          onValueChange={(v) => setActiveTab(v as typeof activeTab)}
           className="w-full"
         >
           <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
@@ -725,6 +681,7 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
                   For the period {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}
                 </CardDescription>
               </CardHeader>
+
               <CardContent>
                 <Table>
                   <TableHeader>
@@ -735,12 +692,31 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
                   </TableHeader>
                   <TableBody>
                     {incomeStatementData && incomeStatementData.length > 0 ? (
-                      incomeStatementData.map((item, index) => (
-                        <TableRow key={index} className={item.type === 'total' || item.type === 'subtotal' ? 'font-bold border-t-2 border-b-2' : ''}>
-                          <TableCell className={item.type === 'detail-expense' ? 'pl-8' : ''}>{item.item}</TableCell>
-                          <TableCell className="text-right">{formatCurrency(item.amount)}</TableCell>
-                        </TableRow>
-                      ))
+                      (incomeStatementData
+                        // keep headers/subheaders; hide numeric-zero rows
+                        .filter(l => typeof l.amount !== 'number' || nonZero(l.amount))
+                      ).map((item, index) => {
+                        const isTotalish = item.type === 'total' || item.type === 'subtotal';
+                        const isHeaderish = item.type === 'header' || item.type === 'subheader';
+                        const isExpenseDetail = item.type === 'detail-expense';
+
+                        return (
+                          <TableRow
+                            key={index}
+                            className={[
+                              isTotalish ? 'font-bold border-t-2 border-b-2' : '',
+                              isHeaderish ? 'font-semibold text-gray-800' : '',
+                            ].join(' ')}
+                          >
+                            <TableCell className={isExpenseDetail ? 'pl-8' : ''}>
+                              {item.item}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {typeof item.amount === 'number' ? formatCurrency(item.amount) : ''}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
                     ) : (
                       <TableRow>
                         <TableCell colSpan={2} className="text-center text-gray-500">
@@ -775,13 +751,15 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
                   <TableBody>
                     {trialBalanceData && trialBalanceData.length > 0 ? (
                       <>
-                        {trialBalanceData.map((item, index) => (
-                          <TableRow key={index}>
-                            <TableCell>{item.code} - {item.name}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(num(item.balance_debit))}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(num(item.balance_credit))}</TableCell>
-                          </TableRow>
-                        ))}
+                        {trialBalanceData
+                          .filter(i => nonZero(num(i.balance_debit)) || nonZero(num(i.balance_credit)))
+                          .map((item, index) => (
+                            <TableRow key={index}>
+                              <TableCell>{item.code} - {item.name}</TableCell>
+                              <TableCell className="text-right">{formatCurrency(num(item.balance_debit))}</TableCell>
+                              <TableCell className="text-right">{formatCurrency(num(item.balance_credit))}</TableCell>
+                            </TableRow>
+                          ))}
                         <TableRow className="font-bold border-t-2">
                           <TableCell>TOTALS</TableCell>
                           <TableCell className="text-right">
@@ -821,16 +799,22 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
                     <h3 className="font-semibold text-lg mb-3">ASSETS</h3>
                     <div className="space-y-2 ml-4">
                       {balanceSheetData.assets && balanceSheetData.assets.length > 0 ? (
-                        balanceSheetData.assets.map((item, index) => (
-                          <div key={`asset-${index}`} className={`flex justify-between py-1
-                            ${item.isTotal ? 'font-bold border-t pt-2' : ''}
-                            ${item.isSubheader ? 'font-medium text-md !mt-4' : ''}
-                            ${item.isAdjustment ? 'pl-4' : ''}
-                          `}>
-                            <span>{item.item}</span>
-                            <span className="font-mono">{formatCurrency(item.amount)}</span>
-                          </div>
-                        ))
+                        balanceSheetData.assets
+                          .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
+                          .map((item, index) => (
+                            <div
+                              key={`asset-${index}`}
+                              className={`flex justify-between py-1
+                                ${item.isTotal ? 'font-bold border-t pt-2' : ''}
+                                ${item.isSubheader ? 'font-semibold text-md !mt-4' : ''}
+                                ${item.isAdjustment ? 'pl-4' : ''}`}
+                            >
+                              <span>{item.item}</span>
+                              <span className="font-mono">
+                                {item.isSubheader ? '' : formatCurrency(item.amount)}
+                              </span>
+                            </div>
+                          ))
                       ) : (
                         <p className="text-gray-500">No asset data available.</p>
                       )}
@@ -843,32 +827,44 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
                     <div className="space-y-2 ml-4">
                       {/* Liabilities */}
                       {balanceSheetData.liabilities && balanceSheetData.liabilities.length > 0 ? (
-                        balanceSheetData.liabilities.map((item, index) => (
-                          <div key={`liab-${index}`} className={`flex justify-between py-1
-                            ${item.isTotal ? 'font-bold border-t pt-2' : ''}
-                            ${item.isSubheader ? 'font-medium text-md !mt-4' : ''}
-                            ${item.isAdjustment ? 'pl-4' : ''}
-                          `}>
-                            <span>{item.item}</span>
-                            <span className="font-mono">{formatCurrency(item.amount)}</span>
-                          </div>
-                        ))
+                        balanceSheetData.liabilities
+                          .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
+                          .map((item, index) => (
+                            <div
+                              key={`liab-${index}`}
+                              className={`flex justify-between py-1
+                                ${item.isTotal ? 'font-bold border-t pt-2' : ''}
+                                ${item.isSubheader ? 'font-semibold text-md !mt-4' : ''}
+                                ${item.isAdjustment ? 'pl-4' : ''}`}
+                            >
+                              <span>{item.item}</span>
+                              <span className="font-mono">
+                                {item.isSubheader ? '' : formatCurrency(item.amount)}
+                              </span>
+                            </div>
+                          ))
                       ) : (
                         <p className="text-gray-500">No liability data available.</p>
                       )}
 
                       {/* Equity - Show detailed breakdown */}
                       {balanceSheetData.equity && balanceSheetData.equity.length > 0 ? (
-                        balanceSheetData.equity.map((item, index) => (
-                          <div key={`equity-${index}`} className={`flex justify-between py-1
-                            ${item.isTotal ? 'font-bold border-t pt-2' : ''}
-                            ${item.isSubheader ? 'font-medium text-md !mt-4' : ''}
-                            ${item.isAdjustment ? 'pl-4' : ''}
-                          `}>
-                            <span>{item.item}</span>
-                            <span className="font-mono">{formatCurrency(item.amount)}</span>
-                          </div>
-                        ))
+                        balanceSheetData.equity
+                          .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
+                          .map((item, index) => (
+                            <div
+                              key={`equity-${index}`}
+                              className={`flex justify-between py-1
+                                ${item.isTotal ? 'font-bold border-t pt-2' : ''}
+                                ${item.isSubheader ? 'font-semibold text-md !mt-4' : ''}
+                                ${item.isAdjustment ? 'pl-4' : ''}`}
+                            >
+                              <span>{item.item}</span>
+                              <span className="font-mono">
+                                {item.isSubheader ? '' : formatCurrency(item.amount)}
+                              </span>
+                            </div>
+                          ))
                       ) : (
                         <p className="text-gray-500">No equity data available.</p>
                       )}
@@ -892,52 +888,51 @@ const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undef
               <CardContent>
                 <div className="space-y-6">
                   {cashflowData && cashflowData.length > 0 ? (
-                    cashflowData.map((section, sectionIndex) => {
-                      const isNetLine = section.category === 'Net Increase / (Decrease) in Cash';
+                    cashflowData
+                      .filter(section => {
+                        const isNetLine = section.category === 'Net Increase / (Decrease) in Cash';
+                        return isNetLine || section.items.length > 0 || nonZero(section.total);
+                      })
+                      .map((section, sectionIndex) => {
+                        const isNetLine = section.category === 'Net Increase / (Decrease) in Cash';
+                        const subtotalLabel =
+                          section.total >= 0
+                            ? `Net cash from ${section.category}`
+                            : `Net cash used in ${section.category}`;
 
-                      const subtotalLabel =
-                        section.total >= 0
-                          ? `Net cash from ${section.category}`
-                          : `Net cash used in ${section.category}`;
+                        return (
+                          <div key={sectionIndex}>
+                            <h3 className={`font-semibold text-lg mb-3 ${isNetLine ? 'mt-6' : ''}`}>
+                              {section.category}
+                            </h3>
 
-                      return (
-                        <div key={sectionIndex}>
-                          <h3
-                            className={`font-semibold text-lg mb-3 ${isNetLine ? 'mt-6' : ''}`}
-                          >
-                            {section.category}
-                          </h3>
+                            {section.items.length > 0 ? (
+                              <div className="space-y-2 ml-4">
+                                {section.items.map((item, itemIndex) => (
+                                  <div key={itemIndex} className="flex justify-between py-1">
+                                    <span>{item.item}</span>
+                                    <span className="font-mono">{formatCurrency(item.amount)}</span>
+                                  </div>
+                                ))}
 
-                          {section.items.length > 0 ? (
-                            <div className="space-y-2 ml-4">
-                              {section.items.map((item, itemIndex) => (
-                                <div
-                                  key={itemIndex}
-                                  className="flex justify-between py-1"
-                                >
-                                  <span>{item.item}</span>
-                                  <span className="font-mono">{formatCurrency(item.amount)}</span>
-                                </div>
-                              ))}
-
-                              {section.showSubtotal && (
-                                <div className="flex justify-between py-1 font-bold border-t pt-2">
-                                  <span>{subtotalLabel}</span>
+                                {section.showSubtotal && (
+                                  <div className="flex justify-between py-1 font-bold border-t pt-2">
+                                    <span>{subtotalLabel}</span>
+                                    <span className="font-mono">{formatCurrency(section.total)}</span>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              isNetLine && (
+                                <div className="flex justify-between py-2 font-bold border-t-2 text-lg">
+                                  <span>{section.category}</span>
                                   <span className="font-mono">{formatCurrency(section.total)}</span>
                                 </div>
-                              )}
-                            </div>
-                          ) : (
-                            isNetLine && (
-                              <div className="flex justify-between py-2 font-bold border-t-2 text-lg">
-                                <span>{section.category}</span>
-                                <span className="font-mono">{formatCurrency(section.total)}</span>
-                              </div>
-                            )
-                          )}
-                        </div>
-                      );
-                    })
+                              )
+                            )}
+                          </div>
+                        );
+                      })
                   ) : (
                     <p className="text-center text-gray-500 py-4">
                       No cash flow data available for the selected period.

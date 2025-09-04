@@ -48,7 +48,6 @@ interface JournalEntryDetail {
   };
   lines: JournalLine[];
 }
-// Friendly row for the UI
 interface DupView {
   id: number;
   date: string;
@@ -57,7 +56,6 @@ interface DupView {
   score: number; // 0..1
 }
 
-// --- Unified Transaction View Type (JE only) ---
 type TransactionSourceType = 'journal_entry';
 interface UnifiedTxViewRow {
   id: string;               // e.g. "je-123"
@@ -66,16 +64,14 @@ interface UnifiedTxViewRow {
   date: string;
   description: string;
   amount: number;
-  // fast filters by ID (names are looked up on render):
-  debitAccountId?: number;
-  creditAccountId?: number;
-  // decorative:
+  debitAccountId?: number;  // for fast filtering
+  creditAccountId?: number; // for fast filtering
   complex?: boolean;
   lineCount?: number;
-  // dup data (computed on demand):
   dupCount?: number;
   dupMatches?: DupView[];
 }
+
 // -------------- Helpers --------------
 const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 const fmtMoney = (n: number) => `R${n.toFixed(2)}`;
@@ -126,6 +122,50 @@ const isPotentialDuplicate = (aRow: UnifiedTxViewRow, bRow: UnifiedTxViewRow) =>
   const score = (amountMatch ? 0.5 : 0) + (dateClose ? 0.2 : 0) + (similarDesc ? 0.3 : 0);
   return { isDup: amountMatch && dateClose && similarDesc, score };
 };
+
+// Grouping helpers (for "delete dups keep 1")
+function buildDuplicateGroups(rows: UnifiedTxViewRow[]) {
+  const byAmount = new Map<number, UnifiedTxViewRow[]>();
+  for (const r of rows) {
+    const key = Number(r.amount.toFixed(2));
+    const list = byAmount.get(key) || [];
+    list.push(r);
+    byAmount.set(key, list);
+  }
+  const groups: UnifiedTxViewRow[][] = [];
+  const seen = new Set<string>();
+  for (const [, list] of byAmount) {
+    if (list.length < 2) continue;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (seen.has(a.id)) continue;
+      const group = [a];
+      seen.add(a.id);
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        if (seen.has(b.id)) continue;
+        const { isDup } = isPotentialDuplicate(a, b);
+        if (isDup) {
+          group.push(b);
+          seen.add(b.id);
+        }
+      }
+      if (group.length > 1) groups.push(group);
+    }
+  }
+  return groups;
+}
+function pickSurvivor(group: UnifiedTxViewRow[]) {
+  const sorted = [...group].sort((a, b) => {
+    const ad = new Date(a.date).getTime();
+    const bd = new Date(b.date).getTime();
+    if (ad !== bd) return ad - bd;                    // earliest date first
+    const aid = Number(a.sourceId);
+    const bid = Number(b.sourceId);
+    return aid - bid;                                 // then lowest id
+  });
+  return sorted[0];
+}
 
 // limit concurrency
 async function mapWithConcurrency<T, R>(
@@ -185,6 +225,10 @@ const Transactions: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [computingDups, setComputingDups] = useState(false);
+  const [deleteDupBusy, setDeleteDupBusy] = useState(false);
+  const [dupGroupsPreview, setDupGroupsPreview] = useState<
+    { survivor: UnifiedTxViewRow; duplicates: UnifiedTxViewRow[] }[]
+  >([]);
 
   // Edit modal
   const [editOpen, setEditOpen] = useState(false);
@@ -376,9 +420,9 @@ const Transactions: React.FC = () => {
     })();
 
     return () => { cancelled = true; };
-  }, [summaries, isAuthenticated, token, authHeaders, getDetail]); // NOTE: no `accounts` dep to avoid refetch storms
+  }, [summaries, isAuthenticated, token, authHeaders, getDetail]);
 
-  // ---------- On-demand duplicate computation ----------
+  // ---------- On-demand duplicate computation (for "Duplicates Only" toggle) ----------
   useEffect(() => {
     if (!showDupOnly || unifiedRows.length === 0) return;
 
@@ -400,7 +444,6 @@ const Transactions: React.FC = () => {
 
         for (const [_amt, list] of byAmount) {
           if (list.length < 2) continue;
-          // compare within same-amount bucket
           for (let i = 0; i < list.length; i++) {
             for (let j = i + 1; j < list.length; j++) {
               const a = list[i], b = list[j];
@@ -433,7 +476,6 @@ const Transactions: React.FC = () => {
           }
         }
 
-        // sort dup lists by score
         for (const r of next) {
           if (r.dupMatches && r.dupMatches.length) {
             r.dupMatches.sort((x, y) => y.score - x.score);
@@ -447,7 +489,60 @@ const Transactions: React.FC = () => {
     })();
 
     return () => { cancelled = true; };
-  }, [showDupOnly]); // intentionally not depending on unifiedRows to avoid recompute storms
+  }, [showDupOnly]);
+
+  // ---------- Build / preview groups and delete dups (keep 1) ----------
+  const previewDuplicateGroups = async () => {
+    const groups = buildDuplicateGroups(unifiedRows);
+    const preview = groups.map(g => {
+      const survivor = pickSurvivor(g);
+      const duplicates = g.filter(x => x.id !== survivor.id);
+      return { survivor, duplicates };
+    }).filter(g => g.duplicates.length > 0);
+    setDupGroupsPreview(preview);
+    if (!preview.length) {
+      alert('No duplicate groups found with current settings.');
+    }
+  };
+
+  const deleteDuplicatesKeepOne = async () => {
+    // Build preview first if empty
+    if (!dupGroupsPreview.length) {
+      await previewDuplicateGroups();
+      if (!dupGroupsPreview.length) return;
+    }
+    const totalDeletes = dupGroupsPreview.reduce((n, g) => n + g.duplicates.length, 0);
+    if (!confirm(`Delete ${totalDeletes} duplicate entr${totalDeletes === 1 ? 'y' : 'ies'} across ${dupGroupsPreview.length} group(s)? This cannot be undone.`)) {
+      return;
+    }
+
+    setDeleteDupBusy(true);
+    try {
+      const idsToDelete = dupGroupsPreview.flatMap(g => g.duplicates.map(d => d.sourceId));
+      const CHUNK = 25;
+      for (let i = 0; i < idsToDelete.length; i += CHUNK) {
+        const chunk = idsToDelete.slice(i, i + CHUNK);
+        await Promise.all(
+          chunk.map(async (id) => {
+            const url = `${API_BASE_URL}/journal-entries/${id}`;
+            const res = await fetch(url, { method: 'DELETE', headers: { ...authHeaders } });
+            if (!res.ok) {
+              const txt = await res.text().catch(() => '');
+              console.warn(`Failed to delete JE ${id}: ${res.status} ${txt}`);
+            }
+          })
+        );
+      }
+      await fetchSummaries();
+      setDupGroupsPreview([]);
+      alert('Duplicate deletion complete.');
+    } catch (e: any) {
+      console.error('Delete duplicates failed', e);
+      alert(`Delete failed: ${e?.message || e}`);
+    } finally {
+      setDeleteDupBusy(false);
+    }
+  };
 
   // ---------- Filter in UI by account / dup / search ----------
   const filteredRows = useMemo(() => {
@@ -716,7 +811,7 @@ const Transactions: React.FC = () => {
                 </Button>
               </div>
             </div>
-            <div className="mt-4 flex gap-2">
+            <div className="mt-4 flex gap-2 flex-wrap">
               <Button variant="outline" onClick={() => { fetchSummaries(); }} disabled={loading}>
                 Apply
               </Button>
@@ -724,7 +819,6 @@ const Transactions: React.FC = () => {
                 variant="ghost"
                 onClick={() => {
                   setSearchTerm('');
-                  // reset to default 90-day window
                   const end = new Date();
                   const start = new Date();
                   start.setDate(end.getDate() - 90);
@@ -732,11 +826,40 @@ const Transactions: React.FC = () => {
                   setToDate(end.toISOString().slice(0, 10));
                   setSelectedAccountFilter('all');
                   setShowDupOnly(false);
+                  setDupGroupsPreview([]);
                 }}
               >
                 Reset
               </Button>
+
+              {/* NEW: dedupe buttons */}
+              <Button
+                variant="outline"
+                onClick={previewDuplicateGroups}
+                disabled={loading || loadingDetails || computingDups || deleteDupBusy}
+                title="Preview duplicate groups (keep 1 per group)"
+              >
+                Preview dups
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={deleteDuplicatesKeepOne}
+                disabled={loading || loadingDetails || computingDups || deleteDupBusy || !unifiedRows.length}
+                title="Delete duplicates and keep one per group"
+              >
+                {deleteDupBusy ? 'Deleting…' : 'Delete dups (keep 1)'}
+              </Button>
             </div>
+
+            {/* Optional: small preview summary */}
+            {dupGroupsPreview.length > 0 && (
+              <div className="mt-3 text-sm text-muted-foreground">
+                {dupGroupsPreview.length} group(s) found — will delete{' '}
+                {dupGroupsPreview.reduce((n,g)=>n+g.duplicates.length,0)} entr
+                {dupGroupsPreview.reduce((n,g)=>n+g.duplicates.length,0)===1?'y':'ies'}.
+                Survivor rule: earliest date, then lowest ID.
+              </div>
+            )}
           </CardContent>
         </Card>
 

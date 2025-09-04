@@ -117,10 +117,10 @@ const setupItems: NavigationItem[] = [
 // --- NEW: Zororo Phumulani Specific Items ---
 const zororoItems: NavigationItem[] = [
   // Tabs for Agents
-  { title: 'Register Person', url: '/agent-signup', icon: UserPlus, allowedRoles: ['agent', 'super-agent'] }, // Removed 'user', 'admin' for specificity
-  { title: 'My Dashboard', url: '/agent-dashboard', icon: UserCheck, allowedRoles: ['agent',  'admin'] }, // Removed 'user', 'admin' for specificity
+  { title: 'Register Person', url: '/agent-signup', icon: UserPlus, allowedRoles: ['agent', 'super-agent', 'admin', 'user'] }, // Removed 'user', 'admin' for specificity
+  { title: 'My Dashboard', url: '/agent-dashboard', icon: UserCheck, allowedRoles: ['agent',  'admin', 'user'] }, // Removed 'user', 'admin' for specificity
   // Tab for Super Agent (includes Agent tabs implicitly via role)
-  { title: 'Agents Overview', url: '/super-agent-dashboard', icon: Users2, allowedRoles: ['super-agent']}, // Removed 'user', 'admin' for specificity
+  { title: 'Agents Overview', url: '/super-agent-dashboard', icon: Users2, allowedRoles: ['super-agent', 'admin', 'user']}, // Removed 'user', 'admin' for specificity
 ];
 // --- END NEW ---
 
