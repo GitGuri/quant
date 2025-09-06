@@ -21,7 +21,7 @@ import 'jspdf-autotable';
 if (typeof HighchartsMore === 'function') HighchartsMore(Highcharts);
 
 // IMPORTANT: Replace with your actual backend API URL
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // Ensure this matches your backend
 
 // Define types for projection data
 interface ProjectionDataPoint {
@@ -40,6 +40,16 @@ interface CustomOverrides {
   };
 }
 
+// Define the structure for the baseline data fetched from the backend
+interface BaselineData {
+  sales: number;
+  costOfGoods: number;
+  operatingExpenses: number;
+  otherExpenses: number;
+  totalExpenses: number;
+  // Add other relevant fields if your backend sends them
+}
+
 const Projections = () => {
   const { toast } = useToast();
   const { isAuthenticated } = useAuth();
@@ -48,7 +58,7 @@ const Projections = () => {
   const [revenueGrowthRate, setRevenueGrowthRate] = useState(5);
   const [costGrowthRate, setCostGrowthRate] = useState(3);
   const [expenseGrowthRate, setExpenseGrowthRate] = useState(2);
-  const [baselineData, setBaselineData] = useState<any>(null);
+  const [baselineData, setBaselineData] = useState<BaselineData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('12-months');
@@ -92,25 +102,31 @@ const Projections = () => {
       }
 
       try {
-        let url = `${API_BASE_URL}/api/projections/baseline-data`;
-        if (startDate && endDate) {
-          url += `?startDate=${startDate}&endDate=${endDate}`;
-        }
+        // --- Call the NEW backend endpoint ---
+        let url = `${API_BASE_URL}/api/projections/historical-baseline`;
+        // --- Pass the date range as query parameters ---
+        const params = new URLSearchParams();
+        if (startDate) params.append('startDate', startDate);
+        if (endDate) params.append('endDate', endDate);
+        if (params.toString()) url += `?${params.toString()}`;
 
-        const response = await axios.get(url, {
+        const response = await axios.get<BaselineData>(url, {
           headers: getAuthHeaders(),
         });
-        setBaselineData(response.data);
+
+        // --- Update state with the data from the new endpoint ---
+        setBaselineData(response.data); // response.data should match the BaselineData interface
+
         toast({
           title: 'Success',
-          description: 'Financial baseline data loaded successfully.',
+          description: 'Financial baseline data loaded successfully from journal entries.',
           variant: 'default',
         });
-      } catch (error) {
-        console.error('Error fetching baseline data:', error);
+      } catch (error: any) {
+        console.error('Error fetching baseline data from journal:', error);
         toast({
           title: 'Error',
-          description: 'Failed to load financial baseline data.',
+          description: `Failed to load financial baseline data. ${error.response?.data?.error || error.message}`,
           variant: 'destructive',
         });
         setBaselineData(null);
@@ -126,7 +142,10 @@ const Projections = () => {
   useEffect(() => {
     if (isAuthenticated && token) {
       if (activeTab === '12-months' || activeTab === '5-years') {
-        fetchBaselineData();
+        // Default to last 12 months for initial fetch if no dates provided
+        const defaultEndDate = format(new Date(), 'yyyy-MM-dd');
+        const defaultStartDate = format(subDays(new Date(), 365), 'yyyy-MM-dd');
+        fetchBaselineData(defaultStartDate, defaultEndDate);
       }
     }
   }, [isAuthenticated, token, fetchBaselineData, activeTab]);
@@ -478,7 +497,7 @@ const Projections = () => {
       link.click();
       document.body.removeChild(link);
     }
-  }, [toast, transformToInvertedTableData]); // Added transformToInvertedTableData to dependencies
+  }, [toast]); // Removed transformToInvertedTableData from dependencies as it's not needed
 
   const downloadPDF = useCallback((data: ProjectionDataPoint[], title: string, filename: string) => {
     if (!data || data.length === 0) {
@@ -539,7 +558,7 @@ const Projections = () => {
     }
 
     doc.save(filename);
-  }, [transformToInvertedTableData, toast]); // Added transformToInvertedTableData to dependencies
+  }, [toast]); // Removed transformToInvertedTableData from dependencies as it's not needed
 
 
   // --- NEW: Handlers for inline editing ---
@@ -704,7 +723,11 @@ const Projections = () => {
                 Projection Parameters
               </span>
               <Button
-                onClick={() => fetchBaselineData()}
+                onClick={() => {
+                  const defaultEndDate = format(new Date(), 'yyyy-MM-dd');
+                  const defaultStartDate = format(subDays(new Date(), 365), 'yyyy-MM-dd');
+                  fetchBaselineData(defaultStartDate, defaultEndDate);
+                }}
                 disabled={isRefreshing || !isAuthenticated || !token || (activeTab !== '12-months' && activeTab !== '5-years')}
               >
                 {isRefreshing ? (
@@ -788,7 +811,15 @@ const Projections = () => {
             <Download className='h-4 w-4 mr-2' />
             Download Projections CSV
           </Button>
-
+          <Button
+            size='sm'
+            onClick={() => downloadPDF(getProjectionData, `Financial Projections - ${downloadPeriod}`, `${downloadPeriod}-projection.pdf`)}
+            disabled={!getProjectionData || getProjectionData.length === 0}
+            variant="outline"
+          >
+            <Download className='h-4 w-4 mr-2' />
+            Download PDF
+          </Button>
         </div>
 
         {isLoading ? (

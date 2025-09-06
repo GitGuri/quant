@@ -803,18 +803,22 @@ export function KanbanBoard() {
             )}
           </DragOverlay>
 
-          {/* New Task Dialog */}
+          {/* New Task Dialog - SCROLLABLE */}
           <Dialog open={showNewTaskForm} onOpenChange={setShowNewTaskForm}>
-            <DialogContent className="max-w-md">
-              <DialogHeader>
+            {/* Added max-h, overflow-y-auto, and padding adjustments for scrolling */}
+            <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto p-0">
+              <DialogHeader className="p-6 pb-0">
                 <DialogTitle>Create New Task</DialogTitle>
               </DialogHeader>
-              <TaskForm
-                onSave={handleSaveNewTask} // Updated to handle initial steps
-                onCancel={() => setShowNewTaskForm(false)}
-                projects={projects}
-                users={users}
-              />
+              {/* Added padding to the form container */}
+              <div className="p-6 pt-0">
+                <TaskForm
+                  onSave={handleSaveNewTask} // Updated to handle initial steps
+                  onCancel={() => setShowNewTaskForm(false)}
+                  projects={projects}
+                  users={users}
+                />
+              </div>
             </DialogContent>
           </Dialog>
 

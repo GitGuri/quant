@@ -1,3 +1,4 @@
+// src/components/staff/EmployeeRegistration.tsx
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Modal,
@@ -11,10 +12,9 @@ import {
   message,
   Typography,
 } from 'antd';
-import type { Employee } from '../../types/payroll'; // Ensure this path is correct
- // Ensure this path is correct
+import type { Employee } from '../../types/payroll';
 import moment from 'moment';
-import { useAuth } from '../../AuthPage'; // Import useAuth
+import { useAuth } from '../../AuthPage';
 
 const { Option } = Select;
 
@@ -22,10 +22,10 @@ interface EmployeeRegistrationProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
-  initialData?: Employee | null; // For editing existing employee
+  initialData?: Employee | null;
 }
 
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // Your backend API base URL
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
   isOpen,
@@ -35,26 +35,70 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
 }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
-  const { isAuthenticated } = useAuth(); // Only isAuthenticated is needed
+  const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
 
   useEffect(() => {
     if (isOpen) {
       if (initialData) {
+        // Extract bank details with comprehensive fallback handling
+        let bankDetails = {
+          accountHolder: '',
+          bankName: '',
+          accountNumber: '',
+          branchCode: '',
+        };
+
+        // Handle different possible bank details structures
+        if (initialData.bank_details) {
+          // Database structure (snake_case)
+          bankDetails = {
+            accountHolder: initialData.bank_details.account_holder || '',
+            bankName: initialData.bank_details.bank_name || '',
+            accountNumber: initialData.bank_details.account_number || '',
+            branchCode: initialData.bank_details.branch_code || '',
+          };
+        } else if (initialData.bankDetails) {
+          // Form structure (camelCase)
+          bankDetails = {
+            accountHolder: initialData.bankDetails.accountHolder || '',
+            bankName: initialData.bankDetails.bankName || '',
+            accountNumber: initialData.bankDetails.accountNumber || '',
+            branchCode: initialData.bankDetails.branchCode || '',
+          };
+        } else {
+          // Individual fields (view modal compatibility)
+          bankDetails = {
+            accountHolder: initialData.account_holder || '',
+            bankName: initialData.bank_name || '',
+            accountNumber: initialData.account_number || '',
+            branchCode: initialData.branch_code || '',
+          };
+        }
+
         // Set form fields for editing
         form.setFieldsValue({
-          ...initialData,
-          startDate: moment(initialData.startDate), // Convert string to moment object for DatePicker
-          bankDetails: initialData.bankDetails || {}, // Ensure bankDetails is an object
+          name: initialData.name || '',
+          position: initialData.position || '',
+          email: initialData.email || '',
+          idNumber: initialData.id_number || initialData.idNumber || '',
+          phone: initialData.phone || '',
+          startDate: initialData.start_date ? moment(initialData.start_date) : null,
+          paymentType: initialData.payment_type || initialData.paymentType || 'salary',
+          baseSalary: initialData.base_salary !== null ? initialData.base_salary : (initialData.baseSalary || 0),
+          hourlyRate: initialData.hourly_rate !== null ? initialData.hourly_rate : (initialData.hourlyRate || 0),
+          hoursWorked: initialData.hours_worked_total || initialData.hoursWorked || 0,
+          bankDetails: bankDetails,
         });
       } else {
         // Reset form for adding new employee
         form.resetFields();
         form.setFieldsValue({
-          paymentType: 'salary', // Default to salary
+          paymentType: 'salary',
           baseSalary: 0,
           hourlyRate: 0,
           hoursWorked: 0,
+          startDate: null,
           bankDetails: {
             accountHolder: '',
             bankName: '',
@@ -70,7 +114,7 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
 
-  const handleSubmit = async (values: Employee) => {
+  const handleSubmit = async (values: any) => {
     if (!isAuthenticated) {
       message.error('You must be logged in to perform this action.');
       return;
@@ -78,20 +122,27 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
 
     setLoading(true);
     try {
+      // Prepare the payload with correct field names
       const payload = {
-        ...values,
-        startDate: values.startDate ? moment(values.startDate).toISOString() : undefined, // Convert moment to ISO string
-        // Ensure bankDetails is correctly structured, even if empty
-        bankDetails: values.bankDetails || {
-          accountHolder: '',
-          bankName: '',
-          accountNumber: '',
-          branchCode: '',
+        name: values.name,
+        position: values.position,
+        email: values.email,
+        idNumber: values.idNumber,
+        phone: values.phone,
+        startDate: values.startDate ? moment(values.startDate).format('YYYY-MM-DD') : null,
+        paymentType: values.paymentType,
+        baseSalary: values.paymentType === 'salary' ? values.baseSalary : null,
+        hourlyRate: values.paymentType === 'hourly' ? values.hourlyRate : null,
+        bankDetails: {
+          accountHolder: values.bankDetails.accountHolder,
+          bankName: values.bankDetails.bankName,
+          accountNumber: values.bankDetails.accountNumber,
+          branchCode: values.bankDetails.branchCode,
         },
       };
 
       let response;
-      if (initialData) {
+      if (initialData && initialData.id) {
         // Update existing employee
         response = await fetch(`${API_BASE_URL}/employees/${initialData.id}`, {
           method: 'PUT',
@@ -118,11 +169,12 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
         throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
+      const result = await response.json();
       message.success(
         initialData ? 'Employee updated successfully!' : 'Employee added successfully!'
       );
-      onSuccess(); // Trigger data refresh in parent
-      onClose(); // Close modal
+      onSuccess();
+      onClose();
     } catch (error: any) {
       console.error('Error submitting employee data:', error);
       message.error(`Failed to ${initialData ? 'update' : 'add'} employee: ${error.message}`);
@@ -136,8 +188,9 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
       title={initialData ? 'Edit Employee' : 'Add New Employee'}
       open={isOpen}
       onCancel={onClose}
-      footer={null} // Custom footer for buttons
-      destroyOnClose={true} // Ensures form resets when closed
+      footer={null}
+      destroyOnClose={true}
+      width={600}
     >
       <Form
         form={form}
@@ -148,6 +201,7 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
           baseSalary: 0,
           hourlyRate: 0,
           hoursWorked: 0,
+          startDate: null,
           bankDetails: {
             accountHolder: '',
             bankName: '',
@@ -178,7 +232,7 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
           <Input disabled={loading || !isAuthenticated} />
         </Form.Item>
         <Form.Item
-          name='idNumber' // Changed from id_number
+          name='idNumber'
           label='ID Number'
           rules={[{ required: true, message: 'Please enter employee ID number' }]}
         >
@@ -188,14 +242,14 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
           <Input disabled={loading || !isAuthenticated} />
         </Form.Item>
         <Form.Item
-          name='startDate' // Changed from start_date
+          name='startDate'
           label='Start Date'
           rules={[{ required: true, message: 'Please select start date' }]}
         >
           <DatePicker style={{ width: '100%' }} disabled={loading || !isAuthenticated} />
         </Form.Item>
         <Form.Item
-          name='paymentType' // Changed from payment_type
+          name='paymentType'
           label='Payment Type'
           rules={[{ required: true, message: 'Please select payment type' }]}
         >
@@ -213,7 +267,7 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
           {({ getFieldValue }) =>
             getFieldValue('paymentType') === 'salary' ? (
               <Form.Item
-                name='baseSalary' // Changed from base_salary
+                name='baseSalary'
                 label='Base Salary (R)'
                 rules={[{ required: true, message: 'Please enter base salary' }]}
               >
@@ -221,12 +275,14 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
                   min={0}
                   style={{ width: '100%' }}
                   disabled={loading || !isAuthenticated}
+                  formatter={value => `R ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={value => value!.replace(/R\s?|(,*)/g, '') as any}
                 />
               </Form.Item>
             ) : (
               <>
                 <Form.Item
-                  name='hourlyRate' // Changed from hourly_rate
+                  name='hourlyRate'
                   label='Hourly Rate (R)'
                   rules={[{ required: true, message: 'Please enter hourly rate' }]}
                 >
@@ -234,10 +290,12 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
                     min={0}
                     style={{ width: '100%' }}
                     disabled={loading || !isAuthenticated}
+                    formatter={value => `R ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                    parser={value => value!.replace(/R\s?|(,*)/g, '') as any}
                   />
                 </Form.Item>
                 <Form.Item
-                  name='hoursWorked' // Changed from hours_worked_total
+                  name='hoursWorked'
                   label='Total Hours Worked (for initial setup)'
                 >
                   <InputNumber
@@ -253,26 +311,30 @@ const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
 
         <Typography.Title level={5}>Bank Details</Typography.Title>
         <Form.Item
-          name={['bankDetails', 'accountHolder']} // Changed from account_holder
+          name={['bankDetails', 'accountHolder']}
           label='Account Holder Name'
+          rules={[{ required: true, message: 'Please enter account holder name' }]}
         >
           <Input disabled={loading || !isAuthenticated} />
         </Form.Item>
         <Form.Item
-          name={['bankDetails', 'bankName']} // Changed from bank_name
+          name={['bankDetails', 'bankName']}
           label='Bank Name'
+          rules={[{ required: true, message: 'Please enter bank name' }]}
         >
           <Input disabled={loading || !isAuthenticated} />
         </Form.Item>
         <Form.Item
-          name={['bankDetails', 'accountNumber']} // Changed from account_number
+          name={['bankDetails', 'accountNumber']}
           label='Account Number'
+          rules={[{ required: true, message: 'Please enter account number' }]}
         >
           <Input disabled={loading || !isAuthenticated} />
         </Form.Item>
         <Form.Item
-          name={['bankDetails', 'branchCode']} // Changed from branch_code
+          name={['bankDetails', 'branchCode']}
           label='Branch Code'
+          rules={[{ required: true, message: 'Please enter branch code' }]}
         >
           <Input disabled={loading || !isAuthenticated} />
         </Form.Item>

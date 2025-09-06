@@ -503,16 +503,7 @@ export default function UserManagementPage() {
               placeholder='Set a password'
               required
             />
-            <Label htmlFor='add-office-code'>Office Code</Label>
-            <Input
-              id='add-office-code'
-              type='text'
-              name='officeCode'
-              value={newUserData.officeCode}
-              onChange={(e) => setNewUserData({ ...newUserData, officeCode: e.target.value })}
-              placeholder='e.g., QUANT001'
-              required
-            />
+
             <Label htmlFor='add-role'>Role</Label>
             <Select
               name='role'
