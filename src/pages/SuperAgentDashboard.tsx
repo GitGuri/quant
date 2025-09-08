@@ -1,4 +1,4 @@
-// SuperAgentDashboard.tsx — UPDATED PART 1/2 (with /api/notifications integration)
+// SuperAgentDashboard.tsx — PART 1/2 (mobile + OC-friendly)
 import React, { useEffect, useMemo, useState } from 'react';
 import { Header } from '../components/layout/Header';
 import {
@@ -17,7 +17,7 @@ import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/AuthPage';
 
 import {
-  Users, TrendingUp, CreditCard, DollarSign, Filter, Trash2, Pencil, Search, Award, Calendar, BarChart2, X, Eye, Edit, Send, Bell, MessageSquare
+  Users, TrendingUp, CreditCard, DollarSign, Trash2, Pencil, Search, Calendar, X, Eye, Edit, Send, Bell, MessageSquare
 } from 'lucide-react';
 
 import { Bar, Line } from 'react-chartjs-2';
@@ -132,7 +132,6 @@ interface ClientHistory {
     remainingCreditAmount: number | null;
   }>;
 }
-// === add/extend ===
 interface Application {
   id: string;
   name?: string;
@@ -141,12 +140,9 @@ interface Application {
   total_amount?: number;
   created_at?: string | null;
   status?: string;
-
-  // read-only extras returned by backend list:
   agent_name?: string | null;
   agent_code?: string | null;
 }
-
 
 // Messaging
 type ChatMessage = {
@@ -158,7 +154,7 @@ type ChatMessage = {
   read_at: string | null;
 };
 
-// Notifications (from your backend)
+// Notifications
 type NotificationRow = {
   id: number;
   sender_user_id: string;
@@ -267,6 +263,8 @@ const SuperAgentDashboard: React.FC = () => {
   }, []);
 
   // ===== Chat helpers =====
+  const { toast: _toastShim } = { toast }; // silence lints
+
   const fetchThread = async (withUserId: string) => {
     if (!token) return;
     setChatLoading(true);
@@ -293,9 +291,7 @@ const SuperAgentDashboard: React.FC = () => {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}` },
       });
-    } catch {
-      // silent
-    }
+    } catch { /* noop */ }
   };
 
   // ===== Notifications helpers =====
@@ -328,14 +324,12 @@ const SuperAgentDashboard: React.FC = () => {
 
       setNotifications(rows);
 
-      // Determine if this is the first load; avoid spamming toasts with historical rows
       if (lastNotifSeenAt === 0 && rows.length) {
         const newestTs = Math.max(...rows.map(r => new Date(r.created_at).getTime()).filter(x => !isNaN(x)));
         if (isFinite(newestTs)) setLastNotifSeenAt(newestTs);
         return; // don't toast on first bulk load
       }
 
-      // Find newly-arrived rows
       const newlyArrived = rows.filter(n => {
         const ts = new Date(n.created_at).getTime();
         return !isNaN(ts) && ts > lastNotifSeenAt;
@@ -345,7 +339,6 @@ const SuperAgentDashboard: React.FC = () => {
         const newestTs = Math.max(...newlyArrived.map(n => new Date(n.created_at).getTime()));
         if (isFinite(newestTs)) setLastNotifSeenAt(newestTs);
 
-        // For each new row: bump unread for sender and notify
         newlyArrived.forEach(n => {
           const senderId = n.sender_user_id;
           setUnreadByUser(prev => {
@@ -546,32 +539,28 @@ const SuperAgentDashboard: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agents, selectedMonth]);
 
-  // === add next to fetchTeamClients ===
-const fetchTeamApplications = async () => {
-  if (!token) return;
-  setTeamAppsLoading(true);
-  try {
-    const url = new URL(`${API_BASE_URL}/api/super-agent/applications`);
-    if (selectedMonth) url.searchParams.set('month', selectedMonth);
-    // NOTE: server also supports ?q=, but we apply a UI filter below to avoid spamming server.
-    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(await res.text());
-    const apps: Application[] = await res.json();
-    setTeamApps(apps);
-  } catch (e) {
-    console.error('fetchTeamApplications error', e);
-    setTeamApps([]);
-  } finally {
-    setTeamAppsLoading(false);
-  }
-};
-
-// === add just like team clients effect ===
-useEffect(() => {
-  fetchTeamApplications();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [selectedMonth, token, isAuthenticated]);
-
+  // === Applications across team ===
+  const fetchTeamApplications = async () => {
+    if (!token) return;
+    setTeamAppsLoading(true);
+    try {
+      const url = new URL(`${API_BASE_URL}/api/super-agent/applications`);
+      if (selectedMonth) url.searchParams.set('month', selectedMonth);
+      const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const apps: Application[] = await res.json();
+      setTeamApps(apps);
+    } catch (e) {
+      console.error('fetchTeamApplications error', e);
+      setTeamApps([]);
+    } finally {
+      setTeamAppsLoading(false);
+    }
+  };
+  useEffect(() => {
+    fetchTeamApplications();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonth, token, isAuthenticated]);
 
   // ======== KPIs =========
   const kpis = useMemo(() => {
@@ -680,192 +669,185 @@ useEffect(() => {
   const barChartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' as const }, title: { display: true, text: 'Monthly Registrations (All Agents)' } }, scales: { y: { beginAtZero: true } } };
   const lineChartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' as const }, title: { display: true, text: 'Monthly Successful Payments Trend (count)' } }, scales: { y: { beginAtZero: true } } };
 
-  // ========= Detail data loaders & helpers (PUT ABOVE "Loading & Errors") ==========
-
-// Fetch per-agent clients (respects selectedMonth)
-const fetchAgentClients = async (agentUserId: string) => {
-  if (!token) return;
-  setAgentClientsLoading(true);
-  try {
-    const url = new URL(`${API_BASE_URL}/api/my-clients`);
-    if (selectedMonth) url.searchParams.set('month', selectedMonth);
-    url.searchParams.set('agentUserId', agentUserId);
-    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(await res.text());
-    const rows: SalesClientRow[] = await res.json();
-    setAgentClients(rows);
-  } catch (e: any) {
-    console.error('fetchAgentClients error', e);
-    setAgentClients([]);
-    toast({ title: 'Clients error', description: String(e?.message || e), variant: 'destructive' });
-  } finally {
-    setAgentClientsLoading(false);
-  }
-};
-
-// Fetch per-agent applications (not month-based)
-const fetchAgentApplications = async (agentUserId: string) => {
-  if (!token) return;
-  setAgentAppsLoading(true);
-  try {
-    const url = new URL(`${API_BASE_URL}/api/super-agent/agent/${encodeURIComponent(agentUserId)}/applications`);
-    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(await res.text());
-    const apps: Application[] = await res.json();
-    setAgentApps(apps);
-  } catch (e: any) {
-    console.error('fetchAgentApplications error', e);
-    setAgentApps([]);
-  } finally {
-    setAgentAppsLoading(false);
-  }
-};
-
-// Open Client History dialog
-const openClientHistory = async (customerName: string, agentUserId?: string) => {
-  if (!token) return;
-  setSelectedCustomerName(customerName);
-  setSelectedCustomerAgentId(agentUserId ?? (detailAgent?.user_id || null));
-  setClientDetailOpen(true);
-  setClientDetailLoading(true);
-  try {
-    const url = new URL(`${API_BASE_URL}/api/my-client-history`);
-    url.searchParams.set('customerName', customerName);
-    if (selectedMonth) url.searchParams.set('month', selectedMonth);
-    if (agentUserId) url.searchParams.set('agentUserId', agentUserId);
-
-    const res = await fetch(url.toString(), { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(await res.text());
-    const data: ClientHistory = await res.json();
-    setClientDetail(data);
-  } catch (e) {
-    console.error(e);
-    setClientDetail(null);
-  } finally {
-    setClientDetailLoading(false);
-  }
-};
-
-// Open application by client full name
-const openApplicationByName = (fullName: string, apps: Application[]) => {
-  const target = apps.find(a => toAppName(a).toLowerCase() === fullName.trim().toLowerCase());
-  if (target) {
-    setCurrentApp({
-      ...target,
-      firstName: target.name || '',
-      lastName: target.surname || '',
-    });
-    setFormMode('view');
-    setIsFormOpen(true);
-  } else {
-    toast({ title: 'Not found', description: 'No matching application found for this client.', variant: 'destructive' });
-  }
-};
-
-// Detail dialog: when opened/agent changes → fetch trend series + preload clients & apps
-useEffect(() => {
-  const run = async () => {
-    if (!detailOpen || !detailAgent || !token) return;
-    setDetailLoading(true);
-    setDetailSeries(null);
+  // ========= Per-agent helpers =========
+  const fetchAgentClients = async (agentUserId: string) => {
+    if (!token) return;
+    setAgentClientsLoading(true);
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/super-agent/agent/${encodeURIComponent(detailAgent.user_id)}/chart-data?period=last_5_months`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (res.ok) {
-        const series: AgentMonthlyPoint[] = await res.json();
-        setDetailSeries(series);
-      } else {
-        setDetailSeries([]);
-      }
+      const url = new URL(`${API_BASE_URL}/api/my-clients`);
+      if (selectedMonth) url.searchParams.set('month', selectedMonth);
+      url.searchParams.set('agentUserId', agentUserId);
+      const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const rows: SalesClientRow[] = await res.json();
+      setAgentClients(rows);
     } catch (e: any) {
-      console.error(e);
-      setDetailSeries([]);
+      console.error('fetchAgentClients error', e);
+      setAgentClients([]);
+      toast({ title: 'Clients error', description: String(e?.message || e), variant: 'destructive' });
     } finally {
-      setDetailLoading(false);
+      setAgentClientsLoading(false);
     }
-
-    // Preload the tab data
-    fetchAgentClients(detailAgent.user_id);
-    fetchAgentApplications(detailAgent.user_id);
   };
-  run();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [detailOpen, detailAgent?.user_id]);
 
-// If month changes while detail is open, refetch clients (apps are typically not month-based)
-useEffect(() => {
-  if (detailOpen && detailAgent) {
-    fetchAgentClients(detailAgent.user_id);
-  }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [selectedMonth]);
+  const fetchAgentApplications = async (agentUserId: string) => {
+    if (!token) return;
+    setAgentAppsLoading(true);
+    try {
+      const url = new URL(`${API_BASE_URL}/api/super-agent/agent/${encodeURIComponent(agentUserId)}/applications`);
+      const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const apps: Application[] = await res.json();
+      setAgentApps(apps);
+    } catch (e: any) {
+      console.error('fetchAgentApplications error', e);
+      setAgentApps([]);
+    } finally {
+      setAgentAppsLoading(false);
+    }
+  };
 
-// ======= Edit Agent handlers =======
-const handleEditChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-  const { name, value, type, checked } = e.target as HTMLInputElement;
-  if (name === 'commission_rate_display') {
-    const asNum = value === '' ? '' : Number(value);
+  const openClientHistory = async (customerName: string, agentUserId?: string) => {
+    if (!token) return;
+    setSelectedCustomerName(customerName);
+    setSelectedCustomerAgentId(agentUserId ?? (detailAgent?.user_id || null));
+    setClientDetailOpen(true);
+    setClientDetailLoading(true);
+    try {
+      const url = new URL(`${API_BASE_URL}/api/my-client-history`);
+      url.searchParams.set('customerName', customerName);
+      if (selectedMonth) url.searchParams.set('month', selectedMonth);
+      if (agentUserId) url.searchParams.set('agentUserId', agentUserId);
+
+      const res = await fetch(url.toString(), { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const data: ClientHistory = await res.json();
+      setClientDetail(data);
+    } catch (e) {
+      console.error(e);
+      setClientDetail(null);
+    } finally {
+      setClientDetailLoading(false);
+    }
+  };
+
+  const openApplicationByName = (fullName: string, apps: Application[]) => {
+    const target = apps.find(a => toAppName(a).toLowerCase() === fullName.trim().toLowerCase());
+    if (target) {
+      setCurrentApp({
+        ...target,
+        firstName: target.name || '',
+        lastName: target.surname || '',
+      });
+      setFormMode('view');
+      setIsFormOpen(true);
+    } else {
+      toast({ title: 'Not found', description: 'No matching application found for this client.', variant: 'destructive' });
+    }
+  };
+
+  useEffect(() => {
+    const run = async () => {
+      if (!detailOpen || !detailAgent || !token) return;
+      setDetailLoading(true);
+      setDetailSeries(null);
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/super-agent/agent/${encodeURIComponent(detailAgent.user_id)}/chart-data?period=last_5_months`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (res.ok) {
+          const series: AgentMonthlyPoint[] = await res.json();
+          setDetailSeries(series);
+        } else {
+          setDetailSeries([]);
+        }
+      } catch (e: any) {
+        console.error(e);
+        setDetailSeries([]);
+      } finally {
+        setDetailLoading(false);
+      }
+
+      // Preload the tab data
+      fetchAgentClients(detailAgent.user_id);
+      fetchAgentApplications(detailAgent.user_id);
+    };
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailOpen, detailAgent?.user_id]);
+
+  useEffect(() => {
+    if (detailOpen && detailAgent) {
+      fetchAgentClients(detailAgent.user_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonth]);
+
+  // ======= Edit Agent handlers =======
+  const handleEditChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value, type, checked } = e.target as HTMLInputElement;
+    if (name === 'commission_rate_display') {
+      const asNum = value === '' ? '' : Number(value);
+      setEditFormData(prev => ({
+        ...prev,
+        commission_rate_display: value,
+        commission_rate: value === '' || isNaN(asNum) ? ('' as any) : Number((asNum / 100).toFixed(6))
+      }));
+      return;
+    }
+    if (type === 'checkbox') {
+      setEditFormData(prev => ({ ...prev, [name]: checked }));
+      return;
+    }
     setEditFormData(prev => ({
       ...prev,
-      commission_rate_display: value,
-      commission_rate: value === '' || isNaN(asNum) ? ('' as any) : Number((asNum / 100).toFixed(6))
+      [name]: type === 'number' ? (value === '' ? '' : Number(value)) : value,
     }));
-    return;
-  }
-  if (type === 'checkbox') {
-    setEditFormData(prev => ({ ...prev, [name]: checked }));
-    return;
-  }
-  setEditFormData(prev => ({
-    ...prev,
-    [name]: type === 'number' ? (value === '' ? '' : Number(value)) : value,
-  }));
-};
-
-const handleSaveEdit = async () => {
-  if (!editingAgent || !token) return;
-
-  const pct = Number(editFormData.commission_rate_display ?? 10);
-  if (isNaN(pct) || pct < 0 || pct > 100) {
-    toast({ title: 'Invalid commission', description: 'Commission must be between 0 and 100%.', variant: 'destructive' });
-    return;
-  }
-
-  const payload: any = {
-    displayName: editFormData.displayName,
-    email: editFormData.email,
-    agent_code: (editFormData.agent_code ?? '').toString().trim() || null,
-    territory: (editFormData.territory ?? '').toString().trim() || null,
-    commission_rate: Number((pct / 100).toFixed(6)),
-    target_monthly_registrations: editFormData.target_monthly_registrations ?? 0,
-    target_monthly_sales: editFormData.target_monthly_sales ?? 0,
-    performance_score: editFormData.performance_score ?? 0,
-    is_active: !!editFormData.is_active,
   };
 
-  try {
-    const res = await fetch(`${API_BASE_URL}/api/agents/${editingAgent.user_id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error(await res.text());
+  const handleSaveEdit = async () => {
+    if (!editingAgent || !token) return;
 
-    // reflect changes in table state
-    setAgents(prev =>
-      prev.map(a => a.user_id === editingAgent.user_id
-        ? { ...a, ...payload, commission_rate: payload.commission_rate }
-        : a)
-    );
+    const pct = Number(editFormData.commission_rate_display ?? 10);
+    if (isNaN(pct) || pct < 0 || pct > 100) {
+      toast({ title: 'Invalid commission', description: 'Commission must be between 0 and 100%.', variant: 'destructive' });
+      return;
+    }
 
-    setIsEditDialogOpen(false);
-    toast({ title: 'Agent updated', description: 'Changes saved successfully.' });
-  } catch (e: any) {
-    toast({ title: 'Update failed', description: String(e?.message || e), variant: 'destructive' });
-  }
-};
+    const payload: any = {
+      displayName: editFormData.displayName,
+      email: editFormData.email,
+      agent_code: (editFormData.agent_code ?? '').toString().trim() || null,
+      territory: (editFormData.territory ?? '').toString().trim() || null,
+      commission_rate: Number((pct / 100).toFixed(6)),
+      target_monthly_registrations: editFormData.target_monthly_registrations ?? 0,
+      target_monthly_sales: editFormData.target_monthly_sales ?? 0,
+      performance_score: editFormData.performance_score ?? 0,
+      is_active: !!editFormData.is_active,
+    };
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/agents/${editingAgent.user_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+
+      // reflect changes in table state
+      setAgents(prev =>
+        prev.map(a => a.user_id === editingAgent.user_id
+          ? { ...a, ...payload, commission_rate: payload.commission_rate }
+          : a)
+      );
+
+      setIsEditDialogOpen(false);
+      toast({ title: 'Agent updated', description: 'Changes saved successfully.' });
+    } catch (e: any) {
+      toast({ title: 'Update failed', description: String(e?.message || e), variant: 'destructive' });
+    }
+  };
 
   // ====== Loading & Errors ======
   if (loading) {
@@ -885,7 +867,7 @@ const handleSaveEdit = async () => {
     );
   }
 
-  // ====== Render (PART 1/2 ends after Agents table) ======
+  // ====== Render (PART 1/2 up to Agents) ======
   return (
     <div className="flex-1 space-y-6 p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
       <Header title="Super Agent Dashboard" />
@@ -920,7 +902,7 @@ const handleSaveEdit = async () => {
 
           {/* Notifications bell */}
           <div className="relative">
-            <Button variant="ghost" size="sm" onClick={() => setNotifDropdownOpen(v => !v)}>
+            <Button aria-label="Notifications" variant="ghost" size="sm" onClick={() => setNotifDropdownOpen(v => !v)}>
               <Bell className="h-5 w-5" />
               {totalUnread > 0 && (
                 <span className="ml-2 inline-flex items-center justify-center rounded-full bg-red-600 text-white text-[10px] px-2 py-[2px]">
@@ -929,7 +911,7 @@ const handleSaveEdit = async () => {
               )}
             </Button>
             {notifDropdownOpen && (
-              <div className="absolute right-0 mt-2 w-80 rounded-md border bg-background shadow-lg z-20">
+              <div className="absolute right-0 mt-2 w-80 max-w-[90vw] rounded-md border bg-background shadow-lg z-20">
                 <div className="p-2 text-sm font-medium border-b">Unread messages</div>
                 <div className="max-h-64 overflow-auto">
                   {Object.keys(unreadByUser).length === 0 ? (
@@ -1030,8 +1012,6 @@ const handleSaveEdit = async () => {
           </CardContent>
         </Card>
 
-
-
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm">Commission ({monthLabel(selectedMonth)})</CardTitle>
@@ -1043,45 +1023,133 @@ const handleSaveEdit = async () => {
 
       {/* Team Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="h-80">
+        <Card className="h-64 sm:h-80">
           <CardHeader>
             <CardTitle>Team Registration Trend</CardTitle>
             <CardDescription>Aggregate registrations over the last 5 months.</CardDescription>
           </CardHeader>
-          <CardContent className="h-64">
+          <CardContent className="h-48 sm:h-64">
             <Bar data={barChartData} options={barChartOptions} />
           </CardContent>
         </Card>
-        <Card className="h-80">
+        <Card className="h-64 sm:h-80">
           <CardHeader>
             <CardTitle>Payments Trend</CardTitle>
             <CardDescription>Successful payments trend (count) over the last 5 months.</CardDescription>
           </CardHeader>
-          <CardContent className="h-64">
+          <CardContent className="h-48 sm:h-64">
             <Line data={lineChartData} options={lineChartOptions} />
           </CardContent>
         </Card>
       </div>
 
-      {/* Agents table */}
+      {/* Agents */}
       <Card>
         <CardHeader className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <CardTitle>Agents</CardTitle>
-            <CardDescription>Click a row (or eye) for tabs: Overview / Clients / Applications. Pencil to edit. Paper plane to chat.</CardDescription>
+            <CardDescription>Tap a card or row to view tabs. Pencil to edit. Paper plane to chat.</CardDescription>
           </div>
-          <div className="relative">
+          <div className="relative w-full md:w-auto">
             <Search className="h-4 w-4 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <Input
-              className="pl-8 w-[320px]"
+              className="pl-8 w-full sm:w-[320px]"
               placeholder="Search name, email, code, territory, commission, paid, regs"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
         </CardHeader>
+
         <CardContent>
-          <div className="overflow-x-auto">
+          {/* Mobile (≤ md): stacked agent cards */}
+          <div className="md:hidden space-y-2">
+            {filteredAgents.length ? filteredAgents.map((agent) => (
+              <Card
+                key={agent.user_id}
+                className="p-3"
+                onClick={() => {
+                  setDetailAgent(agent);
+                  setDetailOpen(true);
+                  setDetailLoading(true);
+                  setDetailSeries(null);
+                  setDetailTab('overview');
+                }}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate">{agent.displayName}</div>
+                    <div className="text-xs text-muted-foreground truncate">{agent.email}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      <span className="font-mono">{agent.agent_code ?? '—'}</span> • {agent.territory ?? '—'}
+                    </div>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                    <Button aria-label="View details" variant="ghost" size="icon" onClick={() => {
+                      setDetailAgent(agent);
+                      setDetailOpen(true);
+                      setDetailLoading(true);
+                      setDetailSeries(null);
+                      setDetailTab('overview');
+                    }}>
+                      <Eye className="w-4 h-4" />
+                    </Button>
+                    <Button aria-label="Edit agent" variant="ghost" size="icon" onClick={() => {
+                      setEditingAgent(agent);
+                      setEditFormData({
+                        displayName: agent.displayName,
+                        email: agent.email,
+                        agent_code: agent.agent_code ?? '',
+                        territory: agent.territory ?? '',
+                        commission_rate: agent.commission_rate ?? 0.1,
+                        commission_rate_display: ((agent.commission_rate ?? 0.1) * 100).toFixed(2),
+                        target_monthly_registrations: agent.target_monthly_registrations ?? 0,
+                        target_monthly_sales: agent.target_monthly_sales ?? 0,
+                        performance_score: agent.performance_score ?? 0,
+                        is_active: agent.is_active,
+                      });
+                      setIsEditDialogOpen(true);
+                    }}>
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                    <button
+                      aria-label="Message agent"
+                      className="relative inline-flex items-center justify-center rounded-md p-2 hover:bg-muted/60"
+                      onClick={(e) => { e.stopPropagation(); openChat(agent); }}
+                      title="Message Agent"
+                    >
+                      <Send className="w-4 h-4" />
+                      {(unreadByUser[agent.user_id] ?? 0) > 0 && (
+                        <span className="absolute -top-1 -right-1 inline-flex items-center justify-center rounded-full bg-red-600 text-white text-[10px] h-4 min-w-4 px-[4px]">
+                          {unreadByUser[agent.user_id]}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                  <div>
+                    <div className="text-muted-foreground">Commission</div>
+                    <div className="font-medium">{formatCurrency(agent.expectedCommissionThisMonth ?? 0)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Paid</div>
+                    <div className="font-medium">{formatCurrency(agent.totalPaidThisMonth ?? 0)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Regs</div>
+                    <div className="font-medium">{agent.registrationsThisMonth ?? 0}</div>
+                  </div>
+                </div>
+              </Card>
+            )) : (
+              <div className="text-sm text-muted-foreground p-3">No agents found.</div>
+            )}
+          </div>
+
+          {/* Desktop (≥ md): original table */}
+          <div className="hidden md:block overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -1106,7 +1174,6 @@ const handleSaveEdit = async () => {
                   <TableHead onClick={() => handleSort('registrationsThisMonth')}>
                     Regs. (month) {sortConfig.key === 'registrationsThisMonth' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
                   </TableHead>
-
                   <TableHead className="text-center">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1118,7 +1185,6 @@ const handleSaveEdit = async () => {
                     onClick={(e) => {
                       const target = e.target as HTMLElement;
                       if (target.closest('[data-row-action]')) return;
-                      // open detail dialog (loaded in Part 2)
                       setDetailAgent(agent);
                       setDetailOpen(true);
                       setDetailLoading(true);
@@ -1135,7 +1201,7 @@ const handleSaveEdit = async () => {
                     <TableCell>{agent.registrationsThisMonth ?? 0}</TableCell>
 
                     <TableCell className="text-center space-x-2" onClick={(e) => e.stopPropagation()}>
-                      <Button data-row-action variant="ghost" size="sm" onClick={() => {
+                      <Button aria-label="View details" data-row-action variant="ghost" size="sm" onClick={() => {
                         setDetailAgent(agent);
                         setDetailOpen(true);
                         setDetailLoading(true);
@@ -1144,7 +1210,7 @@ const handleSaveEdit = async () => {
                       }}>
                         <Eye className="w-4 h-4" />
                       </Button>
-                      <Button data-row-action variant="ghost" size="sm" onClick={() => {
+                      <Button aria-label="Edit agent" data-row-action variant="ghost" size="sm" onClick={() => {
                         setEditingAgent(agent);
                         setEditFormData({
                           displayName: agent.displayName,
@@ -1163,8 +1229,8 @@ const handleSaveEdit = async () => {
                         <Pencil className="w-4 h-4 text-gray-500" />
                       </Button>
 
-                      {/* Send button with unread badge */}
                       <button
+                        aria-label="Message agent"
                         data-row-action
                         className="relative inline-flex items-center justify-center rounded-md px-2 py-1 hover:bg-muted/60"
                         onClick={() => openChat(agent)}
@@ -1177,8 +1243,6 @@ const handleSaveEdit = async () => {
                           </span>
                         )}
                       </button>
-
-
                     </TableCell>
                   </TableRow>
                 )) : (
@@ -1191,228 +1255,377 @@ const handleSaveEdit = async () => {
           </div>
         </CardContent>
       </Card>
+      {/* ===== Team Clients (ALL your agents) ===== */}
+      <Card className="h-[440px] md:h-[480px] flex flex-col">
+        <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <CardTitle>Team Clients</CardTitle>
+            <CardDescription>All clients attributed to agents under you.</CardDescription>
+          </div>
+          <div className="flex items-center gap-3 w-full lg:w-auto">
+            <div className="relative flex-1 lg:flex-none">
+              <Search className="h-4 w-4 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="pl-8 w-full sm:w-[260px]"
+                placeholder="Search customer or agent"
+                value={teamClientsSearch}
+                onChange={(e) => setTeamClientsSearch(e.target.value)}
+              />
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Month: <span className="font-medium">{monthLabel(selectedMonth)}</span>
+            </div>
+          </div>
+        </CardHeader>
 
-{/* ===== Team Clients (ALL your agents) ===== */}
-<Card className="h-[480px] flex flex-col">
-  <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-    <div>
-      <CardTitle>Team Clients</CardTitle>
-      <CardDescription>All clients attributed to agents under you.</CardDescription>
-    </div>
-    <div className="flex items-center gap-3">
-      <div className="relative">
-        <Search className="h-4 w-4 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          className="pl-8 w-[260px]"
-          placeholder="Search customer or agent"
-          value={teamClientsSearch}
-          onChange={(e) => setTeamClientsSearch(e.target.value)}
-        />
-      </div>
-      <div className="text-xs text-muted-foreground">
-        Month: <span className="font-medium">{monthLabel(selectedMonth)}</span>
-      </div>
-    </div>
-  </CardHeader>
+        <CardContent className="p-0 flex-1 overflow-hidden">
+          {teamClientsLoading ? (
+            <div className="h-full grid place-items-center text-muted-foreground">
+              Loading team clients…
+            </div>
+          ) : (
+            <>
+              {/* Mobile cards */}
+              <div className="md:hidden h-full overflow-y-auto p-3 space-y-2">
+                {(teamClientsSearch
+                  ? teamClients.filter(r =>
+                      (r.customerName || '').toLowerCase().includes(teamClientsSearch.toLowerCase()) ||
+                      (r.agentName || '').toLowerCase().includes(teamClientsSearch.toLowerCase())
+                    )
+                  : teamClients
+                ).map((row, idx) => (
+                  <Card key={`${row.customerName}-${row.agentUserId}-${idx}`} className="p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{row.customerName || '—'}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {row.agentName || '—'} • <span className="font-mono">{row.agentCode || '—'}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Last: {row.lastPaymentDate ? new Date(row.lastPaymentDate).toLocaleDateString('en-ZA') : '—'}
+                        </div>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-1">
+                        <Button aria-label="View client history" variant="ghost" size="icon" onClick={() => openClientHistory(row.customerName, row.agentUserId)}>
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          aria-label="Open application"
+                          variant="ghost"
+                          size="icon"
+                          onClick={async () => {
+                            let apps = agentApps;
+                            if (!detailAgent || detailAgent.user_id !== row.agentUserId) {
+                              await fetchAgentApplications(row.agentUserId || '');
+                              apps = agentApps; // state may lag slightly
+                              setTimeout(() => openApplicationByName(row.customerName, apps), 50);
+                              return;
+                            }
+                            openApplicationByName(row.customerName, apps);
+                          }}
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
 
-  {/* Make the content area fill remaining height and scroll inside */}
-  <CardContent className="p-0 flex-1 overflow-hidden">
-    {teamClientsLoading ? (
-      <div className="h-full grid place-items-center text-muted-foreground">
-        Loading team clients…
-      </div>
-    ) : (
-      <div className="h-full w-full overflow-x-auto">
-        {/* Vertical scroll container with fixed height via parent flex */}
-        <div className="h-full overflow-y-auto">
-          <Table className="min-w-full">
-            {/* Sticky header */}
-            <TableHeader className="sticky top-0 z-10 bg-background">
-              <TableRow>
-                <TableHead>Customer</TableHead>
-                <TableHead>Agent</TableHead>
-                <TableHead>Code</TableHead>
-                <TableHead>Last Payment</TableHead>
-                <TableHead className="text-right">Paid (month)</TableHead>
-                <TableHead className="text-right">Commission</TableHead>
-                <TableHead className="text-right">Total (all time)</TableHead>
-                <TableHead className="text-center">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <div className="text-muted-foreground">Paid (month)</div>
+                        <div className="font-medium">{formatCurrency(row.paidThisMonth)}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Commission</div>
+                        <div className="font-medium">{formatCurrency(row.expectedCommissionMonth)}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Total</div>
+                        <div className="font-medium">{formatCurrency(row.totalPaidAllTime)}</div>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+                {teamClients.length === 0 && (
+                  <div className="text-sm text-muted-foreground">No team clients found.</div>
+                )}
+              </div>
 
-            <TableBody>
-              {(teamClientsSearch
-                ? teamClients.filter(r =>
-                    (r.customerName || '').toLowerCase().includes(teamClientsSearch.toLowerCase()) ||
-                    (r.agentName || '').toLowerCase().includes(teamClientsSearch.toLowerCase())
-                  )
-                : teamClients
-              ).map((row, idx) => (
-                <TableRow key={`${row.customerName}-${row.agentUserId}-${idx}`}>
-                  <TableCell className="font-medium">{row.customerName || '—'}</TableCell>
-                  <TableCell>{row.agentName || '—'}</TableCell>
-                  <TableCell className="font-mono">{row.agentCode || '—'}</TableCell>
-                  <TableCell>
-                    {row.lastPaymentDate
-                      ? new Date(row.lastPaymentDate).toLocaleDateString('en-ZA')
-                      : '—'}
-                  </TableCell>
-                  <TableCell className="text-right">{formatCurrency(row.paidThisMonth)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(row.expectedCommissionMonth)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(row.totalPaidAllTime)}</TableCell>
-                  <TableCell className="text-center space-x-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openClientHistory(row.customerName, row.agentUserId)}
-                    >
-                      <Eye className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={async () => {
-                        let apps = agentApps;
-                        if (!detailAgent || detailAgent.user_id !== row.agentUserId) {
-                          await fetchAgentApplications(row.agentUserId || '');
-                          apps = agentApps; // state may lag; quick follow
-                          setTimeout(() => openApplicationByName(row.customerName, apps), 50);
-                          return;
-                        }
-                        openApplicationByName(row.customerName, apps);
-                      }}
-                    >
-                      <Edit className="h-4 w-4" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {/* Desktop table */}
+              <div className="hidden md:block h-full w-full overflow-x-auto">
+                <div className="h-full overflow-y-auto">
+                  <Table className="min-w-full">
+                    <TableHeader className="sticky top-0 z-10 bg-background">
+                      <TableRow>
+                        <TableHead>Customer</TableHead>
+                        <TableHead>Agent</TableHead>
+                        <TableHead>Code</TableHead>
+                        <TableHead>Last Payment</TableHead>
+                        <TableHead className="text-right">Paid (month)</TableHead>
+                        <TableHead className="text-right">Commission</TableHead>
+                        <TableHead className="text-right">Total (all time)</TableHead>
+                        <TableHead className="text-center">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
 
-              {teamClients.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center py-6 text-muted-foreground">
-                    No team clients found.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
-    )}
-  </CardContent>
-</Card>
+                    <TableBody>
+                      {(teamClientsSearch
+                        ? teamClients.filter(r =>
+                            (r.customerName || '').toLowerCase().includes(teamClientsSearch.toLowerCase()) ||
+                            (r.agentName || '').toLowerCase().includes(teamClientsSearch.toLowerCase())
+                          )
+                        : teamClients
+                      ).map((row, idx) => (
+                        <TableRow key={`${row.customerName}-${row.agentUserId}-${idx}`}>
+                          <TableCell className="font-medium">{row.customerName || '—'}</TableCell>
+                          <TableCell>{row.agentName || '—'}</TableCell>
+                          <TableCell className="font-mono">{row.agentCode || '—'}</TableCell>
+                          <TableCell>
+                            {row.lastPaymentDate
+                              ? new Date(row.lastPaymentDate).toLocaleDateString('en-ZA')
+                              : '—'}
+                          </TableCell>
+                          <TableCell className="text-right">{formatCurrency(row.paidThisMonth)}</TableCell>
+                          <TableCell className="text-right">{formatCurrency(row.expectedCommissionMonth)}</TableCell>
+                          <TableCell className="text-right">{formatCurrency(row.totalPaidAllTime)}</TableCell>
+                          <TableCell className="text-center space-x-1">
+                            <Button
+                              aria-label="View client history"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => openClientHistory(row.customerName, row.agentUserId)}
+                            >
+                              <Eye className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              aria-label="Open application"
+                              variant="ghost"
+                              size="sm"
+                              onClick={async () => {
+                                let apps = agentApps;
+                                if (!detailAgent || detailAgent.user_id !== row.agentUserId) {
+                                  await fetchAgentApplications(row.agentUserId || '');
+                                  apps = agentApps;
+                                  setTimeout(() => openApplicationByName(row.customerName, apps), 50);
+                                  return;
+                                }
+                                openApplicationByName(row.customerName, apps);
+                              }}
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
 
+                      {teamClients.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={8} className="text-center py-6 text-muted-foreground">
+                            No team clients found.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ===== Team Applications (ALL your agents) ===== */}
-<Card>
-  <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-    <div>
-      <CardTitle>Team Applications</CardTitle>
-      <CardDescription>All applications captured by agents under you.</CardDescription>
-    </div>
-    <div className="flex items-center gap-3">
-      <div className="relative">
-        <Search className="h-4 w-4 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          className="pl-8 w-[260px]"
-          placeholder="Search name / ID / agent"
-          value={teamAppsSearch}
-          onChange={(e) => setTeamAppsSearch(e.target.value)}
-        />
-      </div>
-      <div className="text-xs text-muted-foreground">
-        Month: <span className="font-medium">{monthLabel(selectedMonth)}</span>
-      </div>
-    </div>
-  </CardHeader>
-  <CardContent>
-    {teamAppsLoading ? (
-      <div className="text-center py-8 text-muted-foreground">Loading team applications…</div>
-    ) : (
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Applicant</TableHead>
-              <TableHead>ID Number</TableHead>
-              <TableHead>Agent</TableHead>
-              <TableHead>Code</TableHead>
-              <TableHead>Created</TableHead>
-              
-              <TableHead className="text-right">Amount</TableHead>
-              <TableHead className="text-center">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(teamAppsSearch
-              ? teamApps.filter(a => {
-                  const q = teamAppsSearch.toLowerCase();
-                  return (
-                    toAppName(a).toLowerCase().includes(q) ||
-                    (a.id_number || '').toLowerCase().includes(q) ||
-                    (a.agent_name || '').toLowerCase().includes(q) ||
-                    (a.agent_code || '').toLowerCase().includes(q)
-                  );
-                })
-              : teamApps
-            ).map(app => (
-              <TableRow key={app.id}>
-                <TableCell className="font-medium">{toAppName(app) || '—'}</TableCell>
-                <TableCell className="font-mono">{app.id_number || '—'}</TableCell>
-                <TableCell>{app.agent_name || '—'}</TableCell>
-                <TableCell className="font-mono">{app.agent_code || '—'}</TableCell>
-                <TableCell>{app.created_at ? new Date(app.created_at).toLocaleDateString('en-ZA') : '—'}</TableCell>
-                
-                <TableCell className="text-right">{formatCurrency(app.total_amount ?? 0)}</TableCell>
-                <TableCell className="text-center space-x-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setCurrentApp({
-                        ...app,
-                        firstName: app.name || '',
-                        lastName: app.surname || '',
-                      });
-                      setFormMode('view');
-                      setIsFormOpen(true);
-                    }}
-                  >
-                    <Eye className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setCurrentApp({
-                        ...app,
-                        firstName: app.name || '',
-                        lastName: app.surname || '',
-                      });
-                      setFormMode('edit');
-                      setIsFormOpen(true);
-                    }}
-                  >
-                    <Edit className="h-4 w-4" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-            {teamApps.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={8} className="text-center py-6 text-muted-foreground">
-                  No applications found.
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </div>
-    )}
-  </CardContent>
-</Card>
+      <Card>
+        <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <CardTitle>Team Applications</CardTitle>
+            <CardDescription>All applications captured by agents under you.</CardDescription>
+          </div>
+          <div className="flex items-center gap-3 w-full lg:w-auto">
+            <div className="relative flex-1 lg:flex-none">
+              <Search className="h-4 w-4 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="pl-8 w-full sm:w-[260px]"
+                placeholder="Search name / ID / agent"
+                value={teamAppsSearch}
+                onChange={(e) => setTeamAppsSearch(e.target.value)}
+              />
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Month: <span className="font-medium">{monthLabel(selectedMonth)}</span>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {teamAppsLoading ? (
+            <div className="text-center py-8 text-muted-foreground">Loading team applications…</div>
+          ) : (
+            <>
+              {/* Mobile cards */}
+              <div className="md:hidden space-y-2 p-1">
+                {(teamAppsSearch
+                  ? teamApps.filter(a => {
+                      const q = teamAppsSearch.toLowerCase();
+                      return (
+                        toAppName(a).toLowerCase().includes(q) ||
+                        (a.id_number || '').toLowerCase().includes(q) ||
+                        (a.agent_name || '').toLowerCase().includes(q) ||
+                        (a.agent_code || '').toLowerCase().includes(q)
+                      );
+                    })
+                  : teamApps
+                ).map(app => (
+                  <Card key={app.id} className="p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{toAppName(app) || '—'}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          ID: <span className="font-mono">{app.id_number || '—'}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {app.agent_name || '—'} • <span className="font-mono">{app.agent_code || '—'}</span>
+                        </div>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-1">
+                        <Button
+                          aria-label="View application"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => {
+                            setCurrentApp({
+                              ...app,
+                              firstName: app.name || '',
+                              lastName: app.surname || '',
+                            });
+                            setFormMode('view');
+                            setIsFormOpen(true);
+                          }}
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          aria-label="Edit application"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => {
+                            setCurrentApp({
+                              ...app,
+                              firstName: app.name || '',
+                              lastName: app.surname || '',
+                            });
+                            setFormMode('edit');
+                            setIsFormOpen(true);
+                          }}
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
 
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <div className="text-muted-foreground">Created</div>
+                        <div className="font-medium">{app.created_at ? new Date(app.created_at).toLocaleDateString('en-ZA') : '—'}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Amount</div>
+                        <div className="font-medium">{formatCurrency(app.total_amount ?? 0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Status</div>
+                        <div className="font-medium">{app.status || '—'}</div>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+                {teamApps.length === 0 && (
+                  <div className="text-sm text-muted-foreground">No applications found.</div>
+                )}
+              </div>
+
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Applicant</TableHead>
+                      <TableHead>ID Number</TableHead>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Code</TableHead>
+                      <TableHead>Created</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
+                      <TableHead className="text-center">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(teamAppsSearch
+                      ? teamApps.filter(a => {
+                          const q = teamAppsSearch.toLowerCase();
+                          return (
+                            toAppName(a).toLowerCase().includes(q) ||
+                            (a.id_number || '').toLowerCase().includes(q) ||
+                            (a.agent_name || '').toLowerCase().includes(q) ||
+                            (a.agent_code || '').toLowerCase().includes(q)
+                          );
+                        })
+                      : teamApps
+                    ).map(app => (
+                      <TableRow key={app.id}>
+                        <TableCell className="font-medium">{toAppName(app) || '—'}</TableCell>
+                        <TableCell className="font-mono">{app.id_number || '—'}</TableCell>
+                        <TableCell>{app.agent_name || '—'}</TableCell>
+                        <TableCell className="font-mono">{app.agent_code || '—'}</TableCell>
+                        <TableCell>{app.created_at ? new Date(app.created_at).toLocaleDateString('en-ZA') : '—'}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(app.total_amount ?? 0)}</TableCell>
+                        <TableCell className="text-center space-x-1">
+                          <Button
+                            aria-label="View application"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setCurrentApp({
+                                ...app,
+                                firstName: app.name || '',
+                                lastName: app.surname || '',
+                              });
+                              setFormMode('view');
+                              setIsFormOpen(true);
+                            }}
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            aria-label="Edit application"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setCurrentApp({
+                                ...app,
+                                firstName: app.name || '',
+                                lastName: app.surname || '',
+                              });
+                              setFormMode('edit');
+                              setIsFormOpen(true);
+                            }}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {teamApps.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={8} className="text-center py-6 text-muted-foreground">
+                          No applications found.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ===== Agent Detail Dialog (tabs) ===== */}
       <Dialog
@@ -1429,7 +1642,7 @@ const handleSaveEdit = async () => {
       >
         <DialogContent
           className="
-            w-[95vw]
+            w-[96vw]
             sm:max-w-[95vw]
             lg:max-w-[1100px]
             max-h-[90vh]
@@ -1445,7 +1658,7 @@ const handleSaveEdit = async () => {
             </DialogHeader>
           </div>
 
-          <div className="px-6 pb-6 pt-4 overflow-y-auto max-h-[calc(90vh-72px)]">
+          <div className="px-4 sm:px-6 pb-6 pt-4 overflow-y-auto max-h-[calc(90vh-72px)]">
             {!detailAgent ? (
               <div className="py-12 text-center text-muted-foreground">No agent selected.</div>
             ) : detailLoading ? (
@@ -1460,8 +1673,8 @@ const handleSaveEdit = async () => {
 
                 {/* Overview */}
                 <TabsContent value="overview" className="space-y-6">
-                  <div className="flex items-center justify-between">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 flex-1 mr-4">
+                  <div className="flex flex-col lg:flex-row lg:items-stretch lg:justify-between gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 flex-1">
                       <Card className="h-full">
                         <CardHeader className="pb-2">
                           <CardTitle className="text-sm">Agent</CardTitle>
@@ -1504,7 +1717,7 @@ const handleSaveEdit = async () => {
                     </div>
 
                     <div className="shrink-0">
-                      <Button onClick={() => openChat(detailAgent)} title="Message this agent">
+                      <Button aria-label="Message this agent" onClick={() => openChat(detailAgent)} title="Message this agent">
                         <Send className="h-4 w-4 mr-2" /> Message
                       </Button>
                     </div>
@@ -1516,7 +1729,7 @@ const handleSaveEdit = async () => {
                       <CardDescription>Registrations & payments (with commission)</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <div className="h-[320px]">
+                      <div className="h-[280px] sm:h-[320px]">
                         {detailSeries && detailSeries.length ? (
                           <Line
                             data={{
@@ -1562,15 +1775,15 @@ const handleSaveEdit = async () => {
 
                 {/* Clients tab */}
                 <TabsContent value="clients" className="space-y-4">
-                  <div className="flex items-end justify-between gap-3">
+                  <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <h3 className="text-base font-semibold">Clients for {detailAgent.displayName}</h3>
                       <Badge variant="secondary">{agentClients.length}</Badge>
                     </div>
-                    <div className="relative">
+                    <div className="relative w-full sm:w-auto">
                       <Search className="h-4 w-4 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
                       <Input
-                        className="pl-8 w-[280px]"
+                        className="pl-8 w-full sm:w-[280px]"
                         placeholder="Search client name"
                         value={agentClientsSearch}
                         onChange={(e) => setAgentClientsSearch(e.target.value)}
@@ -1613,10 +1826,10 @@ const handleSaveEdit = async () => {
                                 <TableCell className="text-right">{formatCurrency(c.expectedCommissionMonth)}</TableCell>
                                 <TableCell className="text-right">{formatCurrency(c.totalPaidAllTime)}</TableCell>
                                 <TableCell className="text-center space-x-1">
-                                  <Button variant="ghost" size="sm" onClick={() => openClientHistory(c.customerName, detailAgent.user_id)}>
+                                  <Button aria-label="View client history" variant="ghost" size="sm" onClick={() => openClientHistory(c.customerName, detailAgent.user_id)}>
                                     <Eye className="h-4 w-4" />
                                   </Button>
-                                  <Button variant="ghost" size="sm" onClick={() => openApplicationByName(c.customerName, agentApps)}>
+                                  <Button aria-label="Open application" variant="ghost" size="sm" onClick={() => openApplicationByName(c.customerName, agentApps)}>
                                     <Edit className="h-4 w-4" />
                                   </Button>
                                 </TableCell>
@@ -1638,15 +1851,15 @@ const handleSaveEdit = async () => {
 
                 {/* Applications tab */}
                 <TabsContent value="applications" className="space-y-4">
-                  <div className="flex items-end justify-between gap-3">
+                  <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <h3 className="text-base font-semibold">Applications for {detailAgent.displayName}</h3>
                       <Badge variant="secondary">{agentApps.length}</Badge>
                     </div>
-                    <div className="relative">
+                    <div className="relative w-full sm:w-auto">
                       <Search className="h-4 w-4 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
                       <Input
-                        className="pl-8 w-[280px]"
+                        className="pl-8 w-full sm:w-[280px]"
                         placeholder="Search name / ID"
                         value={agentAppsSearch}
                         onChange={(e) => setAgentAppsSearch(e.target.value)}
@@ -1681,6 +1894,7 @@ const handleSaveEdit = async () => {
                                 <TableCell className="text-right">{formatCurrency(app.total_amount ?? 0)}</TableCell>
                                 <TableCell className="text-center space-x-1">
                                   <Button
+                                    aria-label="View application"
                                     variant="ghost"
                                     size="sm"
                                     onClick={() => {
@@ -1696,6 +1910,7 @@ const handleSaveEdit = async () => {
                                     <Eye className="h-4 w-4" />
                                   </Button>
                                   <Button
+                                    aria-label="Edit application"
                                     variant="ghost"
                                     size="sm"
                                     onClick={() => {
@@ -1742,7 +1957,7 @@ const handleSaveEdit = async () => {
           }
         }}
       >
-        <DialogContent className="w-[90vw] max-w-5xl max-h-[90vh] overflow-auto rounded-xl">
+        <DialogContent className="w-[96vw] sm:w-[90vw] max-w-5xl max-h-[90vh] overflow-auto rounded-xl">
           <DialogHeader>
             <DialogTitle>Client Details</DialogTitle>
             <DialogDescription>Profile & payment history</DialogDescription>
@@ -1881,106 +2096,105 @@ const handleSaveEdit = async () => {
         </DialogContent>
       </Dialog>
 
-{/* ===== Edit Agent Dialog ===== */}
-{editingAgent && (
-  <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-    <DialogContent
-      className="max-w-xl max-h-[85vh] p-0 overflow-hidden rounded-xl flex flex-col"
-    >
-      {/* Sticky header */}
-      <DialogHeader className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur px-6 py-4">
-        <DialogTitle>Edit Agent</DialogTitle>
-        <DialogDescription>
-          Update agent profile, code, territory, commission & targets.
-        </DialogDescription>
-      </DialogHeader>
+      {/* ===== Edit Agent Dialog ===== */}
+      {editingAgent && (
+        <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
+          <DialogContent
+            className="w-[96vw] sm:max-w-xl max-h-[85vh] p-0 overflow-hidden rounded-xl flex flex-col"
+          >
+            {/* Sticky header */}
+            <DialogHeader className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur px-6 py-4">
+              <DialogTitle>Edit Agent</DialogTitle>
+              <DialogDescription>
+                Update agent profile, code, territory, commission & targets.
+              </DialogDescription>
+            </DialogHeader>
 
-      {/* Scrollable body */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-4 pt-4">
-        {/* Numbers snapshot */}
-        <div className="grid grid-cols-2 gap-3 mb-2">
-          <Card>
-            <CardHeader className="pb-1"><CardTitle className="text-xs">Regs (month / all)</CardTitle></CardHeader>
-            <CardContent className="text-sm">
-              {editingAgent.registrationsThisMonth} / {editingAgent.registrationsAllTime}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-1"><CardTitle className="text-xs">Paid (month / all)</CardTitle></CardHeader>
-            <CardContent className="text-sm">
-              {formatCurrency(editingAgent.totalPaidThisMonth)} / {formatCurrency(editingAgent.totalPaidAllTime)}
-            </CardContent>
-          </Card>
-          <Card className="col-span-2">
-            <CardHeader className="pb-1"><CardTitle className="text-xs">Expected Commission (month)</CardTitle></CardHeader>
-            <CardContent className="text-sm">
-              {formatCurrency(editingAgent.expectedCommissionThisMonth)}
-            </CardContent>
-          </Card>
-        </div>
+            {/* Scrollable body */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-4 pt-4">
+              {/* Numbers snapshot */}
+              <div className="grid grid-cols-2 gap-3 mb-2">
+                <Card>
+                  <CardHeader className="pb-1"><CardTitle className="text-xs">Regs (month / all)</CardTitle></CardHeader>
+                  <CardContent className="text-sm">
+                    {editingAgent.registrationsThisMonth} / {editingAgent.registrationsAllTime}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="pb-1"><CardTitle className="text-xs">Paid (month / all)</CardTitle></CardHeader>
+                  <CardContent className="text-sm">
+                    {formatCurrency(editingAgent.totalPaidThisMonth)} / {formatCurrency(editingAgent.totalPaidAllTime)}
+                  </CardContent>
+                </Card>
+                <Card className="col-span-2">
+                  <CardHeader className="pb-1"><CardTitle className="text-xs">Expected Commission (month)</CardTitle></CardHeader>
+                  <CardContent className="text-sm">
+                    {formatCurrency(editingAgent.expectedCommissionThisMonth)}
+                  </CardContent>
+                </Card>
+              </div>
 
-        {/* Form */}
-        <div className="grid gap-3 py-2">
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="displayName" className="text-right">Name</Label>
-            <Input id="displayName" name="displayName" value={(editFormData.displayName as string) || ''} onChange={handleEditChange} className="col-span-3" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="email" className="text-right">Email</Label>
-            <Input id="email" name="email" value={(editFormData.email as string) || ''} onChange={handleEditChange} className="col-span-3" type="email" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="agent_code" className="text-right">Agent Code</Label>
-            <Input id="agent_code" name="agent_code" value={(editFormData.agent_code as string) ?? ''} onChange={handleEditChange} className="col-span-3" placeholder="e.g. AGT-001" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="territory" className="text-right">Territory</Label>
-            <Input id="territory" name="territory" value={(editFormData.territory as string) || ''} onChange={handleEditChange} className="col-span-3" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="commission_rate_display" className="text-right">Comm. Rate (%)</Label>
-            <Input
-              id="commission_rate_display"
-              name="commission_rate_display"
-              value={(editFormData.commission_rate_display as string | number) ?? 10}
-              onChange={handleEditChange}
-              className="col-span-3" type="number" step="0.01" min={0} max={100}
-            />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="target_monthly_registrations" className="text-right">Regs Target</Label>
-            <Input id="target_monthly_registrations" name="target_monthly_registrations" value={(editFormData.target_monthly_registrations as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="target_monthly_sales" className="text-right">Sales Target</Label>
-            <Input id="target_monthly_sales" name="target_monthly_sales" value={(editFormData.target_monthly_sales as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" step="0.01" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="performance_score" className="text-right">Perf. Score</Label>
-            <Input id="performance_score" name="performance_score" value={(editFormData.performance_score as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" step="1" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-3">
-            <Label htmlFor="is_active" className="text-right">Active</Label>
-            <input id="is_active" name="is_active" type="checkbox" checked={!!editFormData.is_active} onChange={handleEditChange} className="col-span-3 h-4 w-4" />
-          </div>
-        </div>
-      </div>
+              {/* Form */}
+              <div className="grid gap-3 py-2">
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="displayName" className="text-right">Name</Label>
+                  <Input id="displayName" name="displayName" value={(editFormData.displayName as string) || ''} onChange={handleEditChange} className="col-span-3" />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="email" className="text-right">Email</Label>
+                  <Input id="email" name="email" value={(editFormData.email as string) || ''} onChange={handleEditChange} className="col-span-3" type="email" />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="agent_code" className="text-right">Agent Code</Label>
+                  <Input id="agent_code" name="agent_code" value={(editFormData.agent_code as string) ?? ''} onChange={handleEditChange} className="col-span-3" placeholder="e.g. AGT-001" />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="territory" className="text-right">Territory</Label>
+                  <Input id="territory" name="territory" value={(editFormData.territory as string) || ''} onChange={handleEditChange} className="col-span-3" />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="commission_rate_display" className="text-right">Comm. Rate (%)</Label>
+                  <Input
+                    id="commission_rate_display"
+                    name="commission_rate_display"
+                    value={(editFormData.commission_rate_display as string | number) ?? 10}
+                    onChange={handleEditChange}
+                    className="col-span-3" type="number" step="0.01" min={0} max={100}
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="target_monthly_registrations" className="text-right">Regs Target</Label>
+                  <Input id="target_monthly_registrations" name="target_monthly_registrations" value={(editFormData.target_monthly_registrations as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="target_monthly_sales" className="text-right">Sales Target</Label>
+                  <Input id="target_monthly_sales" name="target_monthly_sales" value={(editFormData.target_monthly_sales as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" step="0.01" />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="performance_score" className="text-right">Perf. Score</Label>
+                  <Input id="performance_score" name="performance_score" value={(editFormData.performance_score as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" step="1" />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="is_active" className="text-right">Active</Label>
+                  <input id="is_active" name="is_active" type="checkbox" checked={!!editFormData.is_active} onChange={handleEditChange} className="col-span-3 h-4 w-4" />
+                </div>
+              </div>
+            </div>
 
-      {/* Sticky footer */}
-      <div className="sticky bottom-0 z-10 border-t bg-background/80 backdrop-blur px-6 py-3">
-        <DialogFooter className="gap-2 sm:gap-0">
-          <Button variant="ghost" onClick={() => setIsEditDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleSaveEdit}>Save changes</Button>
-        </DialogFooter>
-      </div>
-    </DialogContent>
-  </Dialog>
-)}
-
+            {/* Sticky footer */}
+            <div className="sticky bottom-0 z-10 border-t bg-background/80 backdrop-blur px-6 py-3">
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button variant="ghost" onClick={() => setIsEditDialogOpen(false)}>Cancel</Button>
+                <Button onClick={handleSaveEdit}>Save changes</Button>
+              </DialogFooter>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* ===== Two-way Chat Dialog ===== */}
       <Dialog open={chatOpen} onOpenChange={(o) => { if (!o) { setChatOpen(false); setChatTarget(null); setChatMessages([]); } }}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="w-[96vw] sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Conversation</DialogTitle>
             <DialogDescription>

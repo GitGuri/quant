@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// src/components/layout/AppSidebar.tsx
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate, NavLink } from 'react-router-dom';
 import {
   Home,
@@ -21,9 +22,10 @@ import {
   ChevronUp,
   ChevronDown,
   ListStartIcon,
-  UserPlus, // Icon for Agent Signup
-  UserCheck, // Icon for Agent Dashboard
-  Users2, // Icon for Super Agent Dashboard
+  UserPlus,
+  UserCheck,
+  Users2,
+  Bot // Import an icon for the AI button
 } from 'lucide-react';
 import {
   Sidebar,
@@ -55,39 +57,28 @@ interface NavigationItem {
 
 // Hard-coded list of main navigation items with specific role access
 const navigationItems: NavigationItem[] = [
-  // User and ceo roles now have access to all tabs by default
   { title: 'Dashboard', url: '/', icon: Home, allowedRoles: ['admin', 'ceo', 'manager', 'dashboard','cashier', 'user'] },
   {
     title: 'POS Transact',
     url: '/pos',
     icon: CreditCard,
-    // Added 'ceo' and 'user' roles to this item and its children
     allowedRoles: ['cashier', 'user', 'pos-transact', 'admin'],
-
   },
   { title: 'Tasks', url: '/tasks', icon: ListStartIcon, allowedRoles: ['manager', 'user', 'tasks', 'admin'] },
-  // Added 'ceo' role
   { title: 'Transactions', url: '/transactions', icon: CreditCard, allowedRoles: ['manager', 'user', 'transactions', 'admin'] },
-  // Added 'user' role
-
   { title: 'Financials', url: '/financials', icon: BarChart3, allowedRoles: ['admin', 'manager', 'financials', 'user'] },
-  // Added 'ceo' and 'user' roles
   { title: 'Import', url: '/import', icon: Upload, allowedRoles: ['manager', 'import', 'user', 'admin'] },
-  // Added 'user' role
   { title: 'Data Analytics', url: '/analytics', icon: TrendingUp, allowedRoles: ['admin', 'manager', 'data-analytics', 'user'] },
 ];
 
 // Hard-coded list of business tools navigation items with specific role access
 const businessItems: NavigationItem[] = [
-  // Added 'ceo' role
   { title: 'Invoice/Quote', url: '/invoice-quote', icon: FileText, allowedRoles: ['manager', 'user', 'invoice', 'admin'] },
-  // Added 'ceo' and 'user' roles
   { title: 'Payroll', url: '/payroll', icon: Calculator, allowedRoles: ['manager', 'payroll', 'user', 'admin'] },
   {
     title: 'POS Admin',
     url: '/pos/products',
     icon: CreditCard,
-    // Added 'ceo' and 'user' roles to this item and its children
     allowedRoles: ['manager', 'pos-admin', 'user', 'admin', 'ceo'],
     children: [
       { title: 'Products', url: '/pos/products', icon: Package, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
@@ -95,32 +86,24 @@ const businessItems: NavigationItem[] = [
       { title: 'Cash', url: '/pos/cash', icon: Wallet, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
     ],
   },
-  // Added 'user' role
   { title: 'Projections', url: '/projections', icon: TrendingUp, allowedRoles: ['admin', 'manager', 'projections', 'user'] },
-  // Added 'ceo' and 'user' roles
   { title: 'Accounting Setup', url: '/accounting', icon: Calculator, allowedRoles: ['admin', 'accountant', 'accounting', 'user', 'ceo'] },
-  // These already had both roles, so no changes were needed
   { title: 'Document Management', url: '/documents', icon: FolderOpen, allowedRoles: ['admin', 'manager', 'user', 'cashier', 'accountant', 'ceo', 'documents'] },
   { title: 'Qx Chat', url: '/quant-chat', icon: MessageSquare, allowedRoles: ['admin', 'manager', 'user', 'cashier', 'accountant', 'ceo', 'chat'] },
 ];
 
 // Hard-coded list of setup navigation items with specific role access
 const setupItems: NavigationItem[] = [
-  // Added 'user' role
   { title: 'User Management', url: '/user-management', icon: Users, allowedRoles: ['admin', 'ceo', 'user-management', 'user'] },
-  // Added 'ceo' and 'user' roles
   { title: 'CRM', url: '/personel-setup', icon: Users, allowedRoles: ['admin', 'manager', 'personel-setup', 'user', 'ceo'] },
-  // Added 'ceo' role
   { title: 'Profile Setup', url: '/profile-setup', icon: Settings, allowedRoles: ['admin', 'user', 'profile-setup', 'ceo'] },
 ];
 
 // --- NEW: Zororo Phumulani Specific Items ---
 const zororoItems: NavigationItem[] = [
-  // Tabs for Agents
-  { title: 'Register Person', url: '/agent-signup', icon: UserPlus, allowedRoles: ['agent', 'super-agent', 'admin', 'user'] }, // Removed 'user', 'admin' for specificity
-  { title: 'My Dashboard', url: '/agent-dashboard', icon: UserCheck, allowedRoles: ['agent',  'admin', 'user'] }, // Removed 'user', 'admin' for specificity
-  // Tab for Super Agent (includes Agent tabs implicitly via role)
-  { title: 'Agents Overview', url: '/super-agent-dashboard', icon: Users2, allowedRoles: ['super-agent', 'admin', 'user']}, // Removed 'user', 'admin' for specificity
+  { title: 'Register Person', url: '/agent-signup', icon: UserPlus, allowedRoles: ['agent', 'super-agent', 'admin', 'user'] },
+  { title: 'My Dashboard', url: '/agent-dashboard', icon: UserCheck, allowedRoles: ['agent',  'admin', 'user'] },
+  { title: 'Agents Overview', url: '/super-agent-dashboard', icon: Users2, allowedRoles: ['super-agent', 'admin', 'user']},
 ];
 // --- END NEW ---
 
@@ -137,11 +120,79 @@ export function AppSidebar() {
   const [isPosSubMenuOpen, setIsPosSubMenuOpen] = useState(false);
   const [isPosAdminSubMenuOpen, setIsPosAdminSubMenuOpen] = useState(false);
 
+  // --- NEW: State for AI Widget ---
+  const [isAIWidgetVisible, setIsAIWidgetVisible] = useState(false);
+  const widgetContainerRef = useRef<HTMLDivElement>(null);
+  const AGENT_ID = "agent_4801k4nm91defq790s1papgk89qh"; // Replace with your actual agent ID
+
   useEffect(() => {
     // Open sub-menu if any route within it is active
     setIsPosSubMenuOpen(currentPath.startsWith('/pos/'));
     setIsPosAdminSubMenuOpen(currentPath.startsWith('/pos-admin/'));
   }, [currentPath]);
+
+  // --- NEW: useEffect for AI Widget Script Loading ---
+  useEffect(() => {
+    if (!isAIWidgetVisible) {
+        // If widget is hidden, ensure it's removed from the DOM container
+        if (widgetContainerRef.current) {
+            widgetContainerRef.current.innerHTML = '';
+        }
+        return; // Don't load script if not visible
+    }
+
+    // Check if the custom element already exists
+    if (customElements.get('elevenlabs-convai')) {
+      // If the element exists, just add it to the DOM
+      if (widgetContainerRef.current) {
+        widgetContainerRef.current.innerHTML = `<elevenlabs-convai agent-id="${AGENT_ID}"></elevenlabs-convai>`;
+      }
+      return;
+    }
+
+    // Function to load the external script
+    const loadScript = () => {
+      // Prevent loading script multiple times if it's already loading/loaded
+      if (document.querySelector('script[src="https://unpkg.com/@elevenlabs/convai-widget-embed"]')) {
+          console.log("ElevenLabs script tag already exists.");
+          return;
+      }
+
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/@elevenlabs/convai-widget-embed';
+      script.async = true;
+      script.type = 'text/javascript';
+
+      script.onload = () => {
+        console.log('ElevenLabs ConvAI script loaded.');
+        // Script is loaded, now we can safely add the custom element
+        if (widgetContainerRef.current) {
+          widgetContainerRef.current.innerHTML = `<elevenlabs-convai agent-id="${AGENT_ID}"></elevenlabs-convai>`;
+        }
+      };
+
+      script.onerror = () => {
+        console.error('Failed to load the ElevenLabs ConvAI script.');
+        // Optionally display an error message in the UI
+         if (widgetContainerRef.current) {
+            widgetContainerRef.current.innerHTML = '<p style="color: red;">Failed to load AI assistant.</p>';
+        }
+      };
+
+      document.head.appendChild(script);
+    };
+
+    // Load the script
+    loadScript();
+
+    // Cleanup function (removes widget instance when hidden)
+    return () => {
+      if (widgetContainerRef.current) {
+        widgetContainerRef.current.innerHTML = '';
+      }
+    };
+  }, [isAIWidgetVisible, AGENT_ID]); // Re-run if visibility or AGENT_ID changes
+  // --- END NEW ---
 
   // Utility function to determine active navigation link class
   const getNavCls = (active: boolean) =>
@@ -265,143 +316,167 @@ export function AppSidebar() {
   // --- END NEW ---
 
   return (
-    <Sidebar className='border-r bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-50'>
-      <SidebarHeader className='p-4 border-b border-gray-200 dark:border-gray-700'>
-        <motion.div
-          className='flex items-center space-x-2'
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.3 }}
-        >
-          <div className='w-8 h-8 bg-gradient-to-br from-purple-500 to-pink-500 rounded-lg flex items-center justify-center'>
-            <span className='text-white font-bold text-sm'>Q</span>
+    <>
+      {/* --- NEW: Fixed Position Container for the Widget --- */}
+      {/* This div holds the actual widget and is positioned fixed on the screen */}
+      <div
+        ref={widgetContainerRef}
+        className={`fixed bottom-4 right-4 z-50 transition-all duration-300 ease-in-out ${isAIWidgetVisible ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}
+        style={{ width: '400px', height: '500px' }} // Adjust size as needed
+      />
+      {/* --- END NEW --- */}
+
+      <Sidebar className='border-r bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-50'>
+        <SidebarHeader className='p-4 border-b border-gray-200 dark:border-gray-700'>
+          <motion.div
+            className='flex items-center space-x-2'
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <div className='w-8 h-8 bg-gradient-to-br from-purple-500 to-pink-500 rounded-lg flex items-center justify-center'>
+              <span className='text-white font-bold text-sm'>Q</span>
+            </div>
+            {state === 'expanded' && (
+              <div>
+                <h1 className='font-bold text-lg'>QxAnalytix</h1>
+                <p className='text-xs text-muted-foreground'>
+                  unlocking endless possibilities
+                </p>
+              </div>
+            )}
+          </motion.div>
+        </SidebarHeader>
+
+        <SidebarContent className='flex-1 overflow-y-auto'>
+          {/* Main Navigation Group */}
+          <SidebarGroup>
+            <SidebarGroupLabel>Main Navigation</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {navigationItems
+                  .filter((item) => hasAccess(item.allowedRoles))
+                  .map((item, index) => {
+                    if (item.children) {
+                      return renderSubMenu(item, isPosSubMenuOpen, setIsPosSubMenuOpen);
+                    } else {
+                      return renderMenuItem(item, index, navigationItems.length, 0);
+                    }
+                  })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          <SidebarSeparator />
+
+          {/* Business Tools Group */}
+          <SidebarGroup>
+            <SidebarGroupLabel>Business Tools</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {businessItems
+                  .filter((item) => hasAccess(item.allowedRoles))
+                  .map((item, index) => {
+                    if (item.children) {
+                      return renderSubMenu(item, isPosAdminSubMenuOpen, setIsPosAdminSubMenuOpen);
+                    } else {
+                      return renderMenuItem(item, index, businessItems.length, navigationItems.length);
+                    }
+                  })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          <SidebarSeparator />
+
+          {/* --- NEW: Zororo Phumulani Group --- */}
+          {/* Conditionally render the Zororo group */}
+          {showZororoSection && (
+            <>
+              <SidebarGroup>
+                <SidebarGroupLabel>Zororo Phumulani</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {/* Filter and render Zororo items based on access */}
+                    {zororoItems
+                      .filter((item) => hasAccess(item.allowedRoles))
+                      .map((item, index) =>
+                        renderMenuItem(
+                          item,
+                          index,
+                          zororoItems.length,
+                          // Calculate delay: sum of previous group item counts
+                          navigationItems.filter(i => hasAccess(i.allowedRoles)).length +
+                          businessItems.filter(i => hasAccess(i.allowedRoles)).length
+                        )
+                      )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+              <SidebarSeparator />
+            </>
+          )}
+          {/* --- END NEW --- */}
+
+          {/* Setup Group */}
+          <SidebarGroup>
+            <SidebarGroupLabel>Setup</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {setupItems
+                  .filter((item) => hasAccess(item.allowedRoles))
+                  .map((item, index) =>
+                    renderMenuItem(
+                      item,
+                      index,
+                      setupItems.length,
+                      // Calculate delay: sum of previous group item counts
+                      navigationItems.filter(i => hasAccess(i.allowedRoles)).length +
+                      businessItems.filter(i => hasAccess(i.allowedRoles)).length +
+                      (showZororoSection ? zororoItems.filter(i => hasAccess(i.allowedRoles)).length : 0)
+                    )
+                  )}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+
+        <SidebarFooter className='p-4 border-t border-gray-200 dark:border-gray-700'>
+          {/* User Info and AI Button */}
+          <div className='flex items-center justify-between mb-4'> {/* Changed to justify-between */}
+            <div className='flex items-center space-x-2 text-sm text-muted-foreground'>
+              <User className='h-5 w-5' />
+              {state === 'expanded' && (
+                <div className="flex flex-col">
+                  <span>{userName || 'Guest'}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {userRoles && userRoles.length > 0 ? userRoles.join(', ') : 'No Role'}
+                  </span>
+                </div>
+              )}
+            </div>
+            {/* --- NEW: AI Toggle Button --- */}
+            {state === 'expanded' && ( // Only show button when sidebar is expanded
+              <button
+                onClick={() => setIsAIWidgetVisible(!isAIWidgetVisible)}
+                className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                aria-label={isAIWidgetVisible ? "Hide AI Assistant" : "Show AI Assistant"}
+              >
+                <Bot className="h-5 w-5 text-muted-foreground" />
+              </button>
+            )}
+            {/* --- END NEW --- */}
           </div>
-          {state === 'expanded' && (
-            <div>
-              <h1 className='font-bold text-lg'>QxAnalytix</h1>
-              <p className='text-xs text-muted-foreground'>
-                unlocking endless possibilities
-              </p>
-            </div>
-          )}
-        </motion.div>
-      </SidebarHeader>
 
-      <SidebarContent className='flex-1 overflow-y-auto'>
-        {/* Main Navigation Group */}
-        <SidebarGroup>
-          <SidebarGroupLabel>Main Navigation</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {navigationItems
-                .filter((item) => hasAccess(item.allowedRoles))
-                .map((item, index) => {
-                  if (item.children) {
-                    return renderSubMenu(item, isPosSubMenuOpen, setIsPosSubMenuOpen);
-                  } else {
-                    return renderMenuItem(item, index, navigationItems.length, 0);
-                  }
-                })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        <SidebarSeparator />
-
-        {/* Business Tools Group */}
-        <SidebarGroup>
-          <SidebarGroupLabel>Business Tools</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {businessItems
-                .filter((item) => hasAccess(item.allowedRoles))
-                .map((item, index) => {
-                  if (item.children) {
-                    return renderSubMenu(item, isPosAdminSubMenuOpen, setIsPosAdminSubMenuOpen);
-                  } else {
-                    return renderMenuItem(item, index, businessItems.length, navigationItems.length);
-                  }
-                })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        <SidebarSeparator />
-
-        {/* --- NEW: Zororo Phumulani Group --- */}
-        {/* Conditionally render the Zororo group */}
-        {showZororoSection && (
-          <>
-            <SidebarGroup>
-              <SidebarGroupLabel>Zororo Phumulani</SidebarGroupLabel>
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  {/* Filter and render Zororo items based on access */}
-                  {zororoItems
-                    .filter((item) => hasAccess(item.allowedRoles))
-                    .map((item, index) =>
-                      renderMenuItem(
-                        item,
-                        index,
-                        zororoItems.length,
-                        // Calculate delay: sum of previous group item counts
-                        navigationItems.filter(i => hasAccess(i.allowedRoles)).length +
-                        businessItems.filter(i => hasAccess(i.allowedRoles)).length
-                      )
-                    )}
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-            <SidebarSeparator />
-          </>
-        )}
-        {/* --- END NEW --- */}
-
-        {/* Setup Group */}
-        <SidebarGroup>
-          <SidebarGroupLabel>Setup</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {setupItems
-                .filter((item) => hasAccess(item.allowedRoles))
-                .map((item, index) =>
-                  renderMenuItem(
-                    item,
-                    index,
-                    setupItems.length,
-                    // Calculate delay: sum of previous group item counts
-                    navigationItems.filter(i => hasAccess(i.allowedRoles)).length +
-                    businessItems.filter(i => hasAccess(i.allowedRoles)).length +
-                    (showZororoSection ? zororoItems.filter(i => hasAccess(i.allowedRoles)).length : 0)
-                  )
-                )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-
-      <SidebarFooter className='p-4 border-t border-gray-200 dark:border-gray-700'>
-        {/* User Info */}
-        <div className='flex items-center space-x-2 text-sm text-muted-foreground mb-4'>
-          <User className='h-5 w-5' />
-          {state === 'expanded' && (
-            <div className="flex flex-col">
-              <span>{userName || 'Guest'}</span>
-              <span className="text-xs text-muted-foreground">
-                {userRoles && userRoles.length > 0 ? userRoles.join(', ') : 'No Role'}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* Logout Button */}
-        <SidebarMenuItem>
-          <SidebarMenuButton onClick={handleLogout} className='w-full justify-start text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'>
-            <LogOut className='h-5 w-5' />
-            {state === 'expanded' && <span>Logout</span>}
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      </SidebarFooter>
-    </Sidebar>
+          {/* Logout Button */}
+          <SidebarMenuItem>
+            <SidebarMenuButton onClick={handleLogout} className='w-full justify-start text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'>
+              <LogOut className='h-5 w-5' />
+              {state === 'expanded' && <span>Logout</span>}
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarFooter>
+      </Sidebar>
+    </>
   );
 }
