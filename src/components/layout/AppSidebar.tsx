@@ -56,7 +56,7 @@ interface NavigationItem {
 // Hard-coded list of main navigation items with specific role access
 const navigationItems: NavigationItem[] = [
   // User and ceo roles now have access to all tabs by default
-  { title: 'Dashboard', url: '/', icon: Home, allowedRoles: ['admin', 'ceo', 'manager', 'cashier', 'user'] },
+  { title: 'Dashboard', url: '/', icon: Home, allowedRoles: ['admin', 'ceo', 'manager', 'dashboard','cashier', 'user'] },
   {
     title: 'POS Transact',
     url: '/pos',

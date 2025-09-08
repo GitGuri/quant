@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Camera, Save, Upload, Trash2, Loader2, Image as ImageIcon } from 'lucide-react';
+import { Camera, Save, Upload, Trash2, Loader2, Image as ImageIcon, Shield } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '../../AuthPage';
 
@@ -50,6 +50,9 @@ export function ProfileForm() {
   const [changePassword, setChangePassword] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+
+  // Self-downgrade busy flag
+  const [roleBusy, setRoleBusy] = useState(false);
 
   // ===== Logo state =====
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
@@ -194,6 +197,48 @@ export function ProfileForm() {
     } catch (err: any) {
       console.error('Failed to save profile:', err);
       alertErr(`Failed to save profile: ${err?.message || 'Unknown error'}`);
+    }
+  };
+
+  // ===== Self-downgrade handler =====
+  const handleSelfDowngrade = async () => {
+    if (!isAuthenticated || !token) {
+      alert('You are not authenticated.');
+      return;
+    }
+    const password = window.prompt('Enter the Qx password to upgrade your role to User:');
+    if (password == null) return; // user cancelled
+    if (!password.trim()) {
+      alert('Password is required.');
+      return;
+    }
+
+    setRoleBusy(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/self-role-downgrade`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ password }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data?.error || 'Failed to downgrade role.');
+        return;
+      }
+
+      alert('Role changed to user. For safety, please log in again.');
+      // Optional: force re-login so permissions refresh immediately.
+      localStorage.removeItem('token');
+      window.location.href = '/login';
+    } catch (e: any) {
+      console.error('[self-role-downgrade] error:', e);
+      alertErr(e?.message || 'Failed to downgrade role.');
+    } finally {
+      setRoleBusy(false);
     }
   };
 
@@ -396,6 +441,31 @@ export function ProfileForm() {
               </SelectContent>
             </Select>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Role & Access Section */}
+      <Card>
+        <CardHeader><CardTitle>Role & Access</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            If you currently have <strong>admin</strong> access and want to switch to a normal <strong>user</strong> for this company,
+            you can downgrade yourself below. You’ll be asked for the company password.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="destructive"
+              onClick={handleSelfDowngrade}
+              disabled={!isAuthenticated || roleBusy}
+              title="Downgrade your role from admin to user"
+            >
+              {roleBusy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Shield className="h-4 w-4 mr-2" />}
+              Downgrade my role to User
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            You will be logged out after the change so your permissions refresh.
+          </p>
         </CardContent>
       </Card>
 

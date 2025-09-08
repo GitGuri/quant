@@ -44,6 +44,41 @@ const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 const AppContent = () => {
   const { isAuthenticated } = useAuth();
 
+  // ✅ Role-based route protection
+  const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: string[] }> = ({ 
+    children, 
+    allowedRoles 
+  }) => {
+    const { isAuthenticated, userRoles } = useAuth();
+    
+    if (!isAuthenticated) {
+      return <Navigate to="/login" />;
+    }
+    
+    if (!allowedRoles || allowedRoles.length === 0) {
+      return <>{children}</>;
+    }
+    
+    const hasAccess = userRoles?.some((role: string) => allowedRoles.includes(role));
+    
+    if (!hasAccess) {
+      return <Navigate to="/unauthorized" replace />;
+    }
+    
+    return <>{children}</>;
+  };
+
+  // ✅ Unauthorized page component
+  const Unauthorized = () => (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-center">
+        
+        <p className="text-gray-600">Welcome to QxAnalytix Please select any of the Tabs to your left.</p>
+
+      </div>
+    </div>
+  );
+
   return (
     <div className="min-h-screen flex w-full">
       {isAuthenticated && <AppSidebar />}
@@ -53,8 +88,16 @@ const AppContent = () => {
             {/* ✅ Unified Login/Register Page */}
             <Route path="/login" element={<AuthPage />} />
 
-            {/* ✅ Protected Routes */}
-            <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+            {/* ✅ Protected Routes with role restrictions */}
+            <Route path="/unauthorized" element={<Unauthorized />} />
+            <Route 
+              path="/" 
+              element={
+                <ProtectedRoute allowedRoles={['admin','user','dashboard','ceo', 'manager', 'cashier']}>
+                  <Dashboard />
+                </ProtectedRoute>
+              } 
+            />
             <Route path="/tasks" element={<PrivateRoute><Tasks /></PrivateRoute>} />
             <Route path="/transactions" element={<PrivateRoute><Transactions /></PrivateRoute>} />
             <Route path="/financials" element={<PrivateRoute><Financials /></PrivateRoute>} />
@@ -66,21 +109,17 @@ const AppContent = () => {
             <Route path="/projections" element={<PrivateRoute><Projections /></PrivateRoute>} />
             <Route path="/accounting" element={<PrivateRoute><Accounting /></PrivateRoute>} />
             <Route path="/user-management" element={<PrivateRoute><UserManagementPage /></PrivateRoute>} />
-            {/* NEW: POS and its nested routes, all protected */}
             <Route path="/pos" element={<PrivateRoute><POSScreen /></PrivateRoute>} />
             <Route path="/pos/products" element={<PrivateRoute><ProductsPage /></PrivateRoute>} />
             <Route path="/pos/credits" element={<PrivateRoute><CreditPaymentsScreen /></PrivateRoute>} />
             <Route path="/pos/cash" element={<PrivateRoute><CashInScreen /></PrivateRoute>} />
-            {/* END NEW: POS and its nested routes */}
-
             <Route path="/documents" element={<PrivateRoute><DocumentManagement /></PrivateRoute>} />
             <Route path="/personel-setup" element={<PrivateRoute><PersonelSetup /></PrivateRoute>} />
             <Route path="/profile-setup" element={<PrivateRoute><ProfileSetup /></PrivateRoute>} />
             <Route path="/agent-signup" element={<PrivateRoute><AgentSignup /></PrivateRoute>} />
             <Route path="/agent-dashboard" element={<PrivateRoute><AgentDashboard /></PrivateRoute>} />
             <Route path="/super-agent-dashboard" element={<PrivateRoute><SuperAgentDashboard /></PrivateRoute>} />
-            {/* Catch-all for undefined routes */}
-            <Route path="*" element={<NotFound />} /> {/* Use your NotFound component */}
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </FinancialsProvider>
       </SidebarInset>

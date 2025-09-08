@@ -41,6 +41,7 @@ const allRoles = [
   'agent',
   'super-agent',
   'data-analytics',
+  'dashboard',
   'invoice',
   'payroll',
   'pos-admin',

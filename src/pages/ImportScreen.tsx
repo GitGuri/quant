@@ -1016,6 +1016,15 @@ const ChatInterface = () => {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  // [ADD] keep queued Excel sales here so we post them after user confirms
+const [pendingSales, setPendingSales] = useState<Array<{
+  customer_name: string;
+  office?: string | null;
+  date: string;
+  description: string;
+  amount: number;
+}>>([]);
+const pendingSalesRef = useRef<typeof pendingSales>([]);
 
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -1095,6 +1104,80 @@ const ChatInterface = () => {
     setMessages(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, sender: 'assistant', content }]);
   const addUserMessage = (content: string) =>
     setMessages(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, sender: 'user', content }]);
+  // [ADD] make sure a customer exists (GET by name, else POST)
+const ensureCustomer = async (customer_name: string, office?: string | null) => {
+  if (!isAuthenticated || !token) throw new Error('Authentication required.');
+  try {
+    const qs = new URLSearchParams({ name: customer_name }).toString();
+    const findRes = await fetch(`${API_BASE_URL}/customers?${qs}`, {
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    });
+    if (findRes.ok) {
+      const list = await findRes.json();
+      if (Array.isArray(list) && list.length > 0) return list[0];
+    }
+  } catch { /* fall through to create */ }
+
+  const createRes = await fetch(`${API_BASE_URL}/customers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({
+      name: customer_name,
+      contact_person: null,
+      email: null,
+      phone: null,
+      address: office || null,
+      tax_id: null,
+    }),
+  });
+  if (!createRes.ok) throw new Error(`Failed to create customer "${customer_name}"`);
+  return await createRes.json();
+};
+
+// [ADD] post a sale to /api/sales (Excel-only)
+const submitSale = async (sale: {
+  customer_name: string;
+  office?: string | null;
+  date: string;
+  description: string;
+  amount: number;
+}) => {
+  if (!isAuthenticated || !token) throw new Error('Authentication required.');
+
+  const customer = await ensureCustomer(sale.customer_name, sale.office);
+
+  // simple service-line cart → no inventory/COGS touched
+  const cart = [{
+    id: 'excel-import',
+    name: sale.description || `Sale for ${sale.customer_name}`,
+    quantity: 1,
+    unit_price: Number(sale.amount) || 0,
+    subtotal: Number(sale.amount) || 0,
+    tax_rate_value: 0,
+    is_service: true,
+  }];
+
+  const payload = {
+    cart,
+    total: Number(sale.amount) || 0,
+    amountPaid: 0,
+    change: 0,
+    paymentType: 'Bank',
+    dueDate: null,
+    tellerName: 'Excel Import',
+    branch: sale.office || null,
+    companyName: null,
+    customer: { id: customer.id, name: customer.name },
+  };
+
+  const res = await fetch(`${API_BASE_URL}/api/sales`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Sale post failed: ${res.status} ${await res.text()}`);
+  return await res.json();
+};
 
   // Helpers for files
   const isExcelFile = (f: File | null) => {
@@ -1247,6 +1330,8 @@ const ChatInterface = () => {
       for (const row of rows) {
         const rowNorm: Record<string, any> = {};
         Object.keys(row).forEach(k => { rowNorm[k.trim().toLowerCase()] = row[k]; });
+        // [ADD] persist Excel sales for confirm step (state + ref)
+
 
         const netRaw   = rowNorm['net'];
         const client   = String(rowNorm['client'] || '').trim();
@@ -1273,21 +1358,29 @@ const ChatInterface = () => {
           amount: Math.abs(revenue),
         });
 
-        prepared.push({
-          _tempId: crypto.randomUUID(),
-          type: 'income',
-          amount: Math.abs(revenue),
-          description: (baseDesc || `Sale for ${customer_name}`) + ' [Sales Preview]',
-          date,
-          category: 'Sales Revenue',
-          account_id: '',
-          original_text: JSON.stringify(row),
-          source: 'sales-preview',
-          is_verified: true,
-          confidenceScore: 100,
-          includeInImport: true,
-        });
+// (optional) try to prefill the Sales Revenue account so mapping won't skip
+const salesRevenueAcc = accounts.find(
+  a => a.type?.toLowerCase() === 'income' && a.name?.toLowerCase().includes('sales revenue')
+);
+
+prepared.push({
+  _tempId: crypto.randomUUID(),
+  type: 'income',
+  amount: Math.abs(revenue),
+  description: (baseDesc || `Sale for ${customer_name}`) + ' [Journal]',
+  date,
+  category: 'Sales Revenue',
+  account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '', // ✅ helps mapping stage
+  original_text: JSON.stringify(row),
+  source: 'excel-journal', // ✅ any value that isn’t 'sales-preview'
+  is_verified: true,
+  confidenceScore: 100,
+  includeInImport: true,
+});
+
       }
+      setPendingSales(salesQueue);
+      pendingSalesRef.current = salesQueue;
 
       if (!prepared.length && !salesQueue.length) {
         addAssistantMessage('No importable transactions were derived from the Excel file.');
@@ -1552,17 +1645,46 @@ const ChatInterface = () => {
     // show the progress widget once
     addAssistantMessage(<ImportProgressBubble />);
 
-    const toSubmit = (transactionsToSave || []).filter(t => t.includeInImport !== false);
+const toSubmit = (transactionsToSave || [])
+  .filter(t => t.includeInImport !== false)
+  .filter(t => t.source !== 'sales-preview');
 
-    if (toSubmit.length === 0) {
-      addAssistantMessage('Nothing selected to import.');
-      setImportBusy(false);
-      sendProgress('staging', 'done');
-      sendProgress('preview', 'done');
-      sendProgress('mapping', 'done');
-      sendProgress('posting', 'done');
-      return;
+    const salesOnlyQueue = [...pendingSalesRef.current];
+
+if (toSubmit.length === 0) {
+  if (salesOnlyQueue.length === 0) {
+    addAssistantMessage('Nothing selected to import.');
+    setImportBusy(false);
+    sendProgress('staging', 'done');
+    sendProgress('preview', 'done');
+    sendProgress('mapping', 'done');
+    sendProgress('posting', 'done');
+    return;
+  }
+
+  // SALES-ONLY path
+  addAssistantMessage(`No journal rows to import. Proceeding to post ${salesOnlyQueue.length} sale(s)…`);
+  try {
+    let ok = 0;
+    for (const s of salesOnlyQueue) {
+      try { await submitSale(s); ok++; }
+      catch (e: any) {
+        addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+      }
     }
+    addAssistantMessage(`Sales posting complete: ${ok}/${salesOnlyQueue.length} succeeded.`);
+  } finally {
+    pendingSalesRef.current = [];
+    setPendingSales([]);
+    setImportBusy(false);
+    sendProgress('staging', 'done');
+    sendProgress('preview', 'done');
+    sendProgress('mapping', 'done');
+    sendProgress('posting', 'done');
+  }
+  return;
+}
+
 
     // ---- PRECHECK: Block zero-amount rows before any API calls ----
     const zeroRows = toSubmit.filter(t => Number(t.amount) === 0);
@@ -1676,22 +1798,42 @@ const ChatInterface = () => {
 
       // POSTING
       sendProgress('posting', 'running');
-      const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
-      sendProgress('posting', 'done');
+// [KEEP THIS ORDER] 1) commit journal batch
+const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
+sendProgress('posting', 'done');
 
-      addAssistantMessage(
-        <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
-          <div className="font-semibold mb-1">Journal posting complete</div>
-          <div>{result.posted} posted, {result.skipped} skipped.</div>
-          <div className="mt-2 text-sm">
-            To see financial statements, go to the{' '}
-            <Link to="/financials" className="underline font-medium text-green-800">
-              Financials
-            </Link>{' '}
-            tab.
-          </div>
-        </div>
-      );
+addAssistantMessage(
+  <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+    <div className="font-semibold mb-1">Journal posting complete</div>
+    <div>{result.posted} posted, {result.skipped} skipped.</div>
+    <div className="mt-2 text-sm">
+      To see financial statements, go to the{' '}
+      <Link to="/financials" className="underline font-medium text-green-800">Financials</Link>{' '}
+      tab.
+    </div>
+  </div>
+);
+
+// 2) THEN post the queued sales
+try {
+  const salesToSubmit = [...pendingSalesRef.current];
+  if (salesToSubmit.length) {
+    addAssistantMessage(`Posting ${salesToSubmit.length} sale(s) to /api/sales…`);
+    let ok = 0;
+    for (const s of salesToSubmit) {
+      try { await submitSale(s); ok++; }
+      catch (e: any) {
+        addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+      }
+    }
+    addAssistantMessage(`Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`);
+  }
+} finally {
+  // prevent double-post on the next run
+  pendingSalesRef.current = [];
+  setPendingSales([]);
+}
+
 
     } catch (e: any) {
       console.error('[IMPORT] Import failed:', e);

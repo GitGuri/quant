@@ -407,9 +407,9 @@ function CustomerForm({
                                             ],
                                             [
                                                 { label: "Passport / ID", span: 3, name: "id_number", defaultValue: application?.id_number },
-                                                { label: "Name", span: 3, hideLabel: true, name: "alt_name", defaultValue: application?.alt_name },
+                                                
                                                 { label: "Relationship to Member", span: 3, name: "relation_to_member", defaultValue: application?.relation_to_member },
-                                                { label: "Date of Birth", span: 3, name: "relation_dob", defaultValue: application?.relation_dob },
+                                               
                                             ],
                                         ]}
                                     />

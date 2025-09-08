@@ -287,7 +287,10 @@ const StepsDialog = ({ task, isOpen, onClose, onUpdateProgress, onTaskUpdate }: 
         progress_mode: 'steps',
         steps: stepsToSend,
       });
-      onTaskUpdate?.(); // Trigger parent refresh
+      
+      // CRITICAL: Trigger parent refresh to update the task card
+      onTaskUpdate?.(); 
+      
       onClose();
     } catch (error) {
       console.error("Error saving steps:", error);
