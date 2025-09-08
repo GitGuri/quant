@@ -1002,7 +1002,7 @@ const handleSaveEdit = async () => {
       </motion.div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm">Total Agents</CardTitle>
@@ -1030,23 +1030,7 @@ const handleSaveEdit = async () => {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm">Pending / Failed (count)</CardTitle>
-            <Filter className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {kpis.pendingCount === undefined || kpis.failedCount === undefined
-                ? '—'
-                : (kpis.pendingCount + kpis.failedCount)}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              <span className="text-yellow-600">{kpis.pendingCount ?? '—'} Pending</span> /{' '}
-              <span className="text-red-600">{kpis.failedCount ?? '—'} Failed</span>
-            </p>
-          </CardContent>
-        </Card>
+
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -1122,9 +1106,7 @@ const handleSaveEdit = async () => {
                   <TableHead onClick={() => handleSort('registrationsThisMonth')}>
                     Regs. (month) {sortConfig.key === 'registrationsThisMonth' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
                   </TableHead>
-                  <TableHead className="text-center" onClick={() => handleSort('is_active')}>
-                    Status {sortConfig.key === 'is_active' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
-                  </TableHead>
+
                   <TableHead className="text-center">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1151,9 +1133,7 @@ const handleSaveEdit = async () => {
                     <TableCell>{formatCurrency(agent.expectedCommissionThisMonth ?? 0)}</TableCell>
                     <TableCell>{formatCurrency(agent.totalPaidThisMonth ?? 0)}</TableCell>
                     <TableCell>{agent.registrationsThisMonth ?? 0}</TableCell>
-                    <TableCell className="text-center">
-                      <span className={`inline-block h-2.5 w-2.5 rounded-full ${agent.is_active ? 'bg-green-500' : 'bg-red-500'}`} />
-                    </TableCell>
+
                     <TableCell className="text-center space-x-2" onClick={(e) => e.stopPropagation()}>
                       <Button data-row-action variant="ghost" size="sm" onClick={() => {
                         setDetailAgent(agent);
@@ -1198,9 +1178,7 @@ const handleSaveEdit = async () => {
                         )}
                       </button>
 
-                      <Button data-row-action variant="ghost" size="sm" onClick={() => { /* reserved for future delete */ }}>
-                        <Trash2 className="w-4 h-4 text-red-500" />
-                      </Button>
+
                     </TableCell>
                   </TableRow>
                 )) : (
@@ -1361,7 +1339,7 @@ const handleSaveEdit = async () => {
               <TableHead>Agent</TableHead>
               <TableHead>Code</TableHead>
               <TableHead>Created</TableHead>
-              <TableHead>Status</TableHead>
+              
               <TableHead className="text-right">Amount</TableHead>
               <TableHead className="text-center">Actions</TableHead>
             </TableRow>
@@ -1385,7 +1363,7 @@ const handleSaveEdit = async () => {
                 <TableCell>{app.agent_name || '—'}</TableCell>
                 <TableCell className="font-mono">{app.agent_code || '—'}</TableCell>
                 <TableCell>{app.created_at ? new Date(app.created_at).toLocaleDateString('en-ZA') : '—'}</TableCell>
-                <TableCell>{app.status || '—'}</TableCell>
+                
                 <TableCell className="text-right">{formatCurrency(app.total_amount ?? 0)}</TableCell>
                 <TableCell className="text-center space-x-1">
                   <Button
@@ -1903,89 +1881,102 @@ const handleSaveEdit = async () => {
         </DialogContent>
       </Dialog>
 
-      {/* ===== Edit Agent Dialog ===== */}
-      {editingAgent && (
-        <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-          <DialogContent className="max-w-xl">
-            <DialogHeader>
-              <DialogTitle>Edit Agent</DialogTitle>
-              <DialogDescription>Update agent profile, code, territory, commission & targets.</DialogDescription>
-            </DialogHeader>
+{/* ===== Edit Agent Dialog ===== */}
+{editingAgent && (
+  <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
+    <DialogContent
+      className="max-w-xl max-h-[85vh] p-0 overflow-hidden rounded-xl flex flex-col"
+    >
+      {/* Sticky header */}
+      <DialogHeader className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur px-6 py-4">
+        <DialogTitle>Edit Agent</DialogTitle>
+        <DialogDescription>
+          Update agent profile, code, territory, commission & targets.
+        </DialogDescription>
+      </DialogHeader>
 
-            {/* Numbers snapshot */}
-            <div className="grid grid-cols-2 gap-3 mb-2">
-              <Card>
-                <CardHeader className="pb-1"><CardTitle className="text-xs">Regs (month / all)</CardTitle></CardHeader>
-                <CardContent className="text-sm">
-                  {editingAgent.registrationsThisMonth} / {editingAgent.registrationsAllTime}
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader className="pb-1"><CardTitle className="text-xs">Paid (month / all)</CardTitle></CardHeader>
-                <CardContent className="text-sm">
-                  {formatCurrency(editingAgent.totalPaidThisMonth)} / {formatCurrency(editingAgent.totalPaidAllTime)}
-                </CardContent>
-              </Card>
-              <Card className="col-span-2">
-                <CardHeader className="pb-1"><CardTitle className="text-xs">Expected Commission (month)</CardTitle></CardHeader>
-                <CardContent className="text-sm">
-                  {formatCurrency(editingAgent.expectedCommissionThisMonth)}
-                </CardContent>
-              </Card>
-            </div>
+      {/* Scrollable body */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-4 pt-4">
+        {/* Numbers snapshot */}
+        <div className="grid grid-cols-2 gap-3 mb-2">
+          <Card>
+            <CardHeader className="pb-1"><CardTitle className="text-xs">Regs (month / all)</CardTitle></CardHeader>
+            <CardContent className="text-sm">
+              {editingAgent.registrationsThisMonth} / {editingAgent.registrationsAllTime}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-1"><CardTitle className="text-xs">Paid (month / all)</CardTitle></CardHeader>
+            <CardContent className="text-sm">
+              {formatCurrency(editingAgent.totalPaidThisMonth)} / {formatCurrency(editingAgent.totalPaidAllTime)}
+            </CardContent>
+          </Card>
+          <Card className="col-span-2">
+            <CardHeader className="pb-1"><CardTitle className="text-xs">Expected Commission (month)</CardTitle></CardHeader>
+            <CardContent className="text-sm">
+              {formatCurrency(editingAgent.expectedCommissionThisMonth)}
+            </CardContent>
+          </Card>
+        </div>
 
-            <div className="grid gap-3 py-2">
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="displayName" className="text-right">Name</Label>
-                <Input id="displayName" name="displayName" value={(editFormData.displayName as string) || ''} onChange={handleEditChange} className="col-span-3" />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="email" className="text-right">Email</Label>
-                <Input id="email" name="email" value={(editFormData.email as string) || ''} onChange={handleEditChange} className="col-span-3" type="email" />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="agent_code" className="text-right">Agent Code</Label>
-                <Input id="agent_code" name="agent_code" value={(editFormData.agent_code as string) ?? ''} onChange={handleEditChange} className="col-span-3" placeholder="e.g. AGT-001" />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="territory" className="text-right">Territory</Label>
-                <Input id="territory" name="territory" value={(editFormData.territory as string) || ''} onChange={handleEditChange} className="col-span-3" />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="commission_rate_display" className="text-right">Comm. Rate (%)</Label>
-                <Input
-                  id="commission_rate_display"
-                  name="commission_rate_display"
-                  value={(editFormData.commission_rate_display as string | number) ?? 10}
-                  onChange={handleEditChange}
-                  className="col-span-3" type="number" step="0.01" min={0} max={100}
-                />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="target_monthly_registrations" className="text-right">Regs Target</Label>
-                <Input id="target_monthly_registrations" name="target_monthly_registrations" value={(editFormData.target_monthly_registrations as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="target_monthly_sales" className="text-right">Sales Target</Label>
-                <Input id="target_monthly_sales" name="target_monthly_sales" value={(editFormData.target_monthly_sales as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" step="0.01" />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="performance_score" className="text-right">Perf. Score</Label>
-                <Input id="performance_score" name="performance_score" value={(editFormData.performance_score as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" step="1" />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-3">
-                <Label htmlFor="is_active" className="text-right">Active</Label>
-                <input id="is_active" name="is_active" type="checkbox" checked={!!editFormData.is_active} onChange={handleEditChange} className="col-span-3 h-4 w-4" />
-              </div>
-            </div>
+        {/* Form */}
+        <div className="grid gap-3 py-2">
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="displayName" className="text-right">Name</Label>
+            <Input id="displayName" name="displayName" value={(editFormData.displayName as string) || ''} onChange={handleEditChange} className="col-span-3" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="email" className="text-right">Email</Label>
+            <Input id="email" name="email" value={(editFormData.email as string) || ''} onChange={handleEditChange} className="col-span-3" type="email" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="agent_code" className="text-right">Agent Code</Label>
+            <Input id="agent_code" name="agent_code" value={(editFormData.agent_code as string) ?? ''} onChange={handleEditChange} className="col-span-3" placeholder="e.g. AGT-001" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="territory" className="text-right">Territory</Label>
+            <Input id="territory" name="territory" value={(editFormData.territory as string) || ''} onChange={handleEditChange} className="col-span-3" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="commission_rate_display" className="text-right">Comm. Rate (%)</Label>
+            <Input
+              id="commission_rate_display"
+              name="commission_rate_display"
+              value={(editFormData.commission_rate_display as string | number) ?? 10}
+              onChange={handleEditChange}
+              className="col-span-3" type="number" step="0.01" min={0} max={100}
+            />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="target_monthly_registrations" className="text-right">Regs Target</Label>
+            <Input id="target_monthly_registrations" name="target_monthly_registrations" value={(editFormData.target_monthly_registrations as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="target_monthly_sales" className="text-right">Sales Target</Label>
+            <Input id="target_monthly_sales" name="target_monthly_sales" value={(editFormData.target_monthly_sales as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" step="0.01" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="performance_score" className="text-right">Perf. Score</Label>
+            <Input id="performance_score" name="performance_score" value={(editFormData.performance_score as number | string) ?? ''} onChange={handleEditChange} className="col-span-3" type="number" step="1" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label htmlFor="is_active" className="text-right">Active</Label>
+            <input id="is_active" name="is_active" type="checkbox" checked={!!editFormData.is_active} onChange={handleEditChange} className="col-span-3 h-4 w-4" />
+          </div>
+        </div>
+      </div>
 
-            <DialogFooter>
-              <Button variant="ghost" onClick={() => setIsEditDialogOpen(false)}>Cancel</Button>
-              <Button onClick={handleSaveEdit}>Save changes</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
+      {/* Sticky footer */}
+      <div className="sticky bottom-0 z-10 border-t bg-background/80 backdrop-blur px-6 py-3">
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="ghost" onClick={() => setIsEditDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleSaveEdit}>Save changes</Button>
+        </DialogFooter>
+      </div>
+    </DialogContent>
+  </Dialog>
+)}
+
 
       {/* ===== Two-way Chat Dialog ===== */}
       <Dialog open={chatOpen} onOpenChange={(o) => { if (!o) { setChatOpen(false); setChatTarget(null); setChatMessages([]); } }}>
