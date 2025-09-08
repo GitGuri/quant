@@ -449,8 +449,8 @@ export function ProfileForm() {
         <CardHeader><CardTitle>Role & Access</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            If you currently have <strong>admin</strong> access and want to switch to a normal <strong>user</strong> for this company,
-            you can downgrade yourself below. You’ll be asked for the company password.
+            If you currently have <strong>admin</strong> access and want to switch to  <strong>user</strong> for this company,
+            you can upgrade yourself below. You’ll be asked for the QxAnalytix password.To get this password you need to contact the QxAnalytix team.
           </p>
           <div className="flex flex-wrap gap-2">
             <Button
