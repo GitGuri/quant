@@ -457,10 +457,10 @@ export function ProfileForm() {
               variant="destructive"
               onClick={handleSelfDowngrade}
               disabled={!isAuthenticated || roleBusy}
-              title="Downgrade your role from admin to user"
+              title="Upgrade your role from admin to user"
             >
               {roleBusy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Shield className="h-4 w-4 mr-2" />}
-              Downgrade my role to User
+              Upgrade my role to User
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
