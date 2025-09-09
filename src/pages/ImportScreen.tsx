@@ -45,6 +45,7 @@ import { useAuth } from '../AuthPage';
 import { SearchableAccountSelect } from '../components/SearchableAccountSelect';
 import { SearchableCategorySelect } from '../components/SearchableCategorySelect';
 import { Link, useNavigate } from 'react-router-dom';
+import { EvidencePrompt } from './EvidencePrompt';
 
 declare global {
   interface Window {
@@ -1016,6 +1017,10 @@ const ChatInterface = () => {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  // evidence modal state
+const [evidenceOpen, setEvidenceOpen] = useState(false);
+const [evidenceNotes, setEvidenceNotes] = useState<string>('');
+
   // [ADD] keep queued Excel sales here so we post them after user confirms
 const [pendingSales, setPendingSales] = useState<Array<{
   customer_name: string;
@@ -1072,6 +1077,17 @@ const pendingSalesRef = useRef<typeof pendingSales>([]);
     };
     fetchAccounts();
   }, [isAuthenticated, token, getAuthHeaders]);
+
+
+  const openEvidenceFor = (txs: Transaction[], sourceLabel: string) => {
+  if (!txs || txs.length === 0) return;
+  // pick the first selected / visible row to seed the notes
+  const t = txs[0];
+  const note = `Evidence for ${t.type} R${Number(t.amount || 0).toFixed(2)} on ${t.date} — ${t.description} (${sourceLabel})`;
+  setEvidenceNotes(note);
+  setEvidenceOpen(true);
+};
+
 
   // Load recent existing transactions (for dup check)
   useEffect(() => {
@@ -1286,8 +1302,10 @@ const submitSale = async (sale: {
             forceCash={forceCash}
             onToggleForceCash={setForceCash}
             isBusy={importBusy}
+
           />
         );
+
       } else {
         addAssistantMessage(`Error processing file: ${result.error || 'Unknown error'}`);
       }
@@ -1499,6 +1517,8 @@ prepared.push({
             isBusy={importBusy}
           />
         );
+
+        openEvidenceFor(flagged, 'typed')
       } else {
         addAssistantMessage(`Error analyzing description: ${result.error || 'Unknown error'}`);
       }
@@ -1613,6 +1633,8 @@ prepared.push({
             isBusy={importBusy}
           />
         );
+
+        openEvidenceFor(flagged, 'typed')
       } else {
         addAssistantMessage(`Error processing audio: ${result.error || 'Unknown error'}`);
       }
@@ -1682,6 +1704,9 @@ if (toSubmit.length === 0) {
     sendProgress('mapping', 'done');
     sendProgress('posting', 'done');
   }
+
+
+
   return;
 }
 
@@ -1971,6 +1996,22 @@ try {
           <Send size={20} />
         </Button>
       </div>
+      {/* Evidence uploader modal */}
+<EvidencePrompt
+  open={evidenceOpen}
+  onClose={() => setEvidenceOpen(false)}
+  token={token}
+  apiBaseUrl={API_BASE_URL}
+  defaultNotes={evidenceNotes}
+  onUploaded={(ok) => {
+    if (ok) {
+      addAssistantMessage('Evidence uploaded ✅ You can find it in Documents.');
+    } else {
+      addAssistantMessage('Evidence upload was cancelled or failed.');
+    }
+  }}
+/>
+
     </>
   );
 };
