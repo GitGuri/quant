@@ -38,7 +38,7 @@ export function EvidencePrompt({
       fd.append("document", file);
       // Optional extras if your backend accepts them; safe to include:
       fd.append("notes", notes || "");
-      fd.append("type", file.type || "attachment");
+      fd.append("type", "financial");
 
       const res = await fetch(`${apiBaseUrl}/upload-document`, {
         method: "POST",
