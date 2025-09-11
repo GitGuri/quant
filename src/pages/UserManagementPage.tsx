@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/components/ui/use-toast';
 
-const API_BASE_URL = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 // Define an interface for the user data
 interface User {

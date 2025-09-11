@@ -24,7 +24,7 @@ import type { Employee } from '../../types/payroll'; // Import Employee from the
 
 const { Title } = Typography;
 
-const API_BASE_URL = 'http://localhost:3000https://quantnow-cu1v.onrender.com'; // Define your API base URL
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // Define your API base URL
 
 const PayrollDashboard: React.FC = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);

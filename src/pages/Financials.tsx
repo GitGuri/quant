@@ -153,7 +153,7 @@ interface ApiCashFlowGrouped {
   financing?: ApiCashFlowSectionItem[];
 }
 
-const API_BASE_URL = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
 
 const openBlobInNewTab = (blob: Blob, filename: string) => {
   const url = URL.createObjectURL(blob);

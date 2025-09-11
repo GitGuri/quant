@@ -43,7 +43,7 @@ interface ChartData {
 }
 
 // ---------- API base ----------
-const API = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
+const API = 'https://quantnow-cu1v.onrender.com';
 
 export default function AnalyticsDashboard() {
   const { dashKey } = useParams<{ dashKey: DashboardKey }>();

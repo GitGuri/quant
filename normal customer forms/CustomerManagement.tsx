@@ -119,7 +119,7 @@ export function CustomerManagement() {
       // console.log('Frontend: Headers for fetchCustomersWithClusterData:', headers); // Optional debug log
 
       // --- CALL THE NEW BACKEND ENDPOINT ---
-      const response = await fetch(`http://localhost:3000https://quantnow-cu1v.onrender.com/api/customers/cluster-data`, {
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/customers/cluster-data`, {
         headers: {
           'Content-Type': 'application/json',
           ...headers,
@@ -174,7 +174,7 @@ export function CustomerManagement() {
   const handleCreateCustomer = async (customerData: CustomerSaveData) => {
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:3000https://quantnow-cu1v.onrender.com/api/customers', {
+      const response = await fetch('https://quantnow-cu1v.onrender.com/api/customers', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -210,7 +210,7 @@ export function CustomerManagement() {
   const handleUpdateCustomer = async (id: string, customerData: CustomerSaveData) => {
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:3000https://quantnow-cu1v.onrender.com/api/customers/${id}`, {
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/customers/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -246,7 +246,7 @@ export function CustomerManagement() {
   const handleDeleteCustomer = async (id: string) => {
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:3000https://quantnow-cu1v.onrender.com/api/customers/${id}`, {
+      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/customers/${id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });

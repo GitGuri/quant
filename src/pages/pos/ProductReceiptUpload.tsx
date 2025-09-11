@@ -283,7 +283,7 @@ export default function ReceiptProductUploader({
           company_name: companyName, // Ensure this is correctly passed
         };
 
-        const res = await fetch('http://localhost:3000https://quantnow-cu1v.onrender.com/products-services', { // Your backend endpoint for adding products
+        const res = await fetch('https://quantnow-cu1v.onrender.com/products-services', { // Your backend endpoint for adding products
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
