@@ -88,7 +88,7 @@ const useIncrementProgress = () => {
   return useCallback(async (taskId: string, incrementValue: number) => { // Added incrementValue
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/tasks/${taskId}/progress/increment`, {
+      const response = await fetch(`http://localhost:3000https://quantnow-cu1v.onrender.com/api/tasks/${taskId}/progress/increment`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -113,7 +113,7 @@ const useUpdateTaskProgress = () => {
   return useCallback(async (taskId: string, progressData: Partial<Pick<Task, 'progress_mode' | 'progress_goal' | 'progress_current' | 'steps' | 'progress_percentage'>>) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/tasks/${taskId}/progress`, {
+      const response = await fetch(`http://localhost:3000https://quantnow-cu1v.onrender.com/api/tasks/${taskId}/progress`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

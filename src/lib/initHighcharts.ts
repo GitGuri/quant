@@ -1,36 +1,30 @@
-// src/lib/initHighcharts.ts (or your relevant path)
+// src/lib/initHighcharts.ts
 import Highcharts from 'highcharts';
 
-// Core extensions FIRST
+// Core
 import HighchartsMore from 'highcharts/highcharts-more';
 import Exporting from 'highcharts/modules/exporting';
 import ExportData from 'highcharts/modules/export-data';
 import Accessibility from 'highcharts/modules/accessibility';
 
-// WOW modules (note the exact names)
+// Families
 import Sankey from 'highcharts/modules/sankey';
-import DependencyWheel from 'highcharts/modules/dependency-wheel'; // needs sankey
+import DependencyWheel from 'highcharts/modules/dependency-wheel'; // requires sankey
 import Networkgraph from 'highcharts/modules/networkgraph';
 import Streamgraph from 'highcharts/modules/streamgraph';
 import Sunburst from 'highcharts/modules/sunburst';
-// import PackedBubble from 'highcharts/modules/packed-bubble'; // Currently commented out
 import Variwide from 'highcharts/modules/variwide';
-import SolidGauge from 'highcharts/modules/solid-gauge'; // needs highcharts-more
+import SolidGauge from 'highcharts/modules/solid-gauge'; // requires highcharts-more
 import Annotations from 'highcharts/modules/annotations';
-
-// --- NEWLY ADDED MODULES ---
-// For Heatmap chart
 import Heatmap from 'highcharts/modules/heatmap';
-// For Calendar chart (often used with heatmap or timeline approach)
-// Note: Highcharts doesn't have a specific 'timeline' module for calendars,
-// but the 'timeline' series type exists for other purposes.
-// We'll add it in case it's needed, but primarily heatmap is used for calendar grids.
-// If you specifically need the Timeline series type:
-// import Timeline from 'highcharts/modules/timeline';
 
-// --- END NEWLY ADDED MODULES ---
+// NEW: needed for the sales dashboard you asked for
+import Pareto from 'highcharts/modules/pareto';
+import Funnel from 'highcharts/modules/funnel';
+import Histogram from 'highcharts/modules/histogram-bellcurve';
+//import PackedBubble from 'highcharts/modules/packed-bubble';
 
-// Init in the right order
+// init order matters
 HighchartsMore(Highcharts);
 Exporting(Highcharts);
 ExportData(Highcharts);
@@ -41,38 +35,36 @@ DependencyWheel(Highcharts);
 Networkgraph(Highcharts);
 Streamgraph(Highcharts);
 Sunburst(Highcharts);
-// PackedBubble(Highcharts); // Currently commented out
 Variwide(Highcharts);
 SolidGauge(Highcharts);
 Annotations(Highcharts);
-
-// --- INITIALIZE NEWLY ADDED MODULES ---
 Heatmap(Highcharts);
-// Timeline(Highcharts); // Initialize if you uncommented the import above
-// --- END INITIALIZE NEWLY ADDED MODULES ---
 
-// Optional: silence accessibility warning or keep it enabled
+// NEW modules
+Pareto(Highcharts);
+Funnel(Highcharts);
+Histogram(Highcharts);
+//PackedBubble(Highcharts);
+
+// global opts
 Highcharts.setOptions({
   accessibility: { enabled: false },
-  chart: { backgroundColor: 'transparent' }
+  chart: { backgroundColor: 'transparent' },
 });
 
-// Sanity log (only once on boot). You can remove later.
+// dev sanity check
 if (import.meta.env.DEV) {
-  // These must be truthy if modules loaded
   console.log('[HC modules]',
-    !!Highcharts.seriesTypes.sankey,
     !!Highcharts.seriesTypes.dependencywheel,
     !!Highcharts.seriesTypes.networkgraph,
-    !!Highcharts.seriesTypes.streamgraph,
     !!Highcharts.seriesTypes.sunburst,
-    // !!Highcharts.seriesTypes.packedbubble, // Currently commented out
     !!Highcharts.seriesTypes.variwide,
     !!Highcharts.seriesTypes.solidgauge,
-    // --- NEW MODULE CHECKS ---
-    !!Highcharts.seriesTypes.heatmap
-    // !!Highcharts.seriesTypes.timeline // Add if you imported/initialized Timeline
-    // --- END NEW MODULE CHECKS ---
+    !!Highcharts.seriesTypes.heatmap,
+    !!Highcharts.seriesTypes.pareto,
+    !!Highcharts.seriesTypes.funnel,
+    !!Highcharts.seriesTypes.histogram,
+    //!!Highcharts.seriesTypes.packedbubble,
   );
 }
 

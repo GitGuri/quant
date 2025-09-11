@@ -101,7 +101,7 @@ const POSDashboard = ({ products }: Props) => {
         }
 
         // Use process.env.REACT_APP_BACKEND_URL for consistency
-        const res = await fetch(`https://quantnow-cu1v.onrender.com/api/dashboard/sales`, {
+        const res = await fetch(`http://localhost:3000https://quantnow-cu1v.onrender.com/api/dashboard/sales`, {
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'

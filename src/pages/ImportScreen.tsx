@@ -1001,7 +1001,7 @@ const EditableTransactionTable = ({
 // ------------ Main ------------
 const ChatInterface = () => {
   const RAIRO_API_BASE_URL = 'https://rairo-stmt-api.hf.space';
-  const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+  const API_BASE_URL = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
   const [forceCash, setForceCash] = useState(false);
   const [messages, setMessages] = useState<Array<{ id: string; sender: string; content: string | JSX.Element }>>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -1658,7 +1658,7 @@ prepared.push({
   // -------------- Save Selected --------------
   // PIPELINE: stage -> preview -> (PATCH) -> commit
   const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
-    const API_BASE_URL_REAL = 'https://quantnow-cu1v.onrender.com';
+    const API_BASE_URL_REAL = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
     const authHeaders = getAuthHeaders();
 
     if (importBusy) return;

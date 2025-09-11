@@ -17,7 +17,7 @@ import { motion } from 'framer-motion';
 import { Plus, Edit, Trash2, Building, CreditCard, Calculator, Play } from 'lucide-react';
 import { useAuth } from '../AuthPage';
 
-const API_BASE = 'https://quantnow-cu1v.onrender.com';
+const API_BASE = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
 
 // Types
 interface Asset {

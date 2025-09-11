@@ -18,7 +18,7 @@ import { useAuth } from '../../AuthPage';
 
 const { Title, Text } = Typography;
 
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+const API_BASE_URL = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
 
 interface PayrollCalculation {
   grossSalary: number;

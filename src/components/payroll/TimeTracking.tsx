@@ -70,7 +70,7 @@ interface TimeTrackingProps {
   onUpdateEmployeeHours: () => Promise<void>; // Callback to update employee hours in parent
 }
 
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // Define your API base URL
+const API_BASE_URL = 'http://localhost:3000https://quantnow-cu1v.onrender.com'; // Define your API base URL
 
 const TimeTracking: React.FC<TimeTrackingProps> = ({
   employees,

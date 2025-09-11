@@ -41,7 +41,7 @@ interface EmployeeListProps {
   onEmployeeActionSuccess: () => Promise<void>;
 }
 
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+const API_BASE_URL = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
 
 export const EmployeeList: React.FC<EmployeeListProps> = ({
   employees,

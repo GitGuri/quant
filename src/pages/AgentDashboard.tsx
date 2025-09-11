@@ -101,7 +101,7 @@ type ChatMessage = {
 type ChatPeer = { id: string; name: string };
 
 // ==================== Config ====================
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+const API_BASE_URL = 'http://localhost:3000https://quantnow-cu1v.onrender.com';
 
 // ==================== Helpers ====================
 const formatCurrency = (n?: number | null) =>
