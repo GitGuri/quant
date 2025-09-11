@@ -5,7 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Tasks from './pages/Tasks';
 import Transactions from './pages/Transactions';
 import Financials from './pages/Financials';
-import DataAnalytics from './pages/DataAnalytics';
+import AnalyticsHub from './pages/AnalyticsHub';
 import ImportScreen from './pages/ImportScreen';
 import InvoiceQuote from './pages/InvoiceQuote';
 import QuantChat from './pages/QuantChat';
@@ -24,9 +24,10 @@ import { FinancialsProvider } from './contexts/FinancialsContext';
 import AgentSignup from './pages/AgentSignup';
 import SuperAgentDashboard from './pages/SuperAgentDashboard';
 import AgentDashboard from './pages/AgentDashboard';
-
+import AnalyticsDashboard from './pages/AnalyticsDashboard';
 // ✅ Unified Auth Page (Login + Register)
 import { AuthPage, AuthProvider, useAuth } from './AuthPage';
+import { Header } from './components/layout/Header';
 
 // NEW: Import POS sub-pages from the recommended structure
 import POSScreen from './pages/POS';
@@ -69,15 +70,22 @@ const AppContent = () => {
   };
 
   // ✅ Unauthorized page component
-  const Unauthorized = () => (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="text-center">
-        
-        <p className="text-gray-600">Welcome to QxAnalytix Please select any of the Tabs to your left.</p>
 
+const Unauthorized = () => (
+  <div className="flex-1 space-y-4 p-4 md:p-6 lg:p-8">
+    {/* ✅ Reuse the exact same Header */}
+    <Header title="Welcome" />
+
+    <div className="flex items-center justify-center mt-10">
+      <div className="text-center max-w-lg">
+        <p className="text-gray-600 text-lg">
+          Welcome to <span className="font-semibold">QxAnalytix</span>.  
+          Please select any of the tabs on the left to get started.
+        </p>
       </div>
     </div>
-  );
+  </div>
+);
 
   return (
     <div className="min-h-screen flex w-full">
@@ -101,7 +109,8 @@ const AppContent = () => {
             <Route path="/tasks" element={<PrivateRoute><Tasks /></PrivateRoute>} />
             <Route path="/transactions" element={<PrivateRoute><Transactions /></PrivateRoute>} />
             <Route path="/financials" element={<PrivateRoute><Financials /></PrivateRoute>} />
-            <Route path="/analytics" element={<PrivateRoute><DataAnalytics /></PrivateRoute>} />
+            <Route path="/analytics" element={<PrivateRoute><AnalyticsHub /></PrivateRoute>} />
+            <Route path="/analytics/:dashKey" element={<PrivateRoute><AnalyticsDashboard /></PrivateRoute>} />
             <Route path="/import" element={<PrivateRoute><ImportScreen /></PrivateRoute>} />
             <Route path="/invoice-quote" element={<PrivateRoute><InvoiceQuote /></PrivateRoute>} />
             <Route path="/payroll" element={<PrivateRoute><PayrollDashboard /></PrivateRoute>} />
