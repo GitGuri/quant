@@ -1,4 +1,3 @@
-// src/pages/_dashboards.tsx
 import type { ReactNode } from 'react';
 import {
   BarChartOutlined,
@@ -17,42 +16,55 @@ export type DashboardDef = {
   chartIds: string[];
 };
 
-export const DASHBOARD_SALES_IDS = [
-  'sales-trend',             // Orders (col) + Revenue (line)
-  'aov-trend',               // Computed from revenue/volume
-  'payment-mix',             // From /api/analytics/sales/payment-mix
-  'top-products-pareto',     // From /api/charts/top-selling-products
-  'calendar-heatmap-sales',  // From /api/charts/daily-sales-aggregation
-  'sales-funnel',            // Built from transaction-volume
-] as const;
-
 export const DASHBOARDS: Record<DashboardKey, DashboardDef> = {
   sales: {
     label: 'Sales',
-    description: 'Orders & revenue trend, AOV, payment mix, top products, calendar, funnel',
+    description: 'Sales trends, AOV, payment mix, heatmap, funnel & distribution (includes forecasts)',
     color: 'geekblue',
     icon: <BarChartOutlined />,
-    chartIds: [...DASHBOARD_SALES_IDS],
+    chartIds: [
+      'sales-trend', // Historical
+      'aov-trend',   // Historical
+      // --- Add Forecast Chart IDs ---
+      'forecast-sales-trend', // New Forecast Chart
+      'forecast-aov-trend',   // New Forecast Chart
+      // --- End of additions ---
+      'payment-mix',
+      'top-products-pareto',
+      'calendar-heatmap-sales',
+      'sales-funnel',
+      'order-values-histogram',
+    ],
   },
-  finance: {
-    label: 'Finance',
-    description: 'Revenue vs expenses, expense race, profit KPI',
-    color: 'volcano',
-    icon: <AreaChartOutlined />,
-    chartIds: ['sunburst-financials', 'bar-race-expenses', 'kpi-profit-gauge'],
-  },
-  customers: {
-    label: 'Customers',
-    description: 'Customer value buckets & distribution',
-    color: 'green',
-    icon: <PieChartOutlined />,
-    chartIds: ['packed-bubble-ltv'],
-  },
-  products: {
-    label: 'Products',
-    description: 'Product relationships & motion',
-    color: 'purple',
-    icon: <LineChartOutlined />,
-    chartIds: ['network-products-types'],
-  },
+finance: {
+  label: 'Finance',
+  description: 'Revenue vs expenses, expense trend, profit KPI (includes Prophet forecasts)',
+  color: 'volcano',
+  icon: <AreaChartOutlined />,
+  chartIds: [
+    'income-waterfall',                 // ⟵ was 'sunburst-financials'
+    'bar-race-expenses',
+    'kpi-profit-gauge',
+    'forecast-profit-trend-prophet',
+    'forecast-revenue-trend-prophet',
+    'forecast-expenses-trend-prophet',
+  ],
+},
+
+customers: {
+  label: 'Customers',
+  description: 'CLV share, overdue risk, churn watch',
+  color: 'green',
+  icon: <PieChartOutlined />,
+  chartIds: ['cust-clv-donut', 'cust-overdue-bubbles', 'cust-churn-buckets'],
+},
+// Products
+products: {
+  label: 'Products',
+  description: 'Stock alerts, profitability & dead stock',
+  color: 'purple',
+  icon: <LineChartOutlined />,
+  chartIds: ['prod-low-stock', 'prod-profit-scatter', 'prod-dead-stock'],
+},
+
 };

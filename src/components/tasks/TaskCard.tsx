@@ -72,16 +72,14 @@ const priorityColors = {
 };
 
 interface TaskCardProps {
-  task: Task; // Updated type
-  onEdit: (task: Task) => void; // This will still open the full edit dialog from KanbanBoard
-  onDelete: (taskId: string) => void;
-  priority: Task['priority'];
-  progressPercentage: number;
-  project_name?: string | null;
+  task: Task;
+  onEdit: (task: Task) => void;
+   onDelete: (taskId: string) => void;
+   priority: Task['priority'];
+   project_name?: string | null;
   projects: { id: string; name: string; }[];
-  users?: { id: string; name: string; }[]; // Pass users if needed by TaskCard directly
-  onTaskUpdate?: () => void; // Add this to props to refresh data after API calls
-}
+  users?: { id: string; name: string; }[];
+  onTaskUpdate?: () => void; }
 
 // --- NEW: Placeholder hooks for API calls ---
 const useIncrementProgress = () => {
@@ -235,6 +233,7 @@ const TargetDialog = ({ task, isOpen, onClose, onUpdateProgress, onTaskUpdate }:
 // --- END NEW: Target Dialog ---
 
 // --- NEW: Steps Dialog Component ---
+// Steps Dialog Component (from TaskCard.tsx)
 const StepsDialog = ({ task, isOpen, onClose, onUpdateProgress, onTaskUpdate }: {
   task: Task;
   isOpen: boolean;
@@ -274,9 +273,15 @@ const StepsDialog = ({ task, isOpen, onClose, onUpdateProgress, onTaskUpdate }: 
     setSteps(reindexedSteps);
   };
 
+  // --- MODIFIED: Include progress_percentage in the save payload ---
   const handleSave = async () => {
     setIsSaving(true);
     try {
+      // Calculate progress before saving
+      const totalWeight = steps.reduce((sum, step) => sum + (step.weight ?? 0), 0);
+      const completedWeight = steps.filter(step => step.is_done).reduce((sum, step) => sum + (step.weight ?? 0), 0);
+      const newPercentage = totalWeight > 0 ? (completedWeight / totalWeight) * 100 : 0;
+
       // Filter out temporary IDs before sending
       const stepsToSend = steps.map(step => ({
         ...step,
@@ -286,21 +291,20 @@ const StepsDialog = ({ task, isOpen, onClose, onUpdateProgress, onTaskUpdate }: 
       await onUpdateProgress(task.id, {
         progress_mode: 'steps',
         steps: stepsToSend,
+        progress_percentage: newPercentage, // <-- This is the key fix
       });
       
-      // CRITICAL: Trigger parent refresh to update the task card
       onTaskUpdate?.(); 
-      
       onClose();
     } catch (error) {
       console.error("Error saving steps:", error);
-      // Handle error
     } finally {
       setIsSaving(false);
     }
   };
+  // --- END MODIFIED ---
 
-  // Calculate step-based progress
+  // Calculate step-based progress for local display
   const totalWeight = steps.reduce((sum, step) => sum + (step.weight ?? 0), 0);
   const completedWeight = steps
     .filter(step => step.is_done)
@@ -500,6 +504,24 @@ const ProgressOptionsDialog = ({ task, isOpen, onClose, onUpdateProgress, onIncr
               </p>
             </div>
           )}
+
+
+          {/* --- NEW: Progress Display --- */}
+          {task.progress_percentage !== null && task.progress_percentage !== undefined && (
+            <div className="mt-2">
+              <div className="flex items-center justify-between text-xs text-gray-500">
+                <span>Progress</span>
+                <span>{Math.round(task.progress_percentage)}%</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-1.5 mt-1">
+                <div
+                  className="bg-blue-600 h-1.5 rounded-full"
+                  style={{ width: `${task.progress_percentage}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {/* --- END NEW --- */}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={isSaving}>
@@ -837,10 +859,11 @@ export function TaskCard({
           <div className="space-y-1">
             <div className="flex justify-between text-xs text-gray-500">
               <span>Progress</span>
-              <span className="font-medium text-gray-700">{progressPercentage}%</span>
+              <span className="font-medium text-gray-700">{Math.round(task.progress_percentage)}%</span>
+
             </div>
             <div className="w-full bg-gray-200 rounded-full h-1.5">
-              <div className="bg-blue-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${progressPercentage}%` }} />
+              <div className="bg-blue-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${task.progress_percentage}%` }} />
             </div>
 
             {/* --- NEW: Mode-Specific Progress Actions --- */}

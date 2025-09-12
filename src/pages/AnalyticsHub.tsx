@@ -23,6 +23,7 @@ import {
   AreaChartOutlined,
 } from '@ant-design/icons';
 
+
 // --- Dashboard presets (ids should match your chart ids used on AnalyticsDashboard) ---
 const DASHBOARDS: Record<
   string,
@@ -167,31 +168,8 @@ const AnalyticsHub = () => {
             ))}
 
             {/* Optional: a visible Custom card as well */}
-            <Col xs={24} sm={12} md={12} lg={6}>
-              <Card
-                hoverable
-                className="rounded-xl"
-                onClick={() => (isAuthenticated && token ? handleOpenCustom() : null)}
-                style={{
-                  cursor: isAuthenticated && token ? 'pointer' : 'not-allowed',
-                  opacity: isAuthenticated && token ? 1 : 0.6,
-                }}
-              >
-                <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                  <Space size="small" align="center">
-                    <AppstoreOutlined />
-                    <span style={{ fontWeight: 700 }}>Custom</span>
-                  </Space>
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>
-                    Build your own view by mixing any charts.
-                  </div>
-                  <Tag>Pick & Mix</Tag>
-                  <Button type="default" block disabled={!isAuthenticated || !token}>
-                    Open Custom
-                  </Button>
-                </Space>
-              </Card>
-            </Col>
+
+            
           </Row>
         </Card>
 

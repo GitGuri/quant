@@ -11,7 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import logo from "./logo.png";
 
-const API_BASE_URL = 'http://localhost:3000'; // Ensure this matches your backend URL
+const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // Ensure this matches your backend URL
 
 // --- Define Types Inline ---
 interface FamilyMember {

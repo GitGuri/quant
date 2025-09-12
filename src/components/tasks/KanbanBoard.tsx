@@ -759,7 +759,7 @@ export function KanbanBoard() {
                                 onEdit={handleOpenEdit}
                                 onDelete={handleDeleteTask}
                                 priority={task.priority}
-                                progressPercentage={task.progress_percentage}
+                                
                                 project_name={task.project_name}
                                 projects={projects}
                                 users={users} // Pass users if needed by TaskCard directly

@@ -260,15 +260,7 @@ export function TaskForm({ task, onSave, onCancel, projects, users }: TaskFormPr
             />
           </div>
           <div>
-            <Label htmlFor="progress_current">Current</Label>
-            <Input
-              id="progress_current"
-              type="number"
-              min={0}
-              value={formData.progress_current ?? 0}
-              onChange={(e) => setFormData({ ...formData, progress_current: Number(e.target.value) })}
-              // Add validation to ensure current <= goal if goal is set
-            />
+
             {formData.progress_goal !== null && formData.progress_goal > 0 && (
                  <p className="text-xs text-gray-500">
                     {formData.progress_current} / {formData.progress_goal} ({Math.min(100, Math.round(((formData.progress_current ?? 0) / (formData.progress_goal ?? 1)) * 100))}%)
