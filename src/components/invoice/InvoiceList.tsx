@@ -59,7 +59,7 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'; // Import DropdownMenu components
 
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+const API_BASE_URL = 'https://quantnow.onrender.com';
 
 interface InvoiceLineItem {
     id?: string;

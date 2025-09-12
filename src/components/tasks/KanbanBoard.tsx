@@ -186,7 +186,7 @@ export function KanbanBoard() {
   // ---- New: fetch users ----
   const fetchUsers = useCallback(async () => {
     // --- FIXED: Removed extra space in URL ---
-    const resp = await fetch('https://quantnow-cu1v.onrender.com/api/users', {
+    const resp = await fetch('https://quantnow.onrender.com/api/users', {
       headers: getAuthHeaders(),
     });
     if (!resp.ok) throw new Error(`Users fetch failed: ${resp.status}`);
@@ -213,7 +213,7 @@ export function KanbanBoard() {
       await fetchUsers(); // <-- ensure users are loaded
 
       // --- FIXED: Removed extra space in URL ---
-      const projectsResponse = await fetch('https://quantnow-cu1v.onrender.com/api/projects', {
+      const projectsResponse = await fetch('https://quantnow.onrender.com/api/projects', {
         headers: getAuthHeaders(),
       });
       if (!projectsResponse.ok) throw new Error(`HTTP error! status: ${projectsResponse.status}`);
@@ -221,7 +221,7 @@ export function KanbanBoard() {
       setProjects(projectsData);
 
       // --- FIXED: Removed extra space in URL ---
-      const tasksResponse = await fetch('https://quantnow-cu1v.onrender.com/api/tasks', {
+      const tasksResponse = await fetch('https://quantnow.onrender.com/api/tasks', {
         headers: getAuthHeaders(),
       });
       if (!tasksResponse.ok) throw new Error(`HTTP error! status: ${tasksResponse.status}`);
@@ -322,7 +322,7 @@ export function KanbanBoard() {
 
       try {
         // --- FIXED: Removed extra space in URL ---
-        const response = await fetch(`https://quantnow-cu1v.onrender.com/api/tasks/${activeTask.id}`, {
+        const response = await fetch(`https://quantnow.onrender.com/api/tasks/${activeTask.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           // --- IMPROVED: Send the potentially updated task object, not just status ---
@@ -376,7 +376,7 @@ export function KanbanBoard() {
     try {
       // --- 1. Create the Task ---
       console.log("[handleSaveNewTask] Creating task with data:", taskData);
-      const response = await fetch('https://quantnow-cu1v.onrender.com/api/tasks', {
+      const response = await fetch('https://quantnow.onrender.com/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -408,7 +408,7 @@ export function KanbanBoard() {
           // Use a more robust async/await inside the map for better error handling per step
           (async () => {
             try {
-              const stepResponse = await fetch(`https://quantnow-cu1v.onrender.com/api/tasks/${createdTaskId}/steps`, {
+              const stepResponse = await fetch(`https://quantnow.onrender.com/api/tasks/${createdTaskId}/steps`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify({
@@ -494,7 +494,7 @@ export function KanbanBoard() {
     const statusFromProgress = getStatusFromProgress(taskData.progress_percentage);
     try {
       // --- FIXED: Removed extra space in URL ---
-      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/tasks/${taskToEdit.id}`, {
+      const response = await fetch(`https://quantnow.onrender.com/api/tasks/${taskToEdit.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -526,7 +526,7 @@ export function KanbanBoard() {
     }
     try {
       // --- FIXED: Removed extra space in URL ---
-      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/tasks/${taskId}`, {
+      const response = await fetch(`https://quantnow.onrender.com/api/tasks/${taskId}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
@@ -546,7 +546,7 @@ export function KanbanBoard() {
     }
     try {
       // --- FIXED: Removed extra space in URL ---
-      const response = await fetch('https://quantnow-cu1v.onrender.com/api/projects', {
+      const response = await fetch('https://quantnow.onrender.com/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -572,7 +572,7 @@ export function KanbanBoard() {
     }
     try {
       // --- FIXED: Removed extra space in URL ---
-      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/projects/${activeProject.id}`, {
+      const response = await fetch(`https://quantnow.onrender.com/api/projects/${activeProject.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -598,7 +598,7 @@ export function KanbanBoard() {
     }
     try {
       // --- FIXED: Removed extra space in URL ---
-      const response = await fetch(`https://quantnow-cu1v.onrender.com/api/projects/${projectToDelete.id}`, {
+      const response = await fetch(`https://quantnow.onrender.com/api/projects/${projectToDelete.id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });

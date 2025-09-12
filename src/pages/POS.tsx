@@ -62,7 +62,7 @@ type CartItem = ProductDB & { quantity: number; subtotal: number };
 type PaymentType = 'Cash' | 'Bank' | 'Credit';
 // --- END: MODIFIED TYPES TO MATCH BACKEND API ---
 
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // <-- set your API URL
+const API_BASE_URL = 'https://quantnow.onrender.com'; // <-- set your API URL
 
 
 // ===== Credit Score (frontend-only, flag not block) =====

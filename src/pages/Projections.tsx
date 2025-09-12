@@ -21,7 +21,7 @@ import 'jspdf-autotable';
 if (typeof HighchartsMore === 'function') HighchartsMore(Highcharts);
 
 // IMPORTANT: Replace with your actual backend API URL
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com'; // Ensure this matches your backend
+const API_BASE_URL = 'https://quantnow.onrender.com'; // Ensure this matches your backend
 
 // Define types for projection data
 interface ProjectionDataPoint {

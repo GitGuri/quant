@@ -25,7 +25,7 @@ interface EmployeeRegistrationProps {
   initialData?: Employee | null;
 }
 
-const API_BASE_URL = 'https://quantnow-cu1v.onrender.com';
+const API_BASE_URL = 'https://quantnow.onrender.com';
 
 const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({
   isOpen,
