@@ -123,7 +123,7 @@ export function AppSidebar() {
   // --- NEW: State for AI Widget ---
   const [isAIWidgetVisible, setIsAIWidgetVisible] = useState(false);
   const widgetContainerRef = useRef<HTMLDivElement>(null);
-  const AGENT_ID = "agent_9601k4x71cswewv8xh34bfb1rwad"; // Replace with your actual agent ID
+  const AGENT_ID = "agent_6301k54386j1fvg9nss6eda6dfgj"; // Replace with your actual agent ID
 
   useEffect(() => {
     // Open sub-menu if any route within it is active
