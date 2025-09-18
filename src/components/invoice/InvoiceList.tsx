@@ -24,7 +24,7 @@ import {
   CheckCircle,
   XOctagon,
   MoreVertical,
-  DollarSign,
+  HandCoins,
   History,
 } from 'lucide-react';
 import {
@@ -818,7 +818,7 @@ export function InvoiceList() {
                             onClick={() => openPaymentModal(invoice)}
                             title="Record payment"
                           >
-                            <DollarSign className="h-4 w-4" />
+                            <HandCoins className="h-4 w-4" />
                           </Button>
 
                           {/* Payment History */}
@@ -853,7 +853,7 @@ export function InvoiceList() {
                                 <Mail className="mr-2 h-4 w-4" /> Sent
                               </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleManualStatusUpdate(invoice.id, 'Partially Paid')}>
-                                <DollarSign className="mr-2 h-4 w-4" /> Partially Paid
+                                <HandCoins className="mr-2 h-4 w-4" /> Partially Paid
                               </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleManualStatusUpdate(invoice.id, 'Paid')}>
                                 <CheckCircle className="mr-2 h-4 w-4 text-green-600" /> Paid

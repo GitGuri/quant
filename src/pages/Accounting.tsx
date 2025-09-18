@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { motion } from 'framer-motion';
-import { Plus, Edit, Trash2, Building, CreditCard, Calculator, Play } from 'lucide-react';
+import { Plus, Edit, Trash2, Building, CreditCard, Calculator, Play, Link as LinkIcon } from 'lucide-react';
 import { useAuth } from '../AuthPage';
 
 const API_BASE = 'https://quantnow.onrender.com';
@@ -36,7 +36,7 @@ interface Asset {
   accumulated_depreciation: number;
   last_depreciation_date?: string | null;
 
-  // Tax/SARS book (if present)
+  // Tax/SARS book
   accumulated_depreciation_tax?: number | null;
   last_depreciation_date_tax?: string | null;
 
@@ -51,6 +51,12 @@ interface Asset {
   lessor_residual_value?: number | null;
   disposed_date?: string | null;
   disposal_proceeds?: number | null;
+
+  // Acquisition metadata (NEW)
+  acquisition_method?: 'none' | 'cash' | 'liability' | null;
+  acquisition_credit_account_id?: number | null;
+  acquisition_credit_account_name?: string | null;
+  acquisition_journal_entry_id?: number | null;
 }
 
 interface Expense {
@@ -223,7 +229,13 @@ const Accounting = () => {
         disposed_date: a.disposed_date || '',
         disposal_proceeds: a.disposal_proceeds ?? '',
 
-        // edits: no funding change by default
+        // Acquisition (read-only on edit)
+        acquisition_method: a.acquisition_method || 'none',
+        acquisition_credit_account_id: a.acquisition_credit_account_id ?? null,
+        acquisition_credit_account_name: a.acquisition_credit_account_name ?? null,
+        acquisition_journal_entry_id: a.acquisition_journal_entry_id ?? null,
+
+        // funding pickers are for CREATE only
         fundingMethod: 'none',
         paid_from_account_id: '',
         financed_liability_account_id: ''
@@ -467,6 +479,14 @@ const Accounting = () => {
 
   const closeModal = () => { setIsModalVisible(false); clearForm(); };
 
+  // Small helper to render acquisition label
+  const acquisitionLabel = (a: Asset) => {
+    const m = a.acquisition_method || 'none';
+    if (m === 'cash') return `Cash/Bank • ${a.acquisition_credit_account_name || '—'}`;
+    if (m === 'liability') return `Liability • ${a.acquisition_credit_account_name || '—'}`;
+    return 'No initial funding JE';
+    };
+
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
       <Header title='Accounting' />
@@ -520,7 +540,7 @@ const Accounting = () => {
                         lessor_residual_value: '',
                         disposed_date: '',
                         disposal_proceeds: '',
-                        // funding defaults
+                        // CREATE: funding defaults
                         fundingMethod: 'none',
                         paid_from_account_id: '',
                         financed_liability_account_id: ''
@@ -541,6 +561,7 @@ const Accounting = () => {
                       <TableHead>Cost</TableHead>
                       <TableHead>Date Received</TableHead>
                       <TableHead>Account</TableHead>
+                      <TableHead>Acquired via</TableHead> {/* NEW */}
                       <TableHead>Method</TableHead>
                       <TableHead>Life (Y)</TableHead>
                       <TableHead>Salvage</TableHead>
@@ -561,6 +582,7 @@ const Accounting = () => {
                           <TableCell>R{(+asset.cost || 0).toFixed(2)}</TableCell>
                           <TableCell>{new Date(asset.date_received).toLocaleDateString()}</TableCell>
                           <TableCell>{asset.account_name}</TableCell>
+                          <TableCell>{acquisitionLabel(asset)}</TableCell> {/* NEW */}
                           <TableCell>{asset.depreciation_method || '—'}</TableCell>
                           <TableCell>{asset.useful_life_years ?? '—'}</TableCell>
                           <TableCell>R{(+asset.salvage_value || 0).toFixed(2)}</TableCell>
@@ -883,78 +905,107 @@ const Accounting = () => {
                   </div>
                 </div>
 
-                {/* Funding */}
-                <div className='border rounded-md p-3 mt-1'>
-                  <div className='flex items-center justify-between gap-3 mb-3'>
-                    <Label className='m-0'>Funding</Label>
-                    <Select
-                      value={formData.fundingMethod || 'none'}
-                      onValueChange={(value) => {
-                        const fm = value as FundingMethod;
-                        setFormData((prev:any) => ({
-                          ...prev,
-                          fundingMethod: fm,
-                          // clear opposing pickers
-                          paid_from_account_id: fm === 'cash' ? (prev.paid_from_account_id || '') : '',
-                          financed_liability_account_id: fm === 'liability' ? (prev.financed_liability_account_id || '') : ''
-                        }));
-                      }}
-                    >
-                      <SelectTrigger className='w-56'><SelectValue placeholder='Select funding' /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value='none'>No journal yet</SelectItem>
-                        <SelectItem value='cash'>Paid from Cash/Bank</SelectItem>
-                        <SelectItem value='liability'>Financed (Liability)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {formData.fundingMethod === 'cash' && (
-                    <div className='mt-2'>
-                      <Label>Bank / Cash Account</Label>
-                      <Select
-                        value={formData.paid_from_account_id || ''}
-                        onValueChange={(value)=> setFormData({ ...formData, paid_from_account_id: value })}
-                      >
-                        <SelectTrigger><SelectValue placeholder='Select bank/cash account' /></SelectTrigger>
-                        <SelectContent>
-                          {bankAccounts.map(acc => (
-                            <SelectItem key={acc.id} value={String(acc.id)}>{acc.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className='text-xs text-muted-foreground mt-1'>
-                        Will post: <b>Dr Fixed Asset</b> / <b>Cr Bank</b>.
-                      </p>
+                {/* Acquisition summary (READ-ONLY on edit) */}
+                {formData.id && (
+                  <div className='border rounded-md p-3'>
+                    <div className='flex items-center justify-between mb-2'>
+                      <Label className='m-0'>Acquisition</Label>
+                      {formData.acquisition_journal_entry_id ? (
+                        <span className='text-xs text-muted-foreground flex items-center gap-1'>
+                          <LinkIcon className='w-3 h-3' />
+                          JE #{formData.acquisition_journal_entry_id}
+                        </span>
+                      ) : null}
                     </div>
-                  )}
-
-                  {formData.fundingMethod === 'liability' && (
-                    <div className='mt-2'>
-                      <Label>Liability Account</Label>
-                      <Select
-                        value={formData.financed_liability_account_id || ''}
-                        onValueChange={(value)=> setFormData({ ...formData, financed_liability_account_id: value })}
-                      >
-                        <SelectTrigger><SelectValue placeholder='Select liability account' /></SelectTrigger>
-                        <SelectContent>
-                          {liabilityAccounts.map(acc => (
-                            <SelectItem key={acc.id} value={String(acc.id)}>{acc.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className='text-xs text-muted-foreground mt-1'>
-                        Will post: <b>Dr Fixed Asset</b> / <b>Cr Liability</b>.
-                      </p>
+                    <div className='grid grid-cols-1 md:grid-cols-3 gap-2 text-sm'>
+                      <div>
+                        <span className='text-muted-foreground'>Method:</span>{' '}
+                        <b>{(formData.acquisition_method || 'none').toUpperCase()}</b>
+                      </div>
+                      <div className='md:col-span-2'>
+                        <span className='text-muted-foreground'>Credit account:</span>{' '}
+                        <b>{formData.acquisition_credit_account_name || '—'}</b>
+                      </div>
                     </div>
-                  )}
-
-                  {formData.fundingMethod === 'none' && (
-                    <p className='text-xs text-muted-foreground'>
-                      No journal will be posted now. You can post funding later.
+                    <p className='text-xs text-muted-foreground mt-2'>
+                      Acquisition method is recorded with the original capitalization journal and is not editable here.
                     </p>
-                  )}
-                </div>
+                  </div>
+                )}
+
+                {/* Funding (CREATE only) */}
+                {!formData.id && (
+                  <div className='border rounded-md p-3 mt-1'>
+                    <div className='flex items-center justify-between gap-3 mb-3'>
+                      <Label className='m-0'>Funding</Label>
+                      <Select
+                        value={formData.fundingMethod || 'none'}
+                        onValueChange={(value) => {
+                          const fm = value as FundingMethod;
+                          setFormData((prev:any) => ({
+                            ...prev,
+                            fundingMethod: fm,
+                            paid_from_account_id: fm === 'cash' ? (prev.paid_from_account_id || '') : '',
+                            financed_liability_account_id: fm === 'liability' ? (prev.financed_liability_account_id || '') : ''
+                          }));
+                        }}
+                      >
+                        <SelectTrigger className='w-56'><SelectValue placeholder='Select funding' /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value='none'>No journal yet</SelectItem>
+                          <SelectItem value='cash'>Paid from Cash/Bank</SelectItem>
+                          <SelectItem value='liability'>Financed (Liability)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {formData.fundingMethod === 'cash' && (
+                      <div className='mt-2'>
+                        <Label>Bank / Cash Account</Label>
+                        <Select
+                          value={formData.paid_from_account_id || ''}
+                          onValueChange={(value)=> setFormData({ ...formData, paid_from_account_id: value })}
+                        >
+                          <SelectTrigger><SelectValue placeholder='Select bank/cash account' /></SelectTrigger>
+                          <SelectContent>
+                            {bankAccounts.map(acc => (
+                              <SelectItem key={acc.id} value={String(acc.id)}>{acc.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className='text-xs text-muted-foreground mt-1'>
+                          Will post: <b>Dr Fixed Asset</b> / <b>Cr Bank</b>.
+                        </p>
+                      </div>
+                    )}
+
+                    {formData.fundingMethod === 'liability' && (
+                      <div className='mt-2'>
+                        <Label>Liability Account</Label>
+                        <Select
+                          value={formData.financed_liability_account_id || ''}
+                          onValueChange={(value)=> setFormData({ ...formData, financed_liability_account_id: value })}
+                        >
+                          <SelectTrigger><SelectValue placeholder='Select liability account' /></SelectTrigger>
+                          <SelectContent>
+                            {liabilityAccounts.map(acc => (
+                              <SelectItem key={acc.id} value={String(acc.id)}>{acc.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className='text-xs text-muted-foreground mt-1'>
+                          Will post: <b>Dr Fixed Asset</b> / <b>Cr Liability</b>.
+                        </p>
+                      </div>
+                    )}
+
+                    {formData.fundingMethod === 'none' && (
+                      <p className='text-xs text-muted-foreground'>
+                        No journal will be posted now. You can post funding later.
+                      </p>
+                    )}
+                  </div>
+                )}
               </>
             )}
 
