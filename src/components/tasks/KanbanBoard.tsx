@@ -181,12 +181,12 @@ export function KanbanBoard() {
   });
 
   // --- PROGRESS → STATUS mapping
-  const getStatusFromProgress = (progress: number): Task['status'] => {
-    if (progress >= 100) return 'Done';
-    if (progress >= 75) return 'Review';
-    if (progress >= 25) return 'In Progress';
-    return 'To Do';
-  };
+const getStatusFromProgress = (progress: number): Task['status'] => {
+  if (progress >= 100) return 'Done';
+  if (progress >= 1) return 'In Progress';
+  return 'To Do';
+};
+
 
   // --- NEW: derive an effective status so 100% always shows in “Done”
   const getEffectiveStatus = (t: Task): Task['status'] => {
@@ -316,63 +316,68 @@ export function KanbanBoard() {
     setDraggedTask(task);
   };
 
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const { active, over } = event;
-    setDraggedTask(null);
-    if (!over) return;
+const handleDragEnd = async (event: DragEndEvent) => {
+  const { active, over } = event;
+  setDraggedTask(null);
+  if (!over) return;
 
-    const activeId = active.id as string;
-    const overId = over.id as string;
-    if (activeId === overId) return;
+  const activeId = active.id as string;
+  const overId = over.id as string;
+  if (activeId === overId) return;
 
-    const activeTask = findTaskById(activeId);
-    const activeColumn = findColumnByTaskId(activeId);
-    let overColumn: Column | null = findColumnById(overId) || findColumnByTaskId(overId);
-    if (!activeTask || !activeColumn || !overColumn) return;
+  const activeTask = findTaskById(activeId);
+  const fromColumn = findColumnByTaskId(activeId);
+  const toColumn = findColumnById(overId) || findColumnByTaskId(overId);
+  if (!activeTask || !fromColumn || !toColumn) return;
 
-    if (activeColumn.id !== overColumn.id) {
-      const statusMap: Record<string, Task['status']> = {
-        todo: 'To Do',
-        inprogress: 'In Progress',
-        done: 'Done',
-      };
-      const newStatus = statusMap[overColumn.id] || activeTask.status;
-
-      // Optimistic UI
-      setColumns(prevColumns =>
-        prevColumns.map(column => {
-          if (column.id === activeColumn.id) {
-            return {
-              ...column,
-              tasks: column.tasks.filter(t => t.id !== activeId)
-            };
-          }
-          if (column.id === overColumn.id) {
-            return {
-              ...column,
-              tasks: [...column.tasks, { ...activeTask, status: newStatus }]
-            };
-          }
-          return column;
-        })
-      );
-
-      try {
-        const response = await fetch(`https://quantnow.onrender.com/api/tasks/${activeTask.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ ...activeTask, status: newStatus }),
-        });
-        if (!response.ok) throw new Error('Failed to update task status on backend.');
-        toast({ title: 'Task moved', description: `Task moved from ${activeColumn.title} to ${overColumn.title}` });
-        fetchTasksAndProjects();
-      } catch (error) {
-        console.error('Error updating task status:', error);
-        toast({ title: 'Error', description: 'Failed to move task. Please try again.', variant: 'destructive' });
-        fetchTasksAndProjects();
-      }
-    }
+  // Map column -> status and % rule
+  const statusMap: Record<string, Task['status']> = {
+    todo: 'To Do',
+    inprogress: 'In Progress',
+    done: 'Done',
   };
+  const newStatus = statusMap[toColumn.id] || activeTask.status;
+
+  // IMPORTANT: drive percent from destination column
+  let newPct = activeTask.progress_percentage ?? 0;
+  if (toColumn.id === 'todo') newPct = 0;
+  else if (toColumn.id === 'inprogress') newPct = Math.min(99, Math.max(1, newPct)); // ensure 1–99%
+  else if (toColumn.id === 'done') newPct = 100;
+
+  // Optimistic UI: update both status and % (UI groups by %)
+  setColumns(prev =>
+    prev.map(col => {
+      if (col.id === fromColumn.id) {
+        return { ...col, tasks: col.tasks.filter(t => t.id !== activeId) };
+      }
+      if (col.id === toColumn.id) {
+        return { ...col, tasks: [...col.tasks, { ...activeTask, status: newStatus, progress_percentage: newPct }] };
+      }
+      return col;
+    })
+  );
+
+  try {
+    // Server will also set status from % if you omit status,
+    // but sending both is fine.
+    const res = await fetch(`https://quantnow.onrender.com/api/tasks/${activeTask.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify({
+        progress_percentage: newPct,
+        // optional: status: newStatus,
+      }),
+    });
+    if (!res.ok) throw new Error('Failed to update task on backend.');
+    toast({ title: 'Task moved', description: `Task moved from ${fromColumn.title} to ${toColumn.title}` });
+    fetchTasksAndProjects();
+  } catch (err) {
+    console.error('Error updating task status:', err);
+    toast({ title: 'Error', description: 'Failed to move task. Please try again.', variant: 'destructive' });
+    fetchTasksAndProjects();
+  }
+};
+
 
   const findTaskById = (id: string): Task | null => {
     for (const column of columns) {

@@ -77,7 +77,7 @@ export function CustomerForm({
     <form onSubmit={handleSubmit} className='space-y-4'>
       <div className='grid grid-cols-2 gap-4'>
         <div>
-          <Label htmlFor='name'>Company Name *</Label>
+          <Label htmlFor='name'>Customer Name *</Label>
           <Input
             id='name'
             value={formData.name}

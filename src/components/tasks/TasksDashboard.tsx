@@ -82,15 +82,62 @@ export default function TasksDashboard() {
     fetchProjects();
     fetchUsers();
   }, [fetchTasks, fetchProjects, fetchUsers]);
+// --- helpers to mirror TasksTable/Kanban logic ---
+// --- Match TasksTable/Kanban rules exactly ---
+type TaskStatus = Task['status'];
+
+const statusFromPct = (pct: number): TaskStatus =>
+  pct >= 100 ? 'Done' : pct >= 1 ? 'In Progress' : 'To Do';
+
+// This is the *UI* status your table shows
+const deriveUiStatus = (t: Task): TaskStatus => {
+  if (t.status === 'Archived') return 'Archived';
+  const pctStatus = statusFromPct(Math.round(t.progress_percentage || 0));
+  if (pctStatus === 'Done') return 'Done';          // 100% always Done
+  if (isOverdue(t)) return 'Overdue';               // otherwise overdue beats everything
+  if (t.status === 'Review') return 'Review';       // keep Review if backend set it
+  return pctStatus;                                 // To Do or In Progress
+};
+
+
 
   // KPIs
-  const kpis = useMemo(() => {
-    const total = tasks.length;
-    const completed = tasks.filter(t => t.status === 'Done').length;
-    const inProgress = tasks.filter(t => t.status === 'In Progress' || t.status === 'Review').length;
-    const overdue = tasks.filter(t => t.status === 'Overdue').length;
-    return { total, completed, inProgress, overdue };
-  }, [tasks]);
+// --- copy these to TasksDashboard (same as TasksTable) ---
+const pctNum = (v: unknown) =>
+  Math.max(0, Math.min(100, Math.round(Number(v ?? 0))));
+
+const isOverdue = (t: { due_date?: string | null; status: Task['status']; progress_percentage: number | string }) => {
+  if (!t.due_date) return false;
+  if (t.status === 'Done' || t.status === 'Archived') return false;
+  if (pctNum(t.progress_percentage) >= 100) return false;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const due = new Date(t.due_date); due.setHours(0,0,0,0);
+  return due.getTime() < today.getTime();
+};
+
+// --- KPIs that mirror TasksTable filtering exactly ---
+const kpis = useMemo(() => {
+  const total = tasks.length;
+
+  // completed: not archived AND pct >= 100
+  const completed = tasks.filter(t =>
+    t.status !== 'Archived' && pctNum(t.progress_percentage) >= 100
+  ).length;
+
+  // in-progress: not archived AND 1 <= pct < 100
+  // (This matches your table: overdue items with pct<100 are INCLUDED here.)
+  const inProgress = tasks.filter(t => {
+    const p = pctNum(t.progress_percentage);
+    return t.status !== 'Archived' && p >= 1 && p < 100;
+  }).length;
+
+  // overdue: same logic as TasksTable's isOverdue()
+  const overdue = tasks.filter(t => isOverdue(t)).length;
+
+  return { total, completed, inProgress, overdue };
+}, [tasks]);
+
+
 
   const onProjectSaved = async (data: ProjectFormData) => {
     try {
@@ -172,21 +219,56 @@ export default function TasksDashboard() {
           <TabsTrigger value="archived">Archived</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="all" className="mt-4">
-          <TasksTable mode="all" filters={currentFilters} onChanged={fetchTasks} />
-        </TabsContent>
-        <TabsContent value="inprogress" className="mt-4">
-          <TasksTable mode="inprogress" filters={currentFilters} onChanged={fetchTasks} />
-        </TabsContent>
-        <TabsContent value="completed" className="mt-4">
-          <TasksTable mode="completed" filters={currentFilters} onChanged={fetchTasks} />
-        </TabsContent>
-        <TabsContent value="overdue" className="mt-4">
-          <TasksTable mode="overdue" filters={currentFilters} onChanged={fetchTasks} />
-        </TabsContent>
-        <TabsContent value="archived" className="mt-4">
-          <TasksTable mode="archived" filters={currentFilters} onChanged={fetchTasks} />
-        </TabsContent>
+<TabsContent value="all" className="mt-4">
+  <TasksTable
+    mode="all"
+    filters={currentFilters}
+    onChanged={fetchTasks}
+    projects={projects}
+    users={users}
+  />
+</TabsContent>
+
+<TabsContent value="inprogress" className="mt-4">
+  <TasksTable
+    mode="inprogress"
+    filters={currentFilters}
+    onChanged={fetchTasks}
+    projects={projects}
+    users={users}
+  />
+</TabsContent>
+
+<TabsContent value="completed" className="mt-4">
+  <TasksTable
+    mode="completed"
+    filters={currentFilters}
+    onChanged={fetchTasks}
+    projects={projects}
+    users={users}
+  />
+</TabsContent>
+
+<TabsContent value="overdue" className="mt-4">
+  <TasksTable
+    mode="overdue"
+    filters={currentFilters}
+    onChanged={fetchTasks}
+    projects={projects}
+    users={users}
+  />
+</TabsContent>
+
+<TabsContent value="archived" className="mt-4">
+  <TasksTable
+    mode="archived"
+    filters={currentFilters}
+    onChanged={fetchTasks}
+    projects={projects}
+    users={users}
+  />
+</TabsContent>
+
       </Tabs>
 
       {/* Add Project Dialog */}

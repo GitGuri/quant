@@ -14,8 +14,9 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { motion } from 'framer-motion';
-import { Plus, Edit, Trash2, Building, CreditCard, Calculator, Play, Link as LinkIcon } from 'lucide-react';
+import { Plus, Edit, Trash2, Building, CreditCard, Calculator,Download , Play, Link as LinkIcon } from 'lucide-react';
 import { useAuth } from '../AuthPage';
+import axios from 'axios';
 
 const API_BASE = 'https://quantnow.onrender.com';
 
@@ -443,6 +444,62 @@ const Accounting = () => {
       setIsDepreciating(false);
     }
   };
+// helper: download a Blob
+const downloadBlob = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+};
+
+// handler: download asset register CSV
+const handleDownloadAssetRegister = async () => {
+  if (!token) { alert('Please log in.'); return; }
+  const asOf = depreciationEndDate;                 // reuse the date picker you already have
+  const book = depBook;                             // 'accounting' | 'tax' | 'both'
+  const url = `${API_BASE}/reports/asset-register?asOf=${asOf}&book=${book}&format=csv`;
+  try {
+    const r = await fetch(url, { headers: authHeaders });
+    if (!r.ok) {
+      const txt = await r.text().catch(()=> '');
+      throw new Error(`${r.status} ${r.statusText} ${txt?.slice(0,200)}`);
+    }
+    const blob = await r.blob();
+    downloadBlob(blob, `asset_register_${asOf}_${book}.csv`);
+  } catch (e:any) {
+    alert(`Download failed: ${e?.message || e}`);
+  }
+};
+// Inside the Accounting component, add this function:
+const handleDownloadAssetRegisterPDF = useCallback(async () => {
+    try {
+        const token = localStorage.getItem('token');
+        if (!token) {
+            console.error('No authentication token found.');
+            return;
+        }
+
+        const response = await axios.get(`${API_BASE}/reports/asset-register-pdf`, {
+            headers: { Authorization: `Bearer ${token}` },
+            responseType: 'blob'
+        });
+
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', 'SARS_Asset_Register.pdf');
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+    } catch (error) {
+        console.error('Failed to download PDF asset register:', error);
+    }
+}, []);
 
   // ---- Save Opening Balances ----
   const saveOpeningBalances = async () => {
@@ -518,6 +575,10 @@ const Accounting = () => {
                     </Select>
                     <Input type='date' value={depreciationEndDate}
                       onChange={(e) => setDepreciationEndDate(e.target.value)} className='w-auto' />
+
+<Button className="flex items-center gap-2" onClick={handleDownloadAssetRegisterPDF}>
+  <Download className="h-4 w-4" /> Download PDF Asset Register
+</Button>
                     <Button onClick={handleRunDepreciation} disabled={isDepreciating} className='bg-green-600 hover:bg-green-700'>
                       {isDepreciating ? 'Running...' : <><Play className='h-4 w-4 mr-2' /> Run Depreciation</>}
                     </Button>

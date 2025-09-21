@@ -15,7 +15,7 @@ import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+} from '@/components/ui/collapsible';
 import { DialogFooter } from '@/components/ui/dialog';
 import { ChevronRight, Plus, Minus } from 'lucide-react';
 
@@ -25,7 +25,7 @@ interface Project {
   name: string;
 }
 interface User {
-  id: string;
+  id: string; // backend expects int, but we pass as string and backend coerces with ::int
   name: string;
   email?: string | null;
 }
@@ -43,7 +43,7 @@ export type TaskFormData = {
   description?: string;
   priority: 'Low' | 'Medium' | 'High';
   assignee_id?: string | null;
-  due_date?: string;
+  due_date?: string | null;            // <-- allow null so we never send ""
   progress_percentage: number;
   project_id?: string | null;
 
@@ -56,8 +56,8 @@ export type TaskFormProps = {
   task?: TaskFormData;
   onSave: (data: TaskFormData, initialStepsToAdd?: TaskStepFormData[]) => void | Promise<void>;
   onCancel: () => void;
-  projects?: Project[];  // ← made optional
-  users?: User[];        // ← made optional
+  projects?: Project[];
+  users?: User[];
 };
 
 const assigneePlaceholderValue = 'unassigned';
@@ -67,15 +67,16 @@ export function TaskForm({
   task,
   onSave,
   onCancel,
-  projects = [],   // ← safe defaults
-  users = [],      // ← safe defaults
+  projects = [],
+  users = [],
 }: TaskFormProps) {
   const [formData, setFormData] = useState<TaskFormData>({
     title: task?.title || '',
     description: task?.description || '',
     priority: task?.priority || 'Medium',
     assignee_id: task?.assignee_id ?? null,
-    due_date: task?.due_date || '',
+    // store as null (not ""), input expects '' when empty
+    due_date: task?.due_date ?? null,
     progress_percentage: task?.progress_percentage ?? 0,
     project_id: task?.project_id ?? null,
     progress_mode: task?.progress_mode || 'manual',
@@ -93,7 +94,7 @@ export function TaskForm({
       description: task?.description || '',
       priority: task?.priority || 'Medium',
       assignee_id: task?.assignee_id ?? null,
-      due_date: task?.due_date || '',
+      due_date: task?.due_date ?? null, // normalize to null
       progress_percentage: task?.progress_percentage ?? 0,
       project_id: task?.project_id ?? null,
       progress_mode: task?.progress_mode || 'manual',
@@ -102,7 +103,7 @@ export function TaskForm({
     });
 
     if (task?.progress_mode === 'steps') {
-      setInitialSteps([]); // if you later pass existing steps, hydrate here
+      setInitialSteps([]); // hydrate with existing steps later if you pass them in
     } else {
       setInitialSteps([]);
     }
@@ -110,13 +111,18 @@ export function TaskForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
     const dataToSave: TaskFormData = {
       ...formData,
+      // never send empty strings for nullable fields
+      due_date: formData.due_date && String(formData.due_date).trim() !== '' ? formData.due_date : null,
       assignee_id: formData.assignee_id || null,
       project_id: formData.project_id || null,
+      // only keep goal/current in target mode
       progress_goal: formData.progress_mode === 'target' ? (formData.progress_goal ?? null) : null,
       progress_current: formData.progress_mode === 'target' ? (formData.progress_current ?? 0) : 0,
     };
+
     onSave(dataToSave, formData.progress_mode === 'steps' ? initialSteps : undefined);
   };
 
@@ -149,6 +155,7 @@ export function TaskForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Title */}
       <div>
         <Label htmlFor="title">Title *</Label>
         <Input
@@ -159,6 +166,7 @@ export function TaskForm({
         />
       </div>
 
+      {/* Description */}
       <div>
         <Label htmlFor="description">Description</Label>
         <Textarea
@@ -169,6 +177,7 @@ export function TaskForm({
         />
       </div>
 
+      {/* Priority */}
       <div>
         <Label htmlFor="priority">Priority</Label>
         <Select
@@ -186,6 +195,23 @@ export function TaskForm({
         </Select>
       </div>
 
+      {/* Due date */}
+      <div>
+        <Label htmlFor="due_date">Due date</Label>
+        <Input
+          id="due_date"
+          type="date"
+          value={formData.due_date ?? ''} // input wants '' when empty
+          onChange={(e) =>
+            setFormData({
+              ...formData,
+              due_date: e.target.value ? e.target.value : null, // never store ""
+            })
+          }
+        />
+      </div>
+
+      {/* Progress Mode */}
       <div>
         <Label htmlFor="progress_mode">Progress Tracking Mode</Label>
         <Select value={formData.progress_mode} onValueChange={handleModeChange}>
@@ -200,6 +226,7 @@ export function TaskForm({
         </Select>
       </div>
 
+      {/* Target settings */}
       {formData.progress_mode === 'target' && (
         <div className="space-y-2 p-3 bg-blue-50 rounded-md">
           <h4 className="font-medium text-sm text-blue-800">Target Settings</h4>
@@ -242,6 +269,7 @@ export function TaskForm({
         </div>
       )}
 
+      {/* Steps setup */}
       {formData.progress_mode === 'steps' && (
         <Collapsible className="space-y-2 p-3 bg-green-50 rounded-md">
           <CollapsibleTrigger asChild>
@@ -260,7 +288,7 @@ export function TaskForm({
                 value={newStepTitle}
                 onChange={(e) => setNewStepTitle(e.target.value)}
                 placeholder="New step title..."
-                onKeyDown={(e) => e.key === 'Enter' && handleAddStep()}
+                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddStep())}
               />
               <Input
                 type="number"
@@ -301,6 +329,7 @@ export function TaskForm({
         </Collapsible>
       )}
 
+      {/* Assignee */}
       <div>
         <Label htmlFor="assignee">Assignee</Label>
         <Select
@@ -326,6 +355,7 @@ export function TaskForm({
         </Select>
       </div>
 
+      {/* Project */}
       <div>
         <Label htmlFor="project">Project</Label>
         <Select
@@ -351,6 +381,7 @@ export function TaskForm({
         </Select>
       </div>
 
+      {/* Progress percentage (manual only) */}
       <div className="opacity-70">
         <Label htmlFor="progress_percentage">Progress Percentage (Auto-Calculated/Manual)</Label>
         <Input
