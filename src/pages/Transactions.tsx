@@ -73,7 +73,7 @@ interface UnifiedTxViewRow {
 }
 
 // -------------- Helpers --------------
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 const fmtMoney = (n: number) => `R${n.toFixed(2)}`;
 const parseNumber = (v: string | number | null | undefined) => {
   if (v === null || v === undefined) return 0;

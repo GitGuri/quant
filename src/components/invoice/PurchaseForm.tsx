@@ -24,7 +24,7 @@ import {
 import { useToast } from '@/components/ui/use-toast';
 
 // Define API Base URL
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 // Re-defining interfaces based on your provided backend structure for Purchases
 interface PurchaseLineItem {

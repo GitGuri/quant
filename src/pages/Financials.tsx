@@ -142,11 +142,11 @@ interface BalanceSheetData {
   liabilities: BalanceSheetLineItem[];
   equity: BalanceSheetLineItem[];
   totals: {
-    totalAssets: number;
-    totalLiabilities: number;
-    totalEquity: number;
-    totalEquityAndLiabilities: number;
-    diff: number;
+    totalAssets: number;                 // uses control/effective when available
+    totalLiabilities: number;            // display liabilities total
+    totalEquity: number;                 // computed equity preferred
+    totalEquityAndLiabilities: number;   // uses control/effective when available
+    diff: number;                        // matches control.effective.diffComputed when present
   };
 }
 
@@ -182,7 +182,7 @@ interface ApiCashFlowGrouped {
   financing?: ApiCashFlowSectionItem[];
 }
 
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 const openBlobInNewTab = (blob: Blob, filename: string) => {
   const url = URL.createObjectURL(blob);
@@ -335,9 +335,7 @@ const Financials = () => {
     if (isAuthenticated && token) {
       fetchAllData();
     } else {
-      setAllTransactions([]);
-      setAllAccounts([]);
-      setAllAssets([]);
+      setAllTransactions([]); setAllAccounts([]); setAllAssets([]);
       setIsLoading(false);
     }
   }, [fetchAllData, isAuthenticated, token]);
@@ -428,72 +426,84 @@ const Financials = () => {
       };
     }
 
-    const openingEquity = num(response.equityBreakdown?.opening ?? response.openingEquity);
-    const periodProfit = num(response.equityBreakdown?.periodProfit ?? response.netProfitLoss);
-    const priorRetained = num(response.equityBreakdown?.priorRetained ?? 0);
-    const sinceInception = num(response.equityBreakdown?.sinceInception ?? 0);
-    const equityAccounts = num(response.equityBreakdown?.equityAccounts ?? response.closingEquity ?? 0);
+    // Equity pieces
+    const openingEquity   = num(response.equityBreakdown?.opening ?? response.openingEquity);
+    const periodProfit    = num(response.equityBreakdown?.periodProfit ?? response.netProfitLoss);
+    const priorRetained   = num(response.equityBreakdown?.priorRetained ?? 0);
+    const sinceInception  = num(response.equityBreakdown?.sinceInception ?? 0);
+    const equityAccounts  = num(response.equityBreakdown?.equityAccounts ?? response.closingEquity ?? 0);
     const otherEquityMovements = num(response.otherEquityMovements ?? 0);
 
+    // Current assets from API sections
     const currentAssets = num(response.assets?.current ?? 0);
-    const nonCurrentAssets = num(response.assets?.non_current ?? 0);
-    const currentLiabs = num(response.liabilities?.current ?? 0);
+
+    // Prefer detailed PPE NBV sum when present; fallback to section summary
+    const ppe = response.non_current_assets_detail;
+    const nonCurrentFromDetail = Array.isArray(ppe?.rows)
+      ? ppe!.rows.reduce((sum, r) => sum + num(r.net_book_value), 0)
+      : 0;
+    const nonCurrentFallback = num(response.assets?.non_current ?? 0);
+    const nonCurrentAssets = nonCurrentFromDetail || nonCurrentFallback;
+
+    // Liabilities from sections
+    const currentLiabs    = num(response.liabilities?.current ?? 0);
     const nonCurrentLiabs = num(response.liabilities?.non_current ?? 0);
 
-    const totalAssets = currentAssets + nonCurrentAssets;
-    const totalLiabilities = currentLiabs + nonCurrentLiabs;
+    // DISPLAY totals (what we render in the list)
+    const displayTotalAssets = currentAssets + nonCurrentAssets;
+    const displayTotalLiabs  = currentLiabs + nonCurrentLiabs;
 
-    const totalEquityPreferred =
+    // Equity used for display (prefer backend computed)
+    const equityComputed =
       num(response.control?.effective?.equityComputed) ||
       num(response.equityBreakdown?.totalComputed) ||
       (equityAccounts + sinceInception) ||
       (openingEquity + periodProfit + otherEquityMovements);
 
-    const totalEquityAndLiabilities = totalLiabilities + totalEquityPreferred;
-    const diff = Number((totalAssets - totalEquityAndLiabilities).toFixed(2));
+    const displayLiabPlusEquity = displayTotalLiabs + equityComputed;
 
-    // Assets – current (with detail)
+    // GL CONTROL totals (authoritative)
+    const controlAssetsTotal       = num(response.control?.assetsTotal);
+    const controlLiabPlusEquityEff = num(response.control?.effective?.liabPlusEquityComputed);
+    const controlDiffEff           = num(response.control?.effective?.diffComputed);
+
+    // Fallbacks when control missing
+    const totalAssetsFinal         = controlAssetsTotal || displayTotalAssets;
+    const totalEquityAndLiabsFinal = controlLiabPlusEquityEff || displayLiabPlusEquity;
+    const diffFinal                = Number((totalAssetsFinal - totalEquityAndLiabsFinal).toFixed(2));
+
+    // ----- Build asset lines -----
     assets.push({ item: 'Current Assets', amount: 0, isSubheader: true });
-
     const cad = response.current_assets_detail;
     if (cad && Array.isArray(cad.rows) && cad.rows.length > 0) {
-      cad.rows
-        .filter(r => nonZero(r.amount))
-        .forEach(r => {
-          assets.push({ item: `  ${r.label}`, amount: r.amount });
-        });
+      cad.rows.filter(r => nonZero(r.amount)).forEach(r => {
+        assets.push({ item: `  ${r.label}`, amount: r.amount });
+      });
     } else {
-      // fallback: single line if no detail returned
       if (nonZero(currentAssets)) assets.push({ item: '  Current Assets (total)', amount: currentAssets });
     }
     assets.push({ item: 'Total Current Assets', amount: currentAssets, isTotal: true });
 
-    // Assets – non-current with category detail (PPE)
     assets.push({ item: 'Non-current Assets', amount: 0, isSubheader: true });
-
-    const ppe = response.non_current_assets_detail;
     if (ppe && Array.isArray(ppe.rows) && ppe.rows.length > 0) {
       assets.push({ item: '  Property, Plant & Equipment (by category)', amount: 0, isSubheader: true });
       ppe.rows
-        .filter(r => nonZero(r.net_book_value))
+        .filter(r => nonZero(num(r.net_book_value)))
         .forEach(r => {
-          assets.push({ item: `    ${r.label}`, amount: r.net_book_value });
-          if (nonZero(r.gross_cost)) {
-            assets.push({ item: `      Gross cost – ${r.label}`, amount: r.gross_cost, isAdjustment: true });
-          }
-          if (nonZero(r.accumulated_depreciation)) {
-            assets.push({ item: `      Accumulated depreciation – ${r.label}`, amount: -Math.abs(r.accumulated_depreciation), isAdjustment: true });
-          }
+          const gross = num(r.gross_cost);
+          const accum = num(r.accumulated_depreciation);
+          const nbv   = num(r.net_book_value);
+          assets.push({ item: `    ${r.label}`, amount: nbv });
+          if (nonZero(gross)) assets.push({ item: `      Gross cost – ${r.label}`, amount: gross, isAdjustment: true });
+          if (nonZero(accum)) assets.push({ item: `      Accumulated depreciation – ${r.label}`, amount: -Math.abs(accum), isAdjustment: true });
         });
     } else {
       if (nonZero(nonCurrentAssets)) assets.push({ item: '  Non-current Assets (total)', amount: nonCurrentAssets });
     }
-
-    // totals for non-current
     assets.push({ item: 'Total Non-Current Assets', amount: nonCurrentAssets, isTotal: true });
 
-    // grand total
-    assets.push({ item: 'TOTAL ASSETS', amount: totalAssets, isTotal: true, isSubheader: true });
+    // Grand total (DISPLAY)
+    assets.push({ item: 'TOTAL ASSETS', amount: displayTotalAssets, isTotal: true, isSubheader: true });
 
     // Liabilities
     liabilities.push({ item: 'Current Liabilities', amount: 0, isSubheader: true });
@@ -504,9 +514,9 @@ const Financials = () => {
     if (nonZero(nonCurrentLiabs)) liabilities.push({ item: '  Non-Current Liabilities (total)', amount: nonCurrentLiabs });
     liabilities.push({ item: 'Total Non-Current Liabilities', amount: nonCurrentLiabs, isTotal: true });
 
-    liabilities.push({ item: 'TOTAL LIABILITIES', amount: totalLiabilities, isTotal: true, isSubheader: true });
+    liabilities.push({ item: 'TOTAL LIABILITIES', amount: displayTotalLiabs, isTotal: true, isSubheader: true });
 
-    // Equity
+    // Equity (display)
     equity.push({ item: 'Equity', amount: 0, isSubheader: true });
     equity.push({ item: '  Contributed / Opening Equity', amount: openingEquity });
     if (nonZero(priorRetained)) {
@@ -523,25 +533,23 @@ const Financials = () => {
         isAdjustment: true
       });
     }
-    equity.push({ item: 'TOTAL EQUITY', amount: totalEquityPreferred, isTotal: true, isSubheader: true });
+    equity.push({ item: 'TOTAL EQUITY', amount: equityComputed, isTotal: true, isSubheader: true });
 
-    const liabilitiesWithGrand = [...liabilities, {
-      item: 'TOTAL EQUITY AND LIABILITIES',
-      amount: totalEquityAndLiabilities,
-      isTotal: true,
-      isSubheader: true
-    }];
+    const liabilitiesWithGrand = [
+      ...liabilities,
+      { item: 'TOTAL EQUITY AND LIABILITIES', amount: displayLiabPlusEquity, isTotal: true, isSubheader: true }
+    ];
 
     return {
       assets,
       liabilities: liabilitiesWithGrand,
       equity,
       totals: {
-        totalAssets,
-        totalLiabilities,
-        totalEquity: totalEquityPreferred,
-        totalEquityAndLiabilities,
-        diff
+        totalAssets: totalAssetsFinal,
+        totalLiabilities: displayTotalLiabs,
+        totalEquity: equityComputed,
+        totalEquityAndLiabilities: totalEquityAndLiabsFinal,
+        diff: controlDiffEff || diffFinal,
       }
     };
   };
@@ -724,7 +732,6 @@ const Financials = () => {
     const periodStr = `${new Date(fromDate).toLocaleDateString('en-ZA')} to ${new Date(toDate).toLocaleDateString('en-ZA')}`;
     const pushBlank = () => rows.push(['']);
 
-
     if (type === 'income-statement') {
       rows.push(['Income Statement']);
       rows.push([`For the period ${periodStr}`]);
@@ -782,8 +789,8 @@ const Financials = () => {
         .forEach(li => rows.push([li.item, li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })]));
 
       pushBlank();
-      rows.push(['TOTAL ASSETS', csvAmount(balanceSheetData.totals.totalAssets, { alwaysShow: true })]);
-      rows.push(['TOTAL EQUITY AND LIABILITIES', csvAmount(balanceSheetData.totals.totalEquityAndLiabilities, { alwaysShow: true })]);
+      rows.push(['TOTAL ASSETS (control)', csvAmount(balanceSheetData.totals.totalAssets, { alwaysShow: true })]);
+      rows.push(['TOTAL EQUITY AND LIABILITIES (control)', csvAmount(balanceSheetData.totals.totalEquityAndLiabilities, { alwaysShow: true })]);
 
       return rows;
     }
@@ -1121,16 +1128,22 @@ const Financials = () => {
                     </div>
                   </div>
 
-                  {/* Equality Check */}
-                  <div className="mt-6 border-t pt-3">
+                  {/* Equality Check (uses control/effective when available) */}
+                  <div className="mt-6 border-t pt-3 space-y-1">
                     <div className="flex justify-between">
-                      <span className="font-semibold">TOTAL ASSETS</span>
+                      <span className="font-semibold">TOTAL ASSETS (control)</span>
                       <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalAssets)}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="font-semibold">TOTAL EQUITY AND LIABILITIES</span>
+                      <span className="font-semibold">TOTAL EQUITY AND LIABILITIES (control)</span>
                       <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalEquityAndLiabilities)}</span>
                     </div>
+
+                    {nonZero(balanceSheetData.totals.diff) && (
+                      <div className="mt-2 rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 px-3 py-2 text-sm">
+                        Out of balance by {formatCurrency(balanceSheetData.totals.diff)} (per GL control).
+                      </div>
+                    )}
                   </div>
                 </div>
               </CardContent>

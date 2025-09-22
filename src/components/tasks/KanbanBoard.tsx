@@ -222,7 +222,7 @@ const getStatusFromProgress = (progress: number): Task['status'] => {
 
   // ---- Fetch users ----
   const fetchUsers = useCallback(async () => {
-    const resp = await fetch('https://quantnow.onrender.com/api/users', {
+    const resp = await fetch('https://quantnow-sa1e.onrender.com/api/users', {
       headers: getAuthHeaders(),
     });
     if (!resp.ok) throw new Error(`Users fetch failed: ${resp.status}`);
@@ -248,7 +248,7 @@ const getStatusFromProgress = (progress: number): Task['status'] => {
     try {
       await fetchUsers();
 
-      const projectsResponse = await fetch('https://quantnow.onrender.com/api/projects', {
+      const projectsResponse = await fetch('https://quantnow-sa1e.onrender.com/api/projects', {
         headers: getAuthHeaders(),
       });
       if (!projectsResponse.ok) throw new Error(`HTTP error! status: ${projectsResponse.status}`);
@@ -256,7 +256,7 @@ const getStatusFromProgress = (progress: number): Task['status'] => {
       const projectsData: Project[] = normalizeProjectsFromApi(rawProjects);
       setProjects(projectsData);
 
-      const tasksResponse = await fetch('https://quantnow.onrender.com/api/tasks', {
+      const tasksResponse = await fetch('https://quantnow-sa1e.onrender.com/api/tasks', {
         headers: getAuthHeaders(),
       });
       if (!tasksResponse.ok) throw new Error(`HTTP error! status: ${tasksResponse.status}`);
@@ -360,7 +360,7 @@ const handleDragEnd = async (event: DragEndEvent) => {
   try {
     // Server will also set status from % if you omit status,
     // but sending both is fine.
-    const res = await fetch(`https://quantnow.onrender.com/api/tasks/${activeTask.id}`, {
+    const res = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${activeTask.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
@@ -412,7 +412,7 @@ const handleDragEnd = async (event: DragEndEvent) => {
     let createdTaskId: string | null = null;
 
     try {
-      const response = await fetch('https://quantnow.onrender.com/api/tasks', {
+      const response = await fetch('https://quantnow-sa1e.onrender.com/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -437,7 +437,7 @@ const handleDragEnd = async (event: DragEndEvent) => {
         const addStepPromises = initialStepsToAdd.map((step, index) =>
           (async () => {
             try {
-              const stepResponse = await fetch(`https://quantnow.onrender.com/api/tasks/${createdTaskId}/steps`, {
+              const stepResponse = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${createdTaskId}/steps`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify({
@@ -499,7 +499,7 @@ const handleDragEnd = async (event: DragEndEvent) => {
     }
     const statusFromProgress = getStatusFromProgress(taskData.progress_percentage);
     try {
-      const response = await fetch(`https://quantnow.onrender.com/api/tasks/${taskToEdit.id}`, {
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${taskToEdit.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -528,7 +528,7 @@ const handleDragEnd = async (event: DragEndEvent) => {
       return;
     }
     try {
-      const response = await fetch(`https://quantnow.onrender.com/api/tasks/${taskId}`, {
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${taskId}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
@@ -547,7 +547,7 @@ const handleDragEnd = async (event: DragEndEvent) => {
       return;
     }
     try {
-      const response = await fetch('https://quantnow.onrender.com/api/projects', {
+      const response = await fetch('https://quantnow-sa1e.onrender.com/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(buildProjectPayload(projectData)), // exact payload
@@ -569,7 +569,7 @@ const handleDragEnd = async (event: DragEndEvent) => {
       return;
     }
     try {
-      const response = await fetch(`https://quantnow.onrender.com/api/projects/${activeProject.id}`, {
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/projects/${activeProject.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(buildProjectPayload(projectData)), // exact payload
@@ -591,7 +591,7 @@ const handleDragEnd = async (event: DragEndEvent) => {
       return;
     }
     try {
-      const response = await fetch(`https://quantnow.onrender.com/api/projects/${projectToDelete.id}`, {
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/projects/${projectToDelete.id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });

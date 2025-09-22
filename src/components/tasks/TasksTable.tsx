@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 
-const API_BASE = 'https://quantnow.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 /* ---------- Types ---------- */
 type BaseTask = {

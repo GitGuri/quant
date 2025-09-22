@@ -169,7 +169,7 @@ export function AuthPage() {
     setIsLoading(true);
 
     try {
-      const endpoint = 'https://quantnow.onrender.com/login';
+      const endpoint = 'https://quantnow-sa1e.onrender.com/login';
 
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -265,7 +265,7 @@ export function AuthPage() {
     }
 
     try {
-      const endpoint = 'https://quantnow.onrender.com/register';
+      const endpoint = 'https://quantnow-sa1e.onrender.com/register';
 
       const payload = {
         name: `${regName} ${regSurname}`.trim(),

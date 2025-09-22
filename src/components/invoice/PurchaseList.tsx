@@ -34,7 +34,7 @@ import { PurchaseForm } from './PurchaseForm'; // Ensure this path is correct
 import { useToast } from '@/components/ui/use-toast'; // Import useToast
 
 // Define API Base URL
-const API_BASE_URL = 'https://quantnow.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 // --- Interfaces to match backend API responses for Purchases ---
 interface PurchaseLineItem {

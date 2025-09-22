@@ -18,7 +18,7 @@ import { Plus, Edit, Trash2, Building, CreditCard, Calculator,Download , Play, L
 import { useAuth } from '../AuthPage';
 import axios from 'axios';
 
-const API_BASE = 'https://quantnow.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 // ---- Types
 interface Asset {
@@ -457,49 +457,54 @@ const downloadBlob = (blob: Blob, filename: string) => {
 };
 
 // handler: download asset register CSV
-const handleDownloadAssetRegister = async () => {
+// PDF
+const handleDownloadAssetRegisterPDF = useCallback(async () => {
   if (!token) { alert('Please log in.'); return; }
-  const asOf = depreciationEndDate;                 // reuse the date picker you already have
+  const asOf = depreciationEndDate;                 // reuse your date picker
   const book = depBook;                             // 'accounting' | 'tax' | 'both'
+  try {
+    const response = await axios.get(
+      `${API_BASE}/reports/asset-register-pdf?asOf=${asOf}&book=${book}`,
+      { headers: { Authorization: `Bearer ${token}` }, responseType: 'blob' }
+    );
+    const url = URL.createObjectURL(new Blob([response.data]));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SARS_Asset_Register_${asOf}_${book}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('PDF download failed', err);
+    alert('Failed to download PDF');
+  }
+}, [token, depreciationEndDate, depBook]);
+
+// CSV
+const handleDownloadAssetRegisterCSV = useCallback(async () => {
+  if (!token) { alert('Please log in.'); return; }
+  const asOf = depreciationEndDate;
+  const book = depBook;
   const url = `${API_BASE}/reports/asset-register?asOf=${asOf}&book=${book}&format=csv`;
   try {
     const r = await fetch(url, { headers: authHeaders });
-    if (!r.ok) {
-      const txt = await r.text().catch(()=> '');
-      throw new Error(`${r.status} ${r.statusText} ${txt?.slice(0,200)}`);
-    }
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     const blob = await r.blob();
-    downloadBlob(blob, `asset_register_${asOf}_${book}.csv`);
+    const aurl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = aurl;
+    a.download = `asset_register_${asOf}_${book}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(aurl);
   } catch (e:any) {
+    console.error('CSV download failed', e);
     alert(`Download failed: ${e?.message || e}`);
   }
-};
-// Inside the Accounting component, add this function:
-const handleDownloadAssetRegisterPDF = useCallback(async () => {
-    try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-            console.error('No authentication token found.');
-            return;
-        }
+}, [token, depreciationEndDate, depBook, authHeaders]);
 
-        const response = await axios.get(`${API_BASE}/reports/asset-register-pdf`, {
-            headers: { Authorization: `Bearer ${token}` },
-            responseType: 'blob'
-        });
-
-        const url = window.URL.createObjectURL(new Blob([response.data]));
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', 'SARS_Asset_Register.pdf');
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.URL.revokeObjectURL(url);
-    } catch (error) {
-        console.error('Failed to download PDF asset register:', error);
-    }
-}, []);
 
   // ---- Save Opening Balances ----
   const saveOpeningBalances = async () => {
@@ -576,9 +581,14 @@ const handleDownloadAssetRegisterPDF = useCallback(async () => {
                     <Input type='date' value={depreciationEndDate}
                       onChange={(e) => setDepreciationEndDate(e.target.value)} className='w-auto' />
 
-<Button className="flex items-center gap-2" onClick={handleDownloadAssetRegisterPDF}>
-  <Download className="h-4 w-4" /> Download PDF Asset Register
+<Button variant="outline" onClick={handleDownloadAssetRegisterCSV}>
+  <Download className="h-4 w-4 mr-2" /> CSV
 </Button>
+
+<Button onClick={handleDownloadAssetRegisterPDF} className="flex items-center gap-2">
+  <Download className="h-4 w-4" /> PDF
+</Button>
+
                     <Button onClick={handleRunDepreciation} disabled={isDepreciating} className='bg-green-600 hover:bg-green-700'>
                       {isDepreciating ? 'Running...' : <><Play className='h-4 w-4 mr-2' /> Run Depreciation</>}
                     </Button>

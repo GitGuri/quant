@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
 
-const API_BASE = 'https://quantnow.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 type Project = { id: string; name: string };
 type Task = {

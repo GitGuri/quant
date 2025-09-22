@@ -229,7 +229,7 @@ export function CustomerManagement() {
         setError(null);
         try {
             const headers = getAuthHeaders();
-            const response = await fetch(`https://quantnow.onrender.com/api/customers/cluster-data`, {
+            const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/cluster-data`, {
                 headers: {
                     'Content-Type': 'application/json',
                     ...headers,
@@ -262,7 +262,7 @@ export function CustomerManagement() {
         setError(null);
         try {
             const headers = getAuthHeaders();
-            const response = await fetch(`https://quantnow.onrender.com/api/applications`, { headers });
+            const response = await fetch(`https://quantnow-sa1e.onrender.com/api/applications`, { headers });
             
             if (!response.ok) {
                 throw new Error(`HTTP error! Status: ${response.status}`);
@@ -382,7 +382,7 @@ export function CustomerManagement() {
 
     const handleCreateCustomer = async (payload: CustomerSaveData): Promise<boolean> => {
         try {
-            const response = await fetch('https://quantnow.onrender.com/api/customers', {
+            const response = await fetch('https://quantnow-sa1e.onrender.com/api/customers', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify(payload)
@@ -398,7 +398,7 @@ export function CustomerManagement() {
 
     const handleUpdateCustomer = async (id: string, payload: CustomerSaveData): Promise<boolean> => {
         try {
-            const response = await fetch(`https://quantnow.onrender.com/api/customers/${id}`, {
+            const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify(payload)
@@ -414,7 +414,7 @@ export function CustomerManagement() {
 
     const handleCreateApplication = async (payload: ApplicationSaveData): Promise<boolean> => {
         try {
-            const response = await fetch('https://quantnow.onrender.com/api/applications', {
+            const response = await fetch('https://quantnow-sa1e.onrender.com/api/applications', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify(payload)
@@ -430,7 +430,7 @@ export function CustomerManagement() {
 
     const handleUpdateApplication = async (id: string, payload: ApplicationSaveData): Promise<boolean> => {
         try {
-            const response = await fetch(`https://quantnow.onrender.com/api/applications/${id}`, {
+            const response = await fetch(`https://quantnow-sa1e.onrender.com/api/applications/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify(payload)
@@ -447,7 +447,7 @@ export function CustomerManagement() {
     const handleDeleteCustomer = async (id: string) => {
         setLoading(true);
         try {
-            const response = await fetch(`https://quantnow.onrender.com/api/customers/${id}`, {
+            const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/${id}`, {
                 method: 'DELETE',
                 headers: getAuthHeaders(),
             });
@@ -464,7 +464,7 @@ export function CustomerManagement() {
     const handleDeleteApplication = async (id: string) => {
         setLoading(true);
         try {
-            const response = await fetch(`https://quantnow.onrender.com/api/applications/${id}`, {
+            const response = await fetch(`https://quantnow-sa1e.onrender.com/api/applications/${id}`, {
                 method: 'DELETE',
                 headers: getAuthHeaders(),
             });
