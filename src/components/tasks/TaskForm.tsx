@@ -261,12 +261,12 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
           <div className="grid grid-cols-4 items-center gap-4">
             <Label className="text-right">Progress mode</Label>
             <div className="col-span-3">
-              <Select value={mode ?? 'manual'} onValueChange={(v) => setMode(v as any)}>
+              <Select value={mode ?? 'target'} onValueChange={(v) => setMode(v as any)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select mode" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="manual">Manual (%)</SelectItem>
+                  
                   <SelectItem value="target">Target (goal/current)</SelectItem>
                   <SelectItem value="steps">Steps</SelectItem>
                 </SelectContent>
@@ -274,19 +274,6 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
             </div>
           </div>
 
-          {mode === 'manual' && (
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label className="text-right">Progress (%)</Label>
-              <Input
-                className="col-span-3"
-                type="number"
-                min={0}
-                max={100}
-                value={manualPct}
-                onChange={(e) => setManualPct(Number(e.target.value))}
-              />
-            </div>
-          )}
 
           {mode === 'target' && (
             <>
