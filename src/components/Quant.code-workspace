@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../../../backend/pythonapi"
+		},
+		{
+			"path": "../../../../Quant2-BuzyHelper-main"
 		}
 	],
 	"settings": {}

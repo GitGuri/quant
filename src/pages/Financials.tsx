@@ -21,9 +21,10 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
 
-// --- Period / Compare helpers ---
+// --- Period / Compare / Breakdown helpers ---
 type PresetKey = 'custom' | '2m' | 'quarter' | 'half' | 'year';
 type CompareMode = 'none' | 'prev-period' | 'prev-year';
+type Breakdown = 'aggregate' | 'monthly';
 
 const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 const endOfDay = (d: Date) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; };
@@ -76,7 +77,7 @@ const pctChange = (current: number, prev: number) => {
 };
 const formatPct = (p: number | null) => (p === null ? '' : `${p.toFixed(1)}%`);
 
-// --- Types you already had ---
+// --- Types ---
 interface Transaction {
   id: string;
   type: 'income' | 'expense' | 'debt';
@@ -115,7 +116,7 @@ interface BalanceSheetLineItem {
   isAdjustment?: boolean;
 }
 
-// --- NEW: current assets detail coming from the API ---
+// --- Current assets detail from API ---
 interface ApiCurrentAssetRow {
   section: string;
   label: string;
@@ -126,9 +127,8 @@ interface ApiCurrentAssetsDetail {
   total: number;
   rows: ApiCurrentAssetRow[];
 }
-// --- END NEW ---
 
-// --- NEW: types for PPE detail coming from the API ---
+// --- PPE detail from API ---
 interface ApiPpeRow {
   section: string;
   label: string;
@@ -141,12 +141,11 @@ interface ApiPpeDetail {
   total_nbv: number;
   rows: ApiPpeRow[];
 }
-// --- END NEW ---
 
-// --- UPDATED: Enhanced balance sheet response (matches backend) ---
+// --- Enhanced balance sheet response ---
 interface ApiBalanceSheetSection {
   section: string;
-  value: string; // API returns string numbers for sections
+  value: string;
 }
 interface ApiBalanceSheetResponse {
   asOf: string;
@@ -162,7 +161,6 @@ interface ApiBalanceSheetResponse {
 
   otherEquityMovements?: number | string;
 
-  // NEW: details
   current_assets_detail?: ApiCurrentAssetsDetail;
   non_current_assets_detail?: ApiPpeDetail;
 
@@ -190,7 +188,6 @@ interface ApiBalanceSheetResponse {
 
   debug?: any;
 }
-// --- END UPDATED ---
 
 interface BalanceSheetData {
   assets: BalanceSheetLineItem[];
@@ -237,6 +234,7 @@ interface ApiCashFlowGrouped {
   financing?: ApiCashFlowSectionItem[];
 }
 
+// Use your deployed backend
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 const openBlobInNewTab = (blob: Blob, filename: string) => {
@@ -253,9 +251,22 @@ const openBlobInNewTab = (blob: Blob, filename: string) => {
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 };
 
+type ReportId = 'trial-balance' | 'income-statement' | 'balance-sheet' | 'cash-flow-statement';
+
+type SimpleLine = {
+  item: string;
+  amount?: number | '';
+  isTotal?: boolean;
+  isSubheader?: boolean;
+  isAdjustment?: boolean;
+  type?: string;
+};
+
+type MonthBucket = { key: string; start: string; end: string; label: string };
+
 const Financials = () => {
   const navigate = useNavigate();
-  const { latestProcessedTransactions } = useFinancials();
+  const { latestProcessedTransactions } = useFinancials(); // (unused, but fine)
   const { toast } = useToast();
 
   const [fromDate, setFromDate] = useState(() => {
@@ -267,6 +278,7 @@ const Financials = () => {
 
   const [preset, setPreset] = useState<PresetKey>('custom');
   const [compareMode, setCompareMode] = useState<CompareMode>('none');
+  const [breakdown, setBreakdown] = useState<Breakdown>('aggregate');
 
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [allAccounts, setAllAccounts] = useState<Account[]>([]);
@@ -275,38 +287,45 @@ const Financials = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [trialBalanceData, setTrialBalanceData] = useState<ApiTrialBalanceItem[]>([]);
-  const [incomeStatementData, setIncomeStatementData] = useState<{ item: string; amount: number | ''; type?: string }[]>([]);
+  const [incomeStatementData, setIncomeStatementData] = useState<SimpleLine[]>([]);
   const [balanceSheetData, setBalanceSheetData] = useState<BalanceSheetData>({
     assets: [], liabilities: [], equity: [],
     totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
   });
   const [cashflowData, setCashflowData] = useState<{ category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[]>([]);
 
-  // Previous-period datasets for compare mode
+  // Previous-period datasets (aggregate mode)
   const [trialBalanceDataPrev, setTrialBalanceDataPrev] = useState<ApiTrialBalanceItem[]>([]);
-  const [incomeStatementDataPrev, setIncomeStatementDataPrev] = useState<typeof incomeStatementData>([]);
+  const [incomeStatementDataPrev, setIncomeStatementDataPrev] = useState<SimpleLine[]>([]);
   const [balanceSheetDataPrev, setBalanceSheetDataPrev] = useState<BalanceSheetData>({
     assets: [], liabilities: [], equity: [],
     totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
   });
   const [cashflowDataPrev, setCashflowDataPrev] = useState<typeof cashflowData>([]);
 
-  const [activeTab, setActiveTab] = useState<'trial-balance' | 'income-statement' | 'balance-sheet' | 'cash-flow-statement'>('income-statement');
+  // Monthly view state
+  const [months, setMonths] = useState<MonthBucket[]>([]);
+  const [isMonthlyLoading, setIsMonthlyLoading] = useState(false);
+  const [incomeMonthly, setIncomeMonthly] = useState<SimpleLine[][]>([]);
+  const [trialMonthly, setTrialMonthly] = useState<ApiTrialBalanceItem[][]>([]);
+  const [bsMonthly, setBsMonthly] = useState<BalanceSheetData[]>([]);
+  const [cfMonthly, setCfMonthly] = useState<typeof cashflowData[]>([]);
+
+  const [activeTab, setActiveTab] = useState<ReportId>('income-statement');
   const [selectedDocumentType, setSelectedDocumentType] = useState<string>('income-statement');
 
   const reportTypes = [
-    { id: 'trial-balance', label: 'Trial Balance' },
-    { id: 'income-statement', label: 'Income Statement' },
-    { id: 'balance-sheet', label: 'Balance Sheet' },
-    { id: 'cash-flow-statement', label: 'Cashflow Statement' },
+    { id: 'trial-balance' as ReportId, label: 'Trial Balance' },
+    { id: 'income-statement' as ReportId, label: 'Income Statement' },
+    { id: 'balance-sheet' as ReportId, label: 'Balance Sheet' },
+    { id: 'cash-flow-statement' as ReportId, label: 'Cashflow Statement' },
   ] as const;
-  type ReportId = typeof reportTypes[number]['id'];
 
-  const { isAuthenticated } = useAuth();
+  
   const token = localStorage.getItem('token');
 
   // ---------- Helpers ----------
-  const ZEPS = 0.005; // ~half-cent
+  const ZEPS = 0.005;
 
   const num = (n: any) => {
     const parsed = parseFloat(String(n));
@@ -360,105 +379,38 @@ const Financials = () => {
     return Math.abs(n).toFixed(2);
   };
 
-  // Align helpers for comparative tables
-  type SimpleLine = { item: string; amount?: number | ''; isTotal?: boolean; isSubheader?: boolean; isAdjustment?: boolean; type?: string };
+  // ======= ALIGNMENT / PIVOT HELPERS =======
   const toNumOrNull = (v: number | '' | undefined): number | null => (typeof v === 'number' ? v : null);
 
-  function alignByItem(current: SimpleLine[], prev: SimpleLine[]) {
-    const mapPrev = new Map(prev.map(l => [l.item, l]));
-    const keysOrdered: string[] = [];
-    current.forEach(l => keysOrdered.push(l.item));
-    prev.forEach(l => { if (!mapPrev.has(l.item) && !keysOrdered.includes(l.item)) keysOrdered.push(l.item); });
-    return keysOrdered.map(k => {
-      const c = current.find(x => x.item === k);
-      const p = prev.find(x => x.item === k);
-      return {
-        item: k,
-        type: (c?.type ?? p?.type),
-        isTotal: c?.isTotal || p?.isTotal,
-        isSubheader: c?.isSubheader || p?.isSubheader,
-        isAdjustment: c?.isAdjustment || p?.isAdjustment,
-        cur: toNumOrNull(c?.amount as any),
-        prev: toNumOrNull(p?.amount as any),
+  function multiAlignByItem(series: SimpleLine[][]) {
+    const monthMaps: Map<string, SimpleLine>[] = series.map(lines => {
+      const m = new Map<string, SimpleLine>();
+      (lines || []).forEach(l => m.set(l.item, l));
+      return m;
+    });
+
+    const orderedKeys: string[] = [];
+    (series[0] || []).forEach(l => orderedKeys.push(l.item));
+    for (let i = 1; i < monthMaps.length; i++) {
+      monthMaps[i].forEach((_v, k) => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
+    }
+
+    return orderedKeys.map(k => {
+      const metaFrom = (monthMaps.find(m => m.has(k))?.get(k));
+      const flags = {
+        type: metaFrom?.type,
+        isTotal: metaFrom?.isTotal,
+        isSubheader: metaFrom?.isSubheader,
+        isAdjustment: metaFrom?.isAdjustment,
       };
+      const values = monthMaps.map(m => toNumOrNull(m.get(k)?.amount as any));
+      return { item: k, ...flags, values };
     });
   }
 
-  // Cashflow flatten -> simple lines
-  const flattenCashflow = (sections: { category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[]): SimpleLine[] => {
-    const out: SimpleLine[] = [];
-    sections.forEach(sec => {
-      out.push({ item: sec.category, isSubheader: true });
-      sec.items.forEach(it => out.push({ item: `  ${it.item}`, amount: it.amount }));
-      if (sec.showSubtotal) {
-        const label = sec.total >= 0 ? `Net cash from ${sec.category}` : `Net cash used in ${sec.category}`;
-        out.push({ item: label, amount: sec.total, isTotal: true });
-      } else {
-        // Net increase/decrease line
-        out.push({ item: sec.category, amount: sec.total, isTotal: true });
-      }
-    });
-    return out;
-  };
-
-  // Pull base lists for the period (transactions/accounts/assets)
-  const fetchAllData = useCallback(async () => {
-    if (!token) {
-      setAllTransactions([]);
-      setAllAccounts([]);
-      setAllAssets([]);
-      setIsLoading(false);
-      return;
-    }
-    setIsLoading(true);
-    setError(null);
-    try {
-      const [txRes, accRes, assetRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/transactions?fromDate=${fromDate}&toDate=${toDate}`, {
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        }),
-        fetch(`${API_BASE_URL}/accounts`, {
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        }),
-        fetch(`${API_BASE_URL}/assets`, {
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        }),
-      ]);
-
-      if (!txRes.ok) throw new Error(`Failed to fetch transactions: ${txRes.statusText}`);
-      if (!accRes.ok) throw new Error(`Failed to fetch accounts: ${accRes.statusText}`);
-      if (!assetRes.ok) throw new Error(`Failed to fetch assets: ${assetRes.statusText}`);
-
-      setAllTransactions(await txRes.json());
-      setAllAccounts(await accRes.json());
-      setAllAssets(await assetRes.json());
-    } catch (err: any) {
-      console.error("Error fetching general financial data:", err);
-      setError(`Failed to load data: ${err.message}. Please ensure the backend is running.`);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [fromDate, toDate, token]);
-
-  useEffect(() => {
-    if (isAuthenticated && token) {
-      fetchAllData();
-    } else {
-      setAllTransactions([]); setAllAccounts([]); setAllAssets([]);
-      setIsLoading(false);
-    }
-  }, [fetchAllData, isAuthenticated, token]);
-
-  // When preset changes (and not custom), update date range
-  useEffect(() => {
-    if (preset === 'custom') return;
-    const { from, to } = computePresetRange(preset);
-    if (from && to) { setFromDate(from); setToDate(to); }
-  }, [preset]);
-
-  // --- Income Statement builder ---
-  const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undefined) => {
-    const lines: { item: string; amount: number | ''; type?: string }[] = [];
+  // ======= Memoized builders to prevent update loops =======
+  const buildIncomeStatementLines = useCallback((sections: ApiIncomeStatementSection[] | undefined): SimpleLine[] => {
+    const lines: SimpleLine[] = [];
     if (!sections || !Array.isArray(sections)) return lines;
 
     const sectionMap: Record<string, ApiIncomeStatementSection> = {};
@@ -527,10 +479,9 @@ const Financials = () => {
     });
 
     return lines;
-  };
+  }, []);
 
-  // --- Balance Sheet normalization ---
-  const normalizeBalanceSheetFromServer = (response: ApiBalanceSheetResponse | undefined): BalanceSheetData => {
+  const normalizeBalanceSheetFromServer = useCallback((response: ApiBalanceSheetResponse | undefined): BalanceSheetData => {
     const assets: BalanceSheetLineItem[] = [];
     const liabilities: BalanceSheetLineItem[] = [];
     const equity: BalanceSheetLineItem[] = [];
@@ -609,10 +560,9 @@ const Financials = () => {
     }
     assets.push({ item: 'Total Non-Current Assets', amount: nonCurrentAssets, isTotal: true });
 
-    // Grand total (DISPLAY)
     assets.push({ item: 'TOTAL ASSETS', amount: displayTotalAssets, isTotal: true, isSubheader: true });
 
-    // Liabilities
+    // ----- Liabilities -----
     liabilities.push({ item: 'Current Liabilities', amount: 0, isSubheader: true });
     if (nonZero(currentLiabs)) liabilities.push({ item: '  Current Liabilities (total)', amount: currentLiabs });
     liabilities.push({ item: 'Total Current Liabilities', amount: currentLiabs, isTotal: true });
@@ -623,7 +573,7 @@ const Financials = () => {
 
     liabilities.push({ item: 'TOTAL LIABILITIES', amount: displayTotalLiabs, isTotal: true, isSubheader: true });
 
-    // Equity (display)
+    // ----- Equity -----
     equity.push({ item: 'Equity', amount: 0, isSubheader: true });
     equity.push({ item: '  Contributed / Opening Equity', amount: openingEquity });
     if (nonZero(priorRetained)) {
@@ -642,9 +592,14 @@ const Financials = () => {
     }
     equity.push({ item: 'TOTAL EQUITY', amount: equityComputed, isTotal: true, isSubheader: true });
 
+    const liabilitiesWithGrand = [
+      ...liabilities,
+      { item: 'TOTAL EQUITY AND LIABILITIES', amount: displayLiabPlusEquity, isTotal: true, isSubheader: true }
+    ];
+
     return {
       assets,
-      liabilities,
+      liabilities: liabilitiesWithGrand,
       equity,
       totals: {
         totalAssets: totalAssetsFinal,
@@ -654,10 +609,10 @@ const Financials = () => {
         diff: controlDiffEff || diffFinal,
       }
     };
-  };
+  }, []);
 
-  // --- Cashflow ---
-  const normalizeCashflow = (groupedSections: ApiCashFlowGrouped | undefined) => {
+  // --- Cashflow (memoized) ---
+  const normalizeCashflow = useCallback((groupedSections: ApiCashFlowGrouped | undefined) => {
     const sections: { category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[] = [];
     if (!groupedSections || typeof groupedSections !== 'object') return sections;
 
@@ -693,8 +648,65 @@ const Financials = () => {
     });
 
     return sections;
-  };
+  }, []);
 
+  // ======= GENERAL DATA FETCH =======
+  const { isAuthenticated } = useAuth(); // keep after hooks okay
+  const fetchAllData = useCallback(async () => {
+    if (!token) {
+      setAllTransactions([]);
+      setAllAccounts([]);
+      setAllAssets([]);
+      setIsLoading(false);
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    try {
+      const [txRes, accRes, assetRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/transactions?fromDate=${fromDate}&toDate=${toDate}`, {
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        }),
+        fetch(`${API_BASE_URL}/accounts`, {
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        }),
+        fetch(`${API_BASE_URL}/assets`, {
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        }),
+      ]);
+
+      if (!txRes.ok) throw new Error(`Failed to fetch transactions: ${txRes.statusText}`);
+      if (!accRes.ok) throw new Error(`Failed to fetch accounts: ${accRes.statusText}`);
+      if (!assetRes.ok) throw new Error(`Failed to fetch assets: ${assetRes.statusText}`);
+
+      setAllTransactions(await txRes.json());
+      setAllAccounts(await accRes.json());
+      setAllAssets(await assetRes.json());
+    } catch (err: any) {
+      console.error("Error fetching general financial data:", err);
+      setError(`Failed to load data: ${err.message}. Please ensure the backend is running.`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [fromDate, toDate, token]);
+
+  useEffect(() => {
+    if (isAuthenticated && token) {
+      fetchAllData();
+    } else {
+      setAllTransactions([]); setAllAccounts([]); setAllAssets([]);
+      setIsLoading(false);
+    }
+  }, [fetchAllData, isAuthenticated, token]);
+
+  // When preset changes (and not custom), update date range
+  useEffect(() => {
+    if (preset === 'custom') return;
+    const { from, to } = computePresetRange(preset);
+    if (from && to) { setFromDate(from); setToDate(to); }
+  }, [preset]);
+
+  // ======= AGGREGATE FETCH =======
   const fetchServerStatement = useCallback(
     async (type: ReportId) => {
       if (!token) return;
@@ -711,8 +723,6 @@ const Financials = () => {
             return `${API_BASE_URL}/reports/trial-balance?start=${start}&end=${end}`;
           case 'cash-flow-statement':
             return `${API_BASE_URL}/reports/cash-flow?start=${start}&end=${end}`;
-          default:
-            throw new Error(`Unsupported report type: ${t}`);
         }
       };
 
@@ -722,14 +732,14 @@ const Financials = () => {
           const errorText = await res.text();
           throw new Error(`${res.status} ${res.statusText}. Details: ${errorText}`);
         }
-        const payload = await res.json();
-        return payload;
+        return res.json();
       };
 
       try {
+        if (breakdown === 'monthly') return; // aggregate fetch skipped in monthly mode
+
         // Current period
-        const url = buildUrl(type, fromDate, toDate);
-        const payload = await doFetch(url);
+        const payload = await doFetch(buildUrl(type, fromDate, toDate)!);
 
         if (type === 'income-statement') {
           const sections = payload?.sections as ApiIncomeStatementSection[] | undefined;
@@ -742,11 +752,10 @@ const Financials = () => {
           setCashflowData(normalizeCashflow(payload?.sections as ApiCashFlowGrouped | undefined));
         }
 
-        // Comparison period
+        // Comparison period (aggregate only)
         const prevRange = previousPeriod(fromDate, toDate, compareMode);
         if (prevRange) {
-          const prevUrl = buildUrl(type, prevRange.prevFrom, prevRange.prevTo);
-          const prevPayload = await doFetch(prevUrl);
+          const prevPayload = await doFetch(buildUrl(type, prevRange.prevFrom, prevRange.prevTo)!);
 
           if (type === 'income-statement') {
             const sections = prevPayload?.sections as ApiIncomeStatementSection[] | undefined;
@@ -759,7 +768,6 @@ const Financials = () => {
             setCashflowDataPrev(normalizeCashflow(prevPayload?.sections as ApiCashFlowGrouped | undefined));
           }
         } else {
-          // Clear prev sets when compare is off
           setIncomeStatementDataPrev([]);
           setTrialBalanceDataPrev([]);
           setBalanceSheetDataPrev({
@@ -784,59 +792,185 @@ const Financials = () => {
         if (type === 'cash-flow-statement') setCashflowData([]);
       }
     },
-    [fromDate, toDate, token, toast, compareMode]
+    [fromDate, toDate, token, toast, compareMode, breakdown, buildIncomeStatementLines, normalizeBalanceSheetFromServer, normalizeCashflow]
   );
 
   useEffect(() => {
     if (!isAuthenticated || !token) return;
-    fetchServerStatement(activeTab);
-  }, [activeTab, fromDate, toDate, fetchServerStatement, isAuthenticated, token]);
+    if (breakdown === 'aggregate') {
+      fetchServerStatement(activeTab);
+    }
+  }, [activeTab, fromDate, toDate, fetchServerStatement, isAuthenticated, token, breakdown]);
 
-  // Prefetch all four so exports always have data
   useEffect(() => {
     if (!isAuthenticated || !token) return;
-    (['income-statement', 'trial-balance', 'balance-sheet', 'cash-flow-statement'] as ReportId[])
-      .forEach((t) => fetchServerStatement(t));
+    if (breakdown === 'aggregate') {
+      (['income-statement', 'trial-balance', 'balance-sheet', 'cash-flow-statement'] as ReportId[])
+        .forEach((t) => fetchServerStatement(t));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, isAuthenticated, token, compareMode]);
+  }, [fromDate, toDate, isAuthenticated, token, compareMode, breakdown]);
 
-  // ------- PDF (existing) -------
-  const handleDownloadPdf = async () => {
-    if (!token) {
-      toast({ title: "Authentication Required", description: "Please log in to download financial documents.", variant: "destructive" });
-      return;
-    }
-    if (!selectedDocumentType || !fromDate || !toDate) {
-      toast({ title: "Missing Information", description: "Please select a document type and valid dates.", variant: "destructive" });
-      return;
-    }
-    try {
-      const qs = new URLSearchParams({
-        documentType: selectedDocumentType,
-        startDate: fromDate,
-        endDate: toDate,
+  // ======= MONTHLY (PIVOT) =======
+  const buildMonthBuckets = useCallback((fromISO: string, toISO: string): MonthBucket[] => {
+    const start = new Date(fromISO + 'T00:00:00');
+    const end = new Date(toISO + 'T00:00:00');
+    const buckets: MonthBucket[] = [];
+
+    if (start > end) return buckets;
+
+    let y = start.getFullYear();
+    let m = start.getMonth();
+    while (new Date(y, m, 1) <= end) {
+      const first = new Date(y, m, 1);
+      const last = new Date(y, m + 1, 0);
+      const sISO = iso(first);
+      const eISO = iso(last <= end ? last : end);
+      buckets.push({
+        key: `${first.getFullYear()}-${String(first.getMonth() + 1).padStart(2, '0')}`,
+        start: sISO,
+        end: eISO,
+        label: first.toLocaleDateString('en-ZA', { month: 'short', year: 'numeric' })
       });
-      const resp = await fetch(`${API_BASE_URL}/generate-financial-document?${qs}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!resp.ok) {
-        const text = await resp.text();
-        throw new Error(`Download failed: ${resp.status} ${resp.statusText}. Details: ${text.substring(0, 200)}`);
+      m++;
+      if (m > 11) { m = 0; y++; }
+    }
+    return buckets;
+  }, []);
+
+  const fetchMonthlyFor = useCallback(async (type: ReportId, monthsIn: MonthBucket[]) => {
+    if (!token) return;
+    if (monthsIn.length === 0) return;
+
+    const MAX_MONTHS = 18;
+    const buckets = monthsIn.length > MAX_MONTHS ? monthsIn.slice(-MAX_MONTHS) : monthsIn;
+    if (monthsIn.length > MAX_MONTHS) {
+      toast({ title: 'Showing latest months only', description: `Limited to ${MAX_MONTHS} months for performance.`, variant: 'default' });
+    }
+
+    setIsMonthlyLoading(true);
+    const headers = { Accept: 'application/json', Authorization: `Bearer ${token}` };
+
+    const buildUrl = (t: ReportId, start: string, end: string) => {
+      switch (t) {
+        case 'income-statement': return `${API_BASE_URL}/reports/income-statement?start=${start}&end=${end}`;
+        case 'cash-flow-statement': return `${API_BASE_URL}/reports/cash-flow?start=${start}&end=${end}`;
+        case 'trial-balance': return `${API_BASE_URL}/reports/trial-balance?start=${start}&end=${end}`;
+        case 'balance-sheet': return `${API_BASE_URL}/reports/balance-sheet?asOf=${end}&start=${start}&debug=1`;
       }
-      const cd = resp.headers.get('Content-Disposition') || '';
-      const match = /filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i.exec(cd);
-      const filename = decodeURIComponent(match?.[1] || match?.[2] || `${selectedDocumentType}-${fromDate}-to-${toDate}.pdf`);
-      const blob = await resp.blob();
-      openBlobInNewTab(blob, filename);
-      toast({ title: "Download ready", description: `Your ${selectedDocumentType.replace(/-/g, ' ')} opened in a new tab.` });
+    };
+
+    try {
+      if (type === 'income-statement') {
+        const results = await Promise.all(buckets.map(async b => {
+          const res = await fetch(buildUrl(type, b.start, b.end)!, { headers });
+          if (!res.ok) throw new Error('Income (monthly) fetch failed');
+          const payload = await res.json();
+          return buildIncomeStatementLines(payload?.sections);
+        }));
+        setIncomeMonthly(results);
+      }
+
+      if (type === 'cash-flow-statement') {
+        const results = await Promise.all(buckets.map(async b => {
+          const res = await fetch(buildUrl(type, b.start, b.end)!, { headers });
+          if (!res.ok) throw new Error('Cashflow (monthly) fetch failed');
+          const payload = await res.json();
+          return normalizeCashflow(payload?.sections as ApiCashFlowGrouped | undefined);
+        }));
+        setCfMonthly(results);
+      }
+
+      if (type === 'trial-balance') {
+        const results = await Promise.all(buckets.map(async b => {
+          const res = await fetch(buildUrl(type, b.start, b.end)!, { headers });
+          if (!res.ok) throw new Error('Trial (monthly) fetch failed');
+          const payload = await res.json();
+          return (payload?.items as ApiTrialBalanceItem[]) || [];
+        }));
+        setTrialMonthly(results);
+      }
+
+      if (type === 'balance-sheet') {
+        const results = await Promise.all(buckets.map(async b => {
+          const res = await fetch(buildUrl(type, b.start, b.end)!, { headers });
+          if (!res.ok) throw new Error('Balance (monthly) fetch failed');
+          const payload = await res.json();
+          return normalizeBalanceSheetFromServer(payload as ApiBalanceSheetResponse);
+        }));
+        setBsMonthly(results);
+      }
     } catch (err: any) {
-      console.error("Error downloading PDF:", err);
-      toast({ title: "Download Failed", description: err?.message || "There was an error generating the report. Please try again.", variant: "destructive" });
+      console.error('Monthly fetch error', err);
+      toast({ title: 'Monthly view error', description: err?.message || 'Could not load monthly data.', variant: 'destructive' });
+      if (type === 'income-statement') setIncomeMonthly([]);
+      if (type === 'trial-balance') setTrialMonthly([]);
+      if (type === 'balance-sheet') setBsMonthly([]);
+      if (type === 'cash-flow-statement') setCfMonthly([]);
+    } finally {
+      setIsMonthlyLoading(false);
     }
+  }, [normalizeBalanceSheetFromServer, buildIncomeStatementLines, normalizeCashflow, toast, token]);
+
+  // Recompute month buckets + fetch monthly for active tab (guard setMonths to avoid loops)
+  useEffect(() => {
+    if (breakdown !== 'monthly') return;
+
+    const newBuckets = buildMonthBuckets(fromDate, toDate);
+
+    const same =
+      months.length === newBuckets.length &&
+      months.every((b, i) =>
+        b.key === newBuckets[i].key &&
+        b.start === newBuckets[i].start &&
+        b.end === newBuckets[i].end
+      );
+
+    if (!same) setMonths(newBuckets);
+
+    if (!isAuthenticated || !token) return;
+    fetchMonthlyFor(activeTab, newBuckets);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [breakdown, fromDate, toDate, activeTab, buildMonthBuckets, fetchMonthlyFor, isAuthenticated, token]);
+
+  // Disable compare when switching to monthly (prevents ref churn)
+  useEffect(() => {
+    if (breakdown === 'monthly' && compareMode !== 'none') {
+      setCompareMode('none');
+    }
+  }, [breakdown, compareMode]);
+
+  // ======= EXPORTS (aggregate only) =======
+  const flattenCashflow = (sections: { category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[]): SimpleLine[] => {
+    const out: SimpleLine[] = [];
+    sections.forEach(sec => {
+      out.push({ item: sec.category, isSubheader: true });
+      sec.items.forEach(it => out.push({ item: `  ${it.item}`, amount: it.amount }));
+      if (sec.showSubtotal) {
+        const label = sec.total >= 0 ? `Net cash from ${sec.category}` : `Net cash used in ${sec.category}`;
+        out.push({ item: label, amount: sec.total, isTotal: true });
+      } else {
+        out.push({ item: sec.category, amount: sec.total, isTotal: true });
+      }
+    });
+    return out;
   };
 
-  // ------- CSV builders (unchanged single-period) -------
+  const trialToNetLines = (items: ApiTrialBalanceItem[]): SimpleLine[] => {
+    const out: SimpleLine[] = [];
+    items.forEach(i => {
+      const dr = num(i.balance_debit);
+      const cr = num(i.balance_credit);
+      const net = dr - cr; // +ve debit, -ve credit
+      if (!isZeroish(net)) {
+        out.push({ item: `${i.code} - ${i.name}`, amount: net });
+      }
+    });
+    const totalNet = items.reduce((s, i) => s + (num(i.balance_debit) - num(i.balance_credit)), 0);
+    out.push({ item: 'TOTAL (net DR-CR)', amount: totalNet, isTotal: true });
+    return out;
+  };
+
   const buildCsvRowsFor = (type: ReportId) => {
     const rows: (string | number | null | undefined)[][] = [];
     const periodStr = `${new Date(fromDate).toLocaleDateString('en-ZA')} to ${new Date(toDate).toLocaleDateString('en-ZA')}`;
@@ -930,7 +1064,46 @@ const Financials = () => {
     return rows;
   };
 
+  const handleDownloadPdf = async () => {
+    if (!token) {
+      toast({ title: "Authentication Required", description: "Please log in to download financial documents.", variant: "destructive" });
+      return;
+    }
+    if (!selectedDocumentType || !fromDate || !toDate) {
+      toast({ title: "Missing Information", description: "Please select a document type and valid dates.", variant: "destructive" });
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        documentType: selectedDocumentType,
+        startDate: fromDate,
+        endDate: toDate,
+      });
+      const resp = await fetch(`${API_BASE_URL}/generate-financial-document?${qs}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`Download failed: ${resp.status} ${resp.statusText}. Details: ${text.substring(0, 200)}`);
+      }
+      const cd = resp.headers.get('Content-Disposition') || '';
+      const match = /filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i.exec(cd);
+      const filename = decodeURIComponent(match?.[1] || match?.[2] || `${selectedDocumentType}-${fromDate}-to-${toDate}.pdf`);
+      const blob = await resp.blob();
+      openBlobInNewTab(blob, filename);
+      toast({ title: "Download ready", description: `Your ${selectedDocumentType.replace(/-/g, ' ')} opened in a new tab.` });
+    } catch (err: any) {
+      console.error("Error downloading PDF:", err);
+      toast({ title: "Download Failed", description: err?.message || "There was an error generating the report. Please try again.", variant: "destructive" });
+    }
+  };
+
   const handleDownloadCsv = () => {
+    if (breakdown === 'monthly') {
+      toast({ title: 'Monthly export not implemented', description: 'Switch to Aggregate to export a single-period CSV.', variant: 'default' });
+      return;
+    }
     const id = selectedDocumentType as ReportId;
     if (!id) {
       toast({ title: "Missing type", description: "Choose a document type first.", variant: "destructive" });
@@ -943,6 +1116,10 @@ const Financials = () => {
   };
 
   const handleDownloadCsvZip = async () => {
+    if (breakdown === 'monthly') {
+      toast({ title: 'Monthly export not implemented', description: 'Switch to Aggregate to export a ZIP.', variant: 'default' });
+      return;
+    }
     try {
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
@@ -978,9 +1155,9 @@ const Financials = () => {
     );
   }
 
-  // ====== UI ======
-  const showCompare = compareMode !== 'none';
+  const showCompare = compareMode !== 'none' && breakdown === 'aggregate';
 
+  // ====== UI ======
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
       <Header />
@@ -1000,7 +1177,7 @@ const Financials = () => {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4 mb-6">
+            <div className="flex flex-col sm:flex-row items-center gap-4 mb-6">
               <div className="flex-1 w-full sm:w-auto">
                 <label htmlFor="fromDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   From Date
@@ -1033,12 +1210,32 @@ const Financials = () => {
                 </Select>
               </div>
 
+              {/* Breakdown */}
+              <div className="flex-1 w-full sm:w-auto">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Breakdown
+                </label>
+                <Select value={breakdown} onValueChange={(v) => setBreakdown(v as Breakdown)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Aggregate or Monthly" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="aggregate">Aggregate</SelectItem>
+                    <SelectItem value="monthly">Monthly (pivot)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
               {/* Compare */}
               <div className="flex-1 w-full sm:w-auto">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Compare
                 </label>
-                <Select value={compareMode} onValueChange={(v) => setCompareMode(v as CompareMode)}>
+                <Select
+                  value={compareMode}
+                  onValueChange={(v) => setCompareMode(v as CompareMode)}
+                  disabled={breakdown === 'monthly'}
+                >
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="No comparison" />
                   </SelectTrigger>
@@ -1048,6 +1245,9 @@ const Financials = () => {
                     <SelectItem value="prev-year">Same period last year</SelectItem>
                   </SelectContent>
                 </Select>
+                {breakdown === 'monthly' && (
+                  <p className="text-xs text-gray-500 mt-1">Comparison is available in Aggregate view.</p>
+                )}
               </div>
 
               <div className="flex-1 w-full sm:w-auto">
@@ -1077,7 +1277,7 @@ const Financials = () => {
           </CardContent>
         </Card>
 
-        <Tabs defaultValue="income-statement" value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="w-full">
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as ReportId)}>
           <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
             {reportTypes.map((report) => (
               <TabsTrigger key={report.id} value={report.id}>
@@ -1086,467 +1286,724 @@ const Financials = () => {
             ))}
           </TabsList>
 
-          {/* Income Statement */}
+          {/* ================== INCOME STATEMENT ================== */}
           <TabsContent value="income-statement" className="mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-xl">Income Statement</CardTitle>
                 <CardDescription>
-                  For the period {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}
+                  {breakdown === 'aggregate'
+                    ? <>For the period {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}</>
+                    : <>Monthly breakdown from {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}</>}
                 </CardDescription>
               </CardHeader>
 
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Item</TableHead>
-                      {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
-                      {showCompare && (
-                        <>
-                          <TableHead className="text-right">Current (R)</TableHead>
-                          <TableHead className="text-right">Previous (R)</TableHead>
-                          <TableHead className="text-right">Δ</TableHead>
-                          <TableHead className="text-right">Δ%</TableHead>
-                        </>
-                      )}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(!incomeStatementData || incomeStatementData.length === 0) ? (
+                {breakdown === 'aggregate' && (
+                  <Table>
+                    <TableHeader>
                       <TableRow>
-                        <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
-                          No data available for the selected period.
-                        </TableCell>
+                        <TableHead>Item</TableHead>
+                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                        {showCompare && (
+                          <>
+                            <TableHead className="text-right">Current (R)</TableHead>
+                            <TableHead className="text-right">Previous (R)</TableHead>
+                            <TableHead className="text-right">Δ</TableHead>
+                            <TableHead className="text-right">Δ%</TableHead>
+                          </>
+                        )}
                       </TableRow>
-                    ) : !showCompare ? (
-                      (incomeStatementData.filter(l => typeof l.amount !== 'number' || nonZero(l.amount))).map((item, idx) => {
-                        const isTotalish = item.type === 'total' || item.type === 'subtotal';
-                        const isHeaderish = item.type === 'header' || item.type === 'subheader';
-                        const isExpenseDetail = item.type === 'detail-expense';
-                        return (
-                          <TableRow key={idx} className={[
-                            isTotalish ? 'font-bold border-t-2 border-b-2' : '',
-                            isHeaderish ? 'font-semibold text-gray-800' : '',
-                          ].join(' ')}>
-                            <TableCell className={isExpenseDetail ? 'pl-8' : ''}>{item.item}</TableCell>
-                            <TableCell className="text-right">{typeof item.amount === 'number' ? moneyOrBlank(item.amount) : ''}</TableCell>
+                    </TableHeader>
+                    <TableBody>
+                      {(!incomeStatementData || incomeStatementData.length === 0) ? (
+                        <TableRow>
+                          <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
+                            No data available for the selected period.
+                          </TableCell>
+                        </TableRow>
+                      ) : !showCompare ? (
+                        (incomeStatementData.filter(l => typeof l.amount !== 'number' || nonZero(l.amount))).map((item, idx) => {
+                          const isTotalish = item.type === 'total' || item.type === 'subtotal';
+                          const isHeaderish = item.type === 'header' || item.type === 'subheader';
+                          const isExpenseDetail = item.type === 'detail-expense';
+                          return (
+                            <TableRow key={idx} className={[
+                              isTotalish ? 'font-bold border-t-2 border-b-2' : '',
+                              isHeaderish ? 'font-semibold text-gray-800' : '',
+                            ].join(' ')}>
+                              <TableCell className={isExpenseDetail ? 'pl-8' : ''}>{item.item}</TableCell>
+                              <TableCell className="text-right">{typeof item.amount === 'number' ? moneyOrBlank(item.amount) : ''}</TableCell>
+                            </TableRow>
+                          );
+                        })
+                      ) : (
+                        (() => {
+                          const align = (cur: SimpleLine[], prev: SimpleLine[]) => {
+                            const mapPrev = new Map(prev.map(l => [l.item, l]));
+                            const keysOrdered: string[] = [];
+                            cur.forEach(l => keysOrdered.push(l.item));
+                            prev.forEach(l => { if (!mapPrev.has(l.item) && !keysOrdered.includes(l.item)) keysOrdered.push(l.item); });
+                            return keysOrdered.map(k => {
+                              const c = cur.find(x => x.item === k);
+                              const p = prev.find(x => x.item === k);
+                              const delta = (toNumOrNull(c?.amount as any) ?? 0) - (toNumOrNull(p?.amount as any) ?? 0);
+                              const pct = pctChange(toNumOrNull(c?.amount as any) ?? 0, toNumOrNull(p?.amount as any) ?? 0);
+                              return {
+                                item: k,
+                                type: (c?.type ?? p?.type),
+                                isTotal: c?.isTotal || p?.isTotal,
+                                isSubheader: c?.isSubheader || p?.isSubheader,
+                                isAdjustment: c?.isAdjustment || p?.isAdjustment,
+                                cur: toNumOrNull(c?.amount as any),
+                                prev: toNumOrNull(p?.amount as any),
+                                delta, pct
+                              };
+                            });
+                          };
+                          const rows = align(incomeStatementData, incomeStatementDataPrev);
+                          return rows.map((r, idx) => (
+                            <TableRow key={idx} className={[
+                              (r.type === 'total' || r.isTotal) ? 'font-bold border-t-2 border-b-2' : '',
+                              (r.type === 'header' || r.isSubheader) ? 'font-semibold text-gray-800' : '',
+                            ].join(' ')}>
+                              <TableCell className={r.type === 'detail-expense' ? 'pl-8' : ''}>{r.item}</TableCell>
+                              <TableCell className="text-right">{r.cur != null ? moneyOrBlank(r.cur) : ''}</TableCell>
+                              <TableCell className="text-right">{r.prev != null ? moneyOrBlank(r.prev) : ''}</TableCell>
+                              <TableCell className={`text-right ${r.delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{(r.cur != null || r.prev != null) ? moneyOrBlank(r.delta) : ''}</TableCell>
+                              <TableCell className="text-right">{formatPct(r.pct)}</TableCell>
+                            </TableRow>
+                          ));
+                        })()
+                      )}
+                    </TableBody>
+                  </Table>
+                )}
+
+                {breakdown === 'monthly' && (
+                  <div className="overflow-x-auto">
+                    <Table className="min-w-[900px]">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="sticky left-0 z-10 bg-white dark:bg-gray-800">Line</TableHead>
+                          {months.map(m => (
+                            <TableHead key={m.key} className="text-right">{m.label}</TableHead>
+                          ))}
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {isMonthlyLoading && (
+                          <TableRow>
+                            <TableCell colSpan={months.length + 1} className="text-center text-gray-500">Loading monthly data…</TableCell>
                           </TableRow>
-                        );
-                      })
-                    ) : (
-                      alignByItem(incomeStatementData, incomeStatementDataPrev).map((row, idx) => {
-                        const isTotalish = row.type === 'total' || row.isTotal;
-                        const isHeaderish = row.type === 'header' || row.isSubheader;
-                        const cls = [
-                          isTotalish ? 'font-bold border-t-2 border-b-2' : '',
-                          isHeaderish ? 'font-semibold text-gray-800' : ''
-                        ].join(' ');
-                        const delta = (row.cur ?? 0) - (row.prev ?? 0);
-                        const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
-                        return (
-                          <TableRow key={idx} className={cls}>
-                            <TableCell className={row.type === 'detail-expense' ? 'pl-8' : ''}>{row.item}</TableCell>
-                            <TableCell className="text-right">{row.cur != null ? moneyOrBlank(row.cur) : ''}</TableCell>
-                            <TableCell className="text-right">{row.prev != null ? moneyOrBlank(row.prev) : ''}</TableCell>
-                            <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.cur != null || row.prev != null ? moneyOrBlank(delta) : ''}</TableCell>
-                            <TableCell className="text-right">{formatPct(pct)}</TableCell>
-                          </TableRow>
-                        );
-                      })
-                    )}
-                  </TableBody>
-                </Table>
+                        )}
+                        {!isMonthlyLoading && incomeMonthly.length > 0 ? (
+                          multiAlignByItem(incomeMonthly).map((row, idx) => {
+                            const isTotalish = row.type === 'total' || row.isTotal;
+                            const isHeaderish = row.type === 'header' || row.isSubheader;
+                            const isExpenseDetail = row.type === 'detail-expense';
+                            return (
+                              <TableRow key={idx} className={[
+                                isTotalish ? 'font-bold border-t-2 border-b-2' : '',
+                                isHeaderish ? 'font-semibold text-gray-800' : ''
+                              ].join(' ')}>
+                                <TableCell className={["sticky left-0 z-10 bg-white dark:bg-gray-800", isExpenseDetail ? 'pl-8' : ''].join(' ')}>{row.item}</TableCell>
+                                {row.values.map((v, i) => (
+                                  <TableCell key={i} className="text-right">{row.isSubheader ? '' : (v != null ? moneyOrBlank(v) : '')}</TableCell>
+                                ))}
+                              </TableRow>
+                            );
+                          })
+                        ) : (
+                          !isMonthlyLoading && (
+                            <TableRow>
+                              <TableCell colSpan={months.length + 1} className="text-center text-gray-500">No monthly data.</TableCell>
+                            </TableRow>
+                          )
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
 
-          {/* Trial Balance */}
+          {/* ================== TRIAL BALANCE ================== */}
           <TabsContent value="trial-balance" className="mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-xl">Trial Balance</CardTitle>
-                <CardDescription>As of {new Date(toDate).toLocaleDateString('en-ZA')}</CardDescription>
+                <CardDescription>
+                  {breakdown === 'aggregate'
+                    ? <>As of {new Date(toDate).toLocaleDateString('en-ZA')}</>
+                    : <>Monthly breakdown from {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}</>}
+                </CardDescription>
               </CardHeader>
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Account</TableHead>
-                      {!showCompare && (
-                        <>
-                          <TableHead className="text-right">Debit (R)</TableHead>
-                          <TableHead className="text-right">Credit (R)</TableHead>
-                        </>
-                      )}
-                      {showCompare && (
-                        <>
-                          <TableHead className="text-right">DR (Current)</TableHead>
-                          <TableHead className="text-right">CR (Current)</TableHead>
-                          <TableHead className="text-right">DR (Previous)</TableHead>
-                          <TableHead className="text-right">CR (Previous)</TableHead>
-                        </>
-                      )}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(!trialBalanceData || trialBalanceData.length === 0) ? (
+                {breakdown === 'aggregate' && (
+                  <Table>
+                    <TableHeader>
                       <TableRow>
-                        <TableCell colSpan={showCompare ? 5 : 3} className="text-center text-gray-500">
-                          No data available for the selected period.
-                        </TableCell>
+                        <TableHead>Account</TableHead>
+                        {!showCompare && (
+                          <>
+                            <TableHead className="text-right">Debit (R)</TableHead>
+                            <TableHead className="text-right">Credit (R)</TableHead>
+                          </>
+                        )}
+                        {showCompare && (
+                          <>
+                            <TableHead className="text-right">DR (Current)</TableHead>
+                            <TableHead className="text-right">CR (Current)</TableHead>
+                            <TableHead className="text-right">DR (Previous)</TableHead>
+                            <TableHead className="text-right">CR (Previous)</TableHead>
+                          </>
+                        )}
                       </TableRow>
-                    ) : !showCompare ? (
-                      <>
-                        {trialBalanceData
-                          .filter(i => nonZero(num(i.balance_debit)) || nonZero(num(i.balance_credit)))
-                          .map((item, index) => (
-                            <TableRow key={index}>
-                              <TableCell>{item.code} - {item.name}</TableCell>
-                              <TableCell className="text-right">{moneyOrBlank(num(item.balance_debit))}</TableCell>
-                              <TableCell className="text-right">{moneyOrBlank(num(item.balance_credit))}</TableCell>
-                            </TableRow>
-                          ))}
-                        <TableRow className="font-bold border-t-2">
-                          <TableCell>TOTALS</TableCell>
-                          <TableCell className="text-right">
-                            {formatCurrency(trialBalanceData.reduce((sum, item) => sum + num(item.balance_debit), 0))}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {formatCurrency(trialBalanceData.reduce((sum, item) => sum + num(item.balance_credit), 0))}
+                    </TableHeader>
+                    <TableBody>
+                      {(!trialBalanceData || trialBalanceData.length === 0) ? (
+                        <TableRow>
+                          <TableCell colSpan={showCompare ? 5 : 3} className="text-center text-gray-500">
+                            No data available for the selected period.
                           </TableCell>
                         </TableRow>
-                      </>
-                    ) : (
-                      (() => {
-                        // Build prev map by "code-name" for alignment
-                        const prevMap = new Map<string, ApiTrialBalanceItem>();
-                        (trialBalanceDataPrev || []).forEach(p => prevMap.set(`${p.code}||${p.name}`, p));
-                        const allRows = [...trialBalanceData]
-                          .filter(i => nonZero(num(i.balance_debit)) || nonZero(num(i.balance_credit)) || prevMap.has(`${i.code}||${i.name}`))
-                          .sort((a, b) => a.code.localeCompare(b.code));
+                      ) : !showCompare ? (
+                        <>
+                          {trialBalanceData
+                            .filter(i => nonZero(num(i.balance_debit)) || nonZero(num(i.balance_credit)))
+                            .map((item, index) => (
+                              <TableRow key={index}>
+                                <TableCell>{item.code} - {item.name}</TableCell>
+                                <TableCell className="text-right">{moneyOrBlank(num(item.balance_debit))}</TableCell>
+                                <TableCell className="text-right">{moneyOrBlank(num(item.balance_credit))}</TableCell>
+                              </TableRow>
+                            ))}
+                          <TableRow className="font-bold border-t-2">
+                            <TableCell>TOTALS</TableCell>
+                            <TableCell className="text-right">
+                              {formatCurrency(trialBalanceData.reduce((sum, item) => sum + num(item.balance_debit), 0))}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {formatCurrency(trialBalanceData.reduce((sum, item) => sum + num(item.balance_credit), 0))}
+                            </TableCell>
+                          </TableRow>
+                        </>
+                      ) : (
+                        (() => {
+                          const prevMap = new Map<string, ApiTrialBalanceItem>();
+                          (trialBalanceDataPrev || []).forEach(p => prevMap.set(`${p.code}||${p.name}`, p));
+                          const allRows = [...trialBalanceData]
+                            .filter(i => nonZero(num(i.balance_debit)) || nonZero(num(i.balance_credit)) || prevMap.has(`${i.code}||${i.name}`))
+                            .sort((a, b) => a.code.localeCompare(b.code));
 
-                        return (
-                          <>
-                            {allRows.map((cur, idx) => {
-                              const key = `${cur.code}||${cur.name}`;
-                              const p = prevMap.get(key);
-                              return (
-                                <TableRow key={idx}>
-                                  <TableCell>{cur.code} - {cur.name}</TableCell>
-                                  <TableCell className="text-right">{moneyOrBlank(num(cur.balance_debit))}</TableCell>
-                                  <TableCell className="text-right">{moneyOrBlank(num(cur.balance_credit))}</TableCell>
-                                  <TableCell className="text-right">{p ? moneyOrBlank(num(p.balance_debit)) : ''}</TableCell>
-                                  <TableCell className="text-right">{p ? moneyOrBlank(num(p.balance_credit)) : ''}</TableCell>
-                                </TableRow>
-                              );
-                            })}
-                            <TableRow className="font-bold border-t-2">
-                              <TableCell>TOTALS</TableCell>
-                              <TableCell className="text-right">
-                                {formatCurrency(trialBalanceData.reduce((s, i) => s + num(i.balance_debit), 0))}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {formatCurrency(trialBalanceData.reduce((s, i) => s + num(i.balance_credit), 0))}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {formatCurrency((trialBalanceDataPrev || []).reduce((s, i) => s + num(i.balance_debit), 0))}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {formatCurrency((trialBalanceDataPrev || []).reduce((s, i) => s + num(i.balance_credit), 0))}
-                              </TableCell>
+                          return (
+                            <>
+                              {allRows.map((cur, idx) => {
+                                const key = `${cur.code}||${cur.name}`;
+                                const p = prevMap.get(key);
+                                return (
+                                  <TableRow key={idx}>
+                                    <TableCell>{cur.code} - {cur.name}</TableCell>
+                                    <TableCell className="text-right">{moneyOrBlank(num(cur.balance_debit))}</TableCell>
+                                    <TableCell className="text-right">{moneyOrBlank(num(cur.balance_credit))}</TableCell>
+                                    <TableCell className="text-right">{p ? moneyOrBlank(num(p.balance_debit)) : ''}</TableCell>
+                                    <TableCell className="text-right">{p ? moneyOrBlank(num(p.balance_credit)) : ''}</TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                              <TableRow className="font-bold border-t-2">
+                                <TableCell>TOTALS</TableCell>
+                                <TableCell className="text-right">
+                                  {formatCurrency(trialBalanceData.reduce((s, i) => s + num(i.balance_debit), 0))}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {formatCurrency(trialBalanceData.reduce((s, i) => s + num(i.balance_credit), 0))}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {formatCurrency((trialBalanceDataPrev || []).reduce((s, i) => s + num(i.balance_debit), 0))}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {formatCurrency((trialBalanceDataPrev || []).reduce((s, i) => s + num(i.balance_credit), 0))}
+                                </TableCell>
+                              </TableRow>
+                            </>
+                          );
+                        })()
+                      )}
+                    </TableBody>
+                  </Table>
+                )}
+
+                {breakdown === 'monthly' && (
+                  <div className="overflow-x-auto">
+                    <Table className="min-w-[900px]">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="sticky left-0 z-10 bg-white dark:bg-gray-800">Account (net)</TableHead>
+                          {months.map(m => (
+                            <TableHead key={m.key} className="text-right">{m.label}</TableHead>
+                          ))}
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {isMonthlyLoading && (
+                          <TableRow>
+                            <TableCell colSpan={months.length + 1} className="text-center text-gray-500">Loading monthly data…</TableCell>
+                          </TableRow>
+                        )}
+                        {!isMonthlyLoading && trialMonthly.length > 0 ? (
+                          multiAlignByItem(trialMonthly.map(trialToNetLines)).map((row, idx) => (
+                            <TableRow key={idx} className={row.isTotal ? 'font-bold border-t-2' : ''}>
+                              <TableCell className="sticky left-0 z-10 bg-white dark:bg-gray-800">{row.item}</TableCell>
+                              {row.values.map((v, i) => (
+                                <TableCell key={i} className="text-right">{v != null ? moneyOrBlank(v) : ''}</TableCell>
+                              ))}
                             </TableRow>
-                          </>
-                        );
-                      })()
-                    )}
-                  </TableBody>
-                </Table>
+                          ))
+                        ) : (
+                          !isMonthlyLoading && (
+                            <TableRow>
+                              <TableCell colSpan={months.length + 1} className="text-center text-gray-500">No monthly data.</TableCell>
+                            </TableRow>
+                          )
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
 
-          {/* Balance Sheet */}
+          {/* ================== BALANCE SHEET ================== */}
           <TabsContent value="balance-sheet" className="mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-xl">Balance Sheet</CardTitle>
-                <CardDescription>As of {new Date(toDate).toLocaleDateString('en-ZA')}</CardDescription>
+                <CardDescription>
+                  {breakdown === 'aggregate'
+                    ? <>As of {new Date(toDate).toLocaleDateString('en-ZA')}</>
+                    : <>Month-end snapshots from {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}</>}
+                </CardDescription>
               </CardHeader>
               <CardContent>
-                {/* ASSETS comparative table */}
-                <div className="mb-8">
-                  <h3 className="font-semibold text-lg mb-3">ASSETS</h3>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Item</TableHead>
-                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
-                        {showCompare && (
-                          <>
-                            <TableHead className="text-right">Current (R)</TableHead>
-                            <TableHead className="text-right">Previous (R)</TableHead>
-                            <TableHead className="text-right">Δ</TableHead>
-                            <TableHead className="text-right">Δ%</TableHead>
-                          </>
-                        )}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {(!balanceSheetData.assets || balanceSheetData.assets.length === 0) ? (
-                        <TableRow>
-                          <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
-                            No asset data available.
-                          </TableCell>
-                        </TableRow>
-                      ) : !showCompare ? (
-                        balanceSheetData.assets
-                          .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
-                          .map((item, index) => (
-                            <TableRow key={`asset-${index}`}>
-                              <TableCell className={[
-                                item.isTotal ? 'font-bold' : '',
-                                item.isSubheader ? 'font-semibold !mt-4' : '',
-                                item.isAdjustment ? 'pl-4 text-sm text-gray-600 dark:text-gray-400' : ''
-                              ].join(' ')}>
-                                {item.item}
-                              </TableCell>
-                              <TableCell className="text-right">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</TableCell>
-                            </TableRow>
-                          ))
-                      ) : (
-                        alignByItem(balanceSheetData.assets, balanceSheetDataPrev.assets).map((row, idx) => {
-                          const delta = (row.cur ?? 0) - (row.prev ?? 0);
-                          const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
-                          return (
-                            <TableRow key={idx}>
-                              <TableCell className={[
-                                row.isTotal ? 'font-bold' : '',
-                                row.isSubheader ? 'font-semibold !mt-4' : '',
-                                row.isAdjustment ? 'pl-4 text-sm text-gray-600 dark:text-gray-400' : ''
-                              ].join(' ')}>
-                                {row.item}
-                              </TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : (row.cur != null ? moneyOrBlank(row.cur) : '')}</TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : (row.prev != null ? moneyOrBlank(row.prev) : '')}</TableCell>
-                              <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : formatPct(pct)}</TableCell>
-                            </TableRow>
-                          );
-                        })
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-
-                {/* EQUITY & LIABILITIES comparative tables (split for clarity) */}
-                <div className="mt-6">
-                  <h3 className="font-semibold text-lg mb-3">LIABILITIES</h3>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Item</TableHead>
-                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
-                        {showCompare && (
-                          <>
-                            <TableHead className="text-right">Current (R)</TableHead>
-                            <TableHead className="text-right">Previous (R)</TableHead>
-                            <TableHead className="text-right">Δ</TableHead>
-                            <TableHead className="text-right">Δ%</TableHead>
-                          </>
-                        )}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {(!balanceSheetData.liabilities || balanceSheetData.liabilities.length === 0) ? (
-                        <TableRow>
-                          <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
-                            No liability data available.
-                          </TableCell>
-                        </TableRow>
-                      ) : !showCompare ? (
-                        balanceSheetData.liabilities
-                          .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
-                          .map((item, index) => (
-                            <TableRow key={`liab-${index}`}>
-                              <TableCell className={[
-                                item.isTotal ? 'font-bold' : '',
-                                item.isSubheader ? 'font-semibold !mt-4' : ''
-                              ].join(' ')}>
-                                {item.item}
-                              </TableCell>
-                              <TableCell className="text-right">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</TableCell>
-                            </TableRow>
-                          ))
-                      ) : (
-                        alignByItem(balanceSheetData.liabilities, balanceSheetDataPrev.liabilities).map((row, idx) => {
-                          const delta = (row.cur ?? 0) - (row.prev ?? 0);
-                          const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
-                          return (
-                            <TableRow key={idx}>
-                              <TableCell className={[row.isTotal ? 'font-bold' : '', row.isSubheader ? 'font-semibold !mt-4' : ''].join(' ')}>{row.item}</TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : (row.cur != null ? moneyOrBlank(row.cur) : '')}</TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : (row.prev != null ? moneyOrBlank(row.prev) : '')}</TableCell>
-                              <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : formatPct(pct)}</TableCell>
-                            </TableRow>
-                          );
-                        })
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-
-                <div className="mt-6">
-                  <h3 className="font-semibold text-lg mb-3">EQUITY</h3>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Item</TableHead>
-                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
-                        {showCompare && (
-                          <>
-                            <TableHead className="text-right">Current (R)</TableHead>
-                            <TableHead className="text-right">Previous (R)</TableHead>
-                            <TableHead className="text-right">Δ</TableHead>
-                            <TableHead className="text-right">Δ%</TableHead>
-                          </>
-                        )}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {(!balanceSheetData.equity || balanceSheetData.equity.length === 0) ? (
-                        <TableRow>
-                          <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
-                            No equity data available.
-                          </TableCell>
-                        </TableRow>
-                      ) : !showCompare ? (
-                        balanceSheetData.equity
-                          .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
-                          .map((item, index) => (
-                            <TableRow key={`equity-${index}`}>
-                              <TableCell className={[
-                                item.isTotal ? 'font-bold' : '',
-                                item.isSubheader ? 'font-semibold !mt-4' : ''
-                              ].join(' ')}>
-                                {item.item}
-                              </TableCell>
-                              <TableCell className="text-right">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</TableCell>
-                            </TableRow>
-                          ))
-                      ) : (
-                        alignByItem(balanceSheetData.equity, balanceSheetDataPrev.equity).map((row, idx) => {
-                          const delta = (row.cur ?? 0) - (row.prev ?? 0);
-                          const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
-                          return (
-                            <TableRow key={idx}>
-                              <TableCell className={[row.isTotal ? 'font-bold' : '', row.isSubheader ? 'font-semibold !mt-4' : ''].join(' ')}>{row.item}</TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : (row.cur != null ? moneyOrBlank(row.cur) : '')}</TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : (row.prev != null ? moneyOrBlank(row.prev) : '')}</TableCell>
-                              <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
-                              <TableCell className="text-right">{row.isSubheader ? '' : formatPct(pct)}</TableCell>
-                            </TableRow>
-                          );
-                        })
-                      )}
-                    </TableBody>
-                  </Table>
-
-                  {/* Equality Check (control totals) */}
-                  <div className="mt-6 border-t pt-3 space-y-1">
-                    <div className="flex justify-between">
-                      <span className="font-semibold">TOTAL ASSETS (control)</span>
-                      <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalAssets)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="font-semibold">TOTAL EQUITY AND LIABILITIES (control)</span>
-                      <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalEquityAndLiabilities)}</span>
+                {breakdown === 'aggregate' && (
+                  <>
+                    {/* ASSETS (aggregate / compare) */}
+                    <div className="mb-8">
+                      <h3 className="font-semibold text-lg mb-3">ASSETS</h3>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Item</TableHead>
+                            {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                            {showCompare && (
+                              <>
+                                <TableHead className="text-right">Current (R)</TableHead>
+                                <TableHead className="text-right">Previous (R)</TableHead>
+                                <TableHead className="text-right">Δ</TableHead>
+                                <TableHead className="text-right">Δ%</TableHead>
+                              </>
+                            )}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {!showCompare ? (
+                            (balanceSheetData.assets || []).filter(li => li.isTotal || li.isSubheader || nonZero(li.amount)).map((li, i) => (
+                              <TableRow key={i}>
+                                <TableCell className={[
+                                  li.isTotal ? 'font-bold' : '',
+                                  li.isSubheader ? 'font-semibold !mt-4' : '',
+                                  li.isAdjustment ? 'pl-4 text-sm text-gray-600 dark:text-gray-400' : ''
+                                ].join(' ')}>
+                                  {li.item}
+                                </TableCell>
+                                <TableCell className="text-right">{li.isSubheader ? '' : moneyOrBlank(li.amount)}</TableCell>
+                              </TableRow>
+                            ))
+                          ) : (
+                            (() => {
+                              const rows = multiAlignByItem([balanceSheetData.assets, balanceSheetDataPrev.assets]);
+                              return rows.map((r, idx) => {
+                                const delta = (r.values[0] ?? 0) - (r.values[1] ?? 0);
+                                const pct = pctChange(r.values[0] ?? 0, r.values[1] ?? 0);
+                                return (
+                                  <TableRow key={idx}>
+                                    <TableCell className={[
+                                      r.isTotal ? 'font-bold' : '',
+                                      r.isSubheader ? 'font-semibold !mt-4' : '',
+                                      r.isAdjustment ? 'pl-4 text-sm text-gray-600 dark:text-gray-400' : ''
+                                    ].join(' ')}>{r.item}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : (r.values[0] != null ? moneyOrBlank(r.values[0]!) : '')}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : (r.values[1] != null ? moneyOrBlank(r.values[1]!) : '')}</TableCell>
+                                    <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{r.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : formatPct(pct)}</TableCell>
+                                  </TableRow>
+                                );
+                              });
+                            })()
+                          )}
+                        </TableBody>
+                      </Table>
                     </div>
 
-                    {nonZero(balanceSheetData.totals.diff) && (
-                      <div className="mt-2 rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 px-3 py-2 text-sm">
-                        Out of balance by {formatCurrency(balanceSheetData.totals.diff)} (per GL control).
+                    {/* LIABILITIES */}
+                    <div className="mt-6">
+                      <h3 className="font-semibold text-lg mb-3">LIABILITIES</h3>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Item</TableHead>
+                            {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                            {showCompare && (
+                              <>
+                                <TableHead className="text-right">Current (R)</TableHead>
+                                <TableHead className="text-right">Previous (R)</TableHead>
+                                <TableHead className="text-right">Δ</TableHead>
+                                <TableHead className="text-right">Δ%</TableHead>
+                              </>
+                            )}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {!showCompare ? (
+                            (balanceSheetData.liabilities || []).filter(li => li.isTotal || li.isSubheader || nonZero(li.amount)).map((li, i) => (
+                              <TableRow key={i}>
+                                <TableCell className={[
+                                  li.isTotal ? 'font-bold' : '',
+                                  li.isSubheader ? 'font-semibold !mt-4' : ''
+                                ].join(' ')}>{li.item}</TableCell>
+                                <TableCell className="text-right">{li.isSubheader ? '' : moneyOrBlank(li.amount)}</TableCell>
+                              </TableRow>
+                            ))
+                          ) : (
+                            (() => {
+                              const rows = multiAlignByItem([balanceSheetData.liabilities, balanceSheetDataPrev.liabilities]);
+                              return rows.map((r, idx) => {
+                                const delta = (r.values[0] ?? 0) - (r.values[1] ?? 0);
+                                const pct = pctChange(r.values[0] ?? 0, r.values[1] ?? 0);
+                                return (
+                                  <TableRow key={idx}>
+                                    <TableCell className={[r.isTotal ? 'font-bold' : '', r.isSubheader ? 'font-semibold !mt-4' : ''].join(' ')}>{r.item}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : (r.values[0] != null ? moneyOrBlank(r.values[0]!) : '')}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : (r.values[1] != null ? moneyOrBlank(r.values[1]!) : '')}</TableCell>
+                                    <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{r.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : formatPct(pct)}</TableCell>
+                                  </TableRow>
+                                );
+                              });
+                            })()
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    {/* EQUITY */}
+                    <div className="mt-6">
+                      <h3 className="font-semibold text-lg mb-3">EQUITY</h3>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Item</TableHead>
+                            {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                            {showCompare && (
+                              <>
+                                <TableHead className="text-right">Current (R)</TableHead>
+                                <TableHead className="text-right">Previous (R)</TableHead>
+                                <TableHead className="text-right">Δ</TableHead>
+                                <TableHead className="text-right">Δ%</TableHead>
+                              </>
+                            )}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {!showCompare ? (
+                            (balanceSheetData.equity || []).filter(li => li.isTotal || li.isSubheader || nonZero(li.amount)).map((li, i) => (
+                              <TableRow key={i}>
+                                <TableCell className={[
+                                  li.isTotal ? 'font-bold' : '',
+                                  li.isSubheader ? 'font-semibold !mt-4' : ''
+                                ].join(' ')}>{li.item}</TableCell>
+                                <TableCell className="text-right">{li.isSubheader ? '' : moneyOrBlank(li.amount)}</TableCell>
+                              </TableRow>
+                            ))
+                          ) : (
+                            (() => {
+                              const rows = multiAlignByItem([balanceSheetData.equity, balanceSheetDataPrev.equity]);
+                              return rows.map((r, idx) => {
+                                const delta = (r.values[0] ?? 0) - (r.values[1] ?? 0);
+                                const pct = pctChange(r.values[0] ?? 0, r.values[1] ?? 0);
+                                return (
+                                  <TableRow key={idx}>
+                                    <TableCell className={[r.isTotal ? 'font-bold' : '', r.isSubheader ? 'font-semibold !mt-4' : ''].join(' ')}>{r.item}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : (r.values[0] != null ? moneyOrBlank(r.values[0]!) : '')}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : (r.values[1] != null ? moneyOrBlank(r.values[1]!) : '')}</TableCell>
+                                    <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{r.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
+                                    <TableCell className="text-right">{r.isSubheader ? '' : formatPct(pct)}</TableCell>
+                                  </TableRow>
+                                );
+                              });
+                            })()
+                          )}
+                        </TableBody>
+                      </Table>
+
+                      {/* Equality Check */}
+                      <div className="mt-6 border-t pt-3 space-y-1">
+                        <div className="flex justify-between">
+                          <span className="font-semibold">TOTAL ASSETS (control)</span>
+                          <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalAssets)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="font-semibold">TOTAL EQUITY AND LIABILITIES (control)</span>
+                          <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalEquityAndLiabilities)}</span>
+                        </div>
+                        {nonZero(balanceSheetData.totals.diff) && (
+                          <div className="mt-2 rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 px-3 py-2 text-sm">
+                            Out of balance by {formatCurrency(balanceSheetData.totals.diff)} (per GL control).
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                </div>
+                    </div>
+                  </>
+                )}
+
+                {breakdown === 'monthly' && (
+                  <>
+                    {/* Assets monthly pivot */}
+                    <div className="mb-8">
+                      <h3 className="font-semibold text-lg mb-3">ASSETS (Monthly)</h3>
+                      <div className="overflow-x-auto">
+                        <Table className="min-w-[900px]">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="sticky left-0 z-10 bg-white dark:bg-gray-800">Item</TableHead>
+                              {months.map(m => <TableHead key={m.key} className="text-right">{m.label}</TableHead>)}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {isMonthlyLoading && (
+                              <TableRow><TableCell colSpan={months.length + 1} className="text-center text-gray-500">Loading…</TableCell></TableRow>
+                            )}
+                            {!isMonthlyLoading && bsMonthly.length > 0 ? (
+                              multiAlignByItem(bsMonthly.map(b => b.assets)).map((row, idx) => (
+                                <TableRow key={idx}>
+                                  <TableCell className={[
+                                    'sticky left-0 z-10 bg-white dark:bg-gray-800',
+                                    row.isTotal ? 'font-bold' : '',
+                                    row.isSubheader ? 'font-semibold !mt-4' : '',
+                                    row.isAdjustment ? 'pl-4 text-sm text-gray-600 dark:text-gray-400' : ''
+                                  ].join(' ')}>{row.item}</TableCell>
+                                  {row.values.map((v, i) => (
+                                    <TableCell key={i} className="text-right">{row.isSubheader ? '' : (v != null ? moneyOrBlank(v) : '')}</TableCell>
+                                  ))}
+                                </TableRow>
+                              ))
+                            ) : (
+                              !isMonthlyLoading && (
+                                <TableRow><TableCell colSpan={months.length + 1} className="text-center text-gray-500">No data.</TableCell></TableRow>
+                              )
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+
+                    {/* Liabilities monthly pivot */}
+                    <div className="mb-8">
+                      <h3 className="font-semibold text-lg mb-3">LIABILITIES (Monthly)</h3>
+                      <div className="overflow-x-auto">
+                        <Table className="min-w-[900px]">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="sticky left-0 z-10 bg-white dark:bg-gray-800">Item</TableHead>
+                              {months.map(m => <TableHead key={m.key} className="text-right">{m.label}</TableHead>)}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {isMonthlyLoading && (
+                              <TableRow><TableCell colSpan={months.length + 1} className="text-center text-gray-500">Loading…</TableCell></TableRow>
+                            )}
+                            {!isMonthlyLoading && bsMonthly.length > 0 ? (
+                              multiAlignByItem(bsMonthly.map(b => b.liabilities)).map((row, idx) => (
+                                <TableRow key={idx}>
+                                  <TableCell className={[
+                                    'sticky left-0 z-10 bg-white dark:bg-gray-800',
+                                    row.isTotal ? 'font-bold' : '',
+                                    row.isSubheader ? 'font-semibold !mt-4' : ''
+                                  ].join(' ')}>{row.item}</TableCell>
+                                  {row.values.map((v, i) => (
+                                    <TableCell key={i} className="text-right">{row.isSubheader ? '' : (v != null ? moneyOrBlank(v) : '')}</TableCell>
+                                  ))}
+                                </TableRow>
+                              ))
+                            ) : (
+                              !isMonthlyLoading && (
+                                <TableRow><TableCell colSpan={months.length + 1} className="text-center text-gray-500">No data.</TableCell></TableRow>
+                              )
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+
+                    {/* Equity monthly pivot */}
+                    <div>
+                      <h3 className="font-semibold text-lg mb-3">EQUITY (Monthly)</h3>
+                      <div className="overflow-x-auto">
+                        <Table className="min-w-[900px]">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="sticky left-0 z-10 bg-white dark:bg-gray-800">Item</TableHead>
+                              {months.map(m => <TableHead key={m.key} className="text-right">{m.label}</TableHead>)}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {isMonthlyLoading && (
+                              <TableRow><TableCell colSpan={months.length + 1} className="text-center text-gray-500">Loading…</TableCell></TableRow>
+                            )}
+                            {!isMonthlyLoading && bsMonthly.length > 0 ? (
+                              multiAlignByItem(bsMonthly.map(b => b.equity)).map((row, idx) => (
+                                <TableRow key={idx}>
+                                  <TableCell className={[
+                                    'sticky left-0 z-10 bg-white dark:bg-gray-800',
+                                    row.isTotal ? 'font-bold' : '',
+                                    row.isSubheader ? 'font-semibold !mt-4' : ''
+                                  ].join(' ')}>{row.item}</TableCell>
+                                  {row.values.map((v, i) => (
+                                    <TableCell key={i} className="text-right">{row.isSubheader ? '' : (v != null ? moneyOrBlank(v) : '')}</TableCell>
+                                  ))}
+                                </TableRow>
+                              ))
+                            ) : (
+                              !isMonthlyLoading && (
+                                <TableRow><TableCell colSpan={months.length + 1} className="text-center text-gray-500">No data.</TableCell></TableRow>
+                              )
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
 
-          {/* Cashflow */}
+          {/* ================== CASH FLOW ================== */}
           <TabsContent value="cash-flow-statement" className="mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-xl">Cash Flow Statement</CardTitle>
                 <CardDescription>
-                  For the period {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}
+                  {breakdown === 'aggregate'
+                    ? <>For the period {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}</>
+                    : <>Monthly breakdown from {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}</>}
                 </CardDescription>
               </CardHeader>
 
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Line</TableHead>
-                      {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
-                      {showCompare && (
-                        <>
-                          <TableHead className="text-right">Current (R)</TableHead>
-                          <TableHead className="text-right">Previous (R)</TableHead>
-                          <TableHead className="text-right">Δ</TableHead>
-                          <TableHead className="text-right">Δ%</TableHead>
-                        </>
-                      )}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(!cashflowData || cashflowData.length === 0) ? (
+                {breakdown === 'aggregate' && (
+                  <Table>
+                    <TableHeader>
                       <TableRow>
-                        <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
-                          No cash flow data available for the selected period.
-                        </TableCell>
+                        <TableHead>Line</TableHead>
+                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                        {showCompare && (
+                          <>
+                            <TableHead className="text-right">Current (R)</TableHead>
+                            <TableHead className="text-right">Previous (R)</TableHead>
+                            <TableHead className="text-right">Δ</TableHead>
+                            <TableHead className="text-right">Δ%</TableHead>
+                          </>
+                        )}
                       </TableRow>
-                    ) : !showCompare ? (
-                      normalizeCashflow(cashflowData as any) /* already normalized, but harmless */
-                      && flattenCashflow(cashflowData)
-                        .map((row, idx) => (
+                    </TableHeader>
+                    <TableBody>
+                      {(!cashflowData || cashflowData.length === 0) ? (
+                        <TableRow>
+                          <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
+                            No cash flow data available for the selected period.
+                          </TableCell>
+                        </TableRow>
+                      ) : !showCompare ? (
+                        flattenCashflow(cashflowData).map((row, idx) => (
                           <TableRow key={idx}>
                             <TableCell className={[
                               row.isTotal ? 'font-bold' : '',
                               row.isSubheader ? 'font-semibold !mt-4' : '',
-                            ].join(' ')}>
-                              {row.item}
-                            </TableCell>
+                            ].join(' ')}>{row.item}</TableCell>
                             <TableCell className="text-right">{row.isSubheader ? '' : moneyOrBlank(row.amount as number)}</TableCell>
                           </TableRow>
                         ))
-                    ) : (
-                      alignByItem(
-                        flattenCashflow(cashflowData),
-                        flattenCashflow(cashflowDataPrev)
-                      ).map((row, idx) => {
-                        const delta = (row.cur ?? 0) - (row.prev ?? 0);
-                        const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
-                        return (
-                          <TableRow key={idx}>
-                            <TableCell className={[
-                              row.isTotal ? 'font-bold' : '',
-                              row.isSubheader ? 'font-semibold !mt-4' : '',
-                            ].join(' ')}>
-                              {row.item}
-                            </TableCell>
-                            <TableCell className="text-right">{row.isSubheader ? '' : (row.cur != null ? moneyOrBlank(row.cur) : '')}</TableCell>
-                            <TableCell className="text-right">{row.isSubheader ? '' : (row.prev != null ? moneyOrBlank(row.prev) : '')}</TableCell>
-                            <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
-                            <TableCell className="text-right">{row.isSubheader ? '' : formatPct(pct)}</TableCell>
+                      ) : (
+                        (() => {
+                          const rows = multiAlignByItem([flattenCashflow(cashflowData), flattenCashflow(cashflowDataPrev)]);
+                          return rows.map((r, idx) => {
+                            const delta = (r.values[0] ?? 0) - (r.values[1] ?? 0);
+                            const pct = pctChange(r.values[0] ?? 0, r.values[1] ?? 0);
+                            return (
+                              <TableRow key={idx}>
+                                <TableCell className={[
+                                  r.isTotal ? 'font-bold' : '',
+                                  r.isSubheader ? 'font-semibold !mt-4' : '',
+                                ].join(' ')}>{r.item}</TableCell>
+                                <TableCell className="text-right">{r.isSubheader ? '' : (r.values[0] != null ? moneyOrBlank(r.values[0]!) : '')}</TableCell>
+                                <TableCell className="text-right">{r.isSubheader ? '' : (r.values[1] != null ? moneyOrBlank(r.values[1]!) : '')}</TableCell>
+                                <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{r.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
+                                <TableCell className="text-right">{r.isSubheader ? '' : formatPct(pct)}</TableCell>
+                              </TableRow>
+                            );
+                          });
+                        })()
+                      )}
+                    </TableBody>
+                  </Table>
+                )}
+
+                {breakdown === 'monthly' && (
+                  <div className="overflow-x-auto">
+                    <Table className="min-w-[900px]">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="sticky left-0 z-10 bg-white dark:bg-gray-800">Line</TableHead>
+                          {months.map(m => (
+                            <TableHead key={m.key} className="text-right">{m.label}</TableHead>
+                          ))}
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {isMonthlyLoading && (
+                          <TableRow>
+                            <TableCell colSpan={months.length + 1} className="text-center text-gray-500">Loading monthly data…</TableCell>
                           </TableRow>
-                        );
-                      })
-                    )}
-                  </TableBody>
-                </Table>
+                        )}
+                        {!isMonthlyLoading && cfMonthly.length > 0 ? (
+                          multiAlignByItem(cfMonthly.map(flattenCashflow)).map((row, idx) => (
+                            <TableRow key={idx}>
+                              <TableCell className={[
+                                'sticky left-0 z-10 bg-white dark:bg-gray-800',
+                                row.isTotal ? 'font-bold' : '',
+                                row.isSubheader ? 'font-semibold !mt-4' : '',
+                              ].join(' ')}>{row.item}</TableCell>
+                              {row.values.map((v, i) => (
+                                <TableCell key={i} className="text-right">{row.isSubheader ? '' : (v != null ? moneyOrBlank(v) : '')}</TableCell>
+                              ))}
+                            </TableRow>
+                          ))
+                        ) : (
+                          !isMonthlyLoading && (
+                            <TableRow>
+                              <TableCell colSpan={months.length + 1} className="text-center text-gray-500">No monthly data.</TableCell>
+                            </TableRow>
+                          )
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
