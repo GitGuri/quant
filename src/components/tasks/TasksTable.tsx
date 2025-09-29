@@ -10,10 +10,7 @@ import { TaskForm, type TaskFormData, type TaskStepFormData } from './TaskForm';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
@@ -47,7 +44,7 @@ type FullTask = BaseTask & {
   progress_goal: number | null;
   progress_current: number | null;
   steps: TaskStep[];
-  assignees?: AssigneeLite[]; // NEW: multi-assignees, optional for backward compatibility
+  assignees?: AssigneeLite[]; // multi-assignees (optional)
 };
 
 type Filters = {
@@ -131,7 +128,7 @@ const isOverdue = (t: Pick<FullTask, 'due_date' | 'status' | 'progress_percentag
 /** When unarchiving, restore to a sensible status based on % and overdue-ness */
 const deriveUnarchivedStatus = (t: FullTask): FullTask['status'] => {
   const pct = Math.round(t.progress_percentage ?? 0);
-  const base = computeStatusFromPct(pct); // Done / In Progress / To Do
+  const base = computeStatusFromPct(pct);
   if (base === 'Done') return 'Done';
   const overdue = isOverdue({ due_date: t.due_date!, status: base, progress_percentage: pct });
   return overdue ? 'Overdue' : base;
@@ -392,9 +389,7 @@ function StepsDialog({
               placeholder="Add a new step..."
               onKeyDown={(e) => e.key === 'Enter' && add()}
             />
-            <Button onClick={add} size="sm">
-              +
-            </Button>
+            <Button onClick={add} size="sm">+</Button>
           </div>
           <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
             {steps.length ? (
@@ -601,7 +596,6 @@ function ProgressOptionsDialog({
   );
 }
 
-
 /* ---------- Memoized row ---------- */
 type RowProps = {
   task: FullTask;
@@ -699,8 +693,7 @@ const TaskRow = memo(function TaskRow({
     </TableRow>
   );
 }, (prev, next) => {
-  const a = prev.task,
-    b = next.task;
+  const a = prev.task, b = next.task;
   return (
     a.id === b.id &&
     a.title === b.title &&
@@ -731,7 +724,7 @@ const buildCreatePayload = (d: TaskFormData) => {
     due_date: due,
     project_id: d.project_id ?? null,
     progress_mode: d.progress_mode ?? 'manual',
-    assignee_ids: pickValidIds(d.assignee_ids), // NEW: multi-assignees
+    assignee_ids: pickValidIds(d.assignee_ids), // multi-assignees
   };
 
   if (d.progress_mode === 'manual') {
@@ -742,7 +735,7 @@ const buildCreatePayload = (d: TaskFormData) => {
     payload.progress_current = d.progress_current ?? 0;
   }
 
-  // keep legacy single as well if your API still supports it
+  // legacy single (optional)
   if (UUIDish(d.assignee_id)) {
     payload.assignee_id = d.assignee_id!;
   }
@@ -760,7 +753,7 @@ const buildUpdatePayload = (d: TaskFormData) => {
     due_date: due,
     project_id: d.project_id ?? null,
     progress_mode: d.progress_mode ?? 'manual',
-    assignee_ids: pickValidIds(d.assignee_ids), // NEW: multi-assignees
+    assignee_ids: pickValidIds(d.assignee_ids),
   };
 
   if (d.progress_mode === 'manual') {
@@ -770,7 +763,6 @@ const buildUpdatePayload = (d: TaskFormData) => {
     payload.progress_current = d.progress_current ?? 0;
   }
 
-  // legacy single (optional)
   payload.assignee_id = UUIDish(d.assignee_id) ? d.assignee_id! : null;
   return payload;
 };
@@ -809,7 +801,7 @@ export function TasksTable({
     progress_goal: t.progress_goal ?? null,
     progress_current: t.progress_current ?? 0,
     steps: Array.isArray(t.steps) ? t.steps : [],
-    assignees: Array.isArray(t.assignees) ? t.assignees : [], // NEW
+    assignees: Array.isArray(t.assignees) ? t.assignees : [],
     priority: (t.priority ?? 'Medium') as FullTask['priority'],
   });
 
@@ -820,9 +812,11 @@ export function TasksTable({
 
     setLoading(true);
     try {
-      const r = await fetch(`${API_BASE}/api/tasks`, {
+      // cache-busting to avoid stale reads
+      const r = await fetch(`${API_BASE}/api/tasks?ts=${Date.now()}`, {
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         signal: ctrl.signal,
+        cache: 'no-store',
       });
       if (!r.ok) throw new Error('Failed to load tasks');
       const data = await r.json();
@@ -870,25 +864,21 @@ export function TasksTable({
     return () => inFlight.current?.abort();
   }, [fetchTasks]);
 
-  /** ---------- NEW: Handle demo imports (e.g., Read.ai) ---------- */
+  /** ---------- Handle demo imports (e.g., Read.ai) ---------- */
   useEffect(() => {
     type ImportDetail = { source?: string; tasks?: any[] };
 
     const onImport = (e: Event) => {
       const detail = (e as CustomEvent<ImportDetail>).detail || {};
       if (!detail?.tasks?.length) return;
-
-      // Only handle readai for now (guard if you add other sources later)
       if (detail.source && detail.source !== 'readai') return;
 
       const incoming = (detail.tasks || []).map(normalize);
 
       setTasks((prev) => {
-        // de-dupe by id while preserving current rows
         const map = new Map<string, FullTask>();
         [...prev, ...incoming].forEach((t) => {
-          const enriched =
-            isOverdue(t) && t.status !== 'Overdue' ? ({ ...t, status: 'Overdue' as const }) : t;
+          const enriched = isOverdue(t) && t.status !== 'Overdue' ? ({ ...t, status: 'Overdue' as const }) : t;
           map.set(enriched.id, enriched);
         });
         return Array.from(map.values());
@@ -898,7 +888,7 @@ export function TasksTable({
     window.addEventListener('tasks:import', onImport as EventListener);
     return () => window.removeEventListener('tasks:import', onImport as EventListener);
   }, []);
-  /** ------------------------------------------------------------- */
+  /** -------------------------------------------------------- */
 
   /* ---------- helpers ---------- */
   const patchTask = useCallback((id: string, patch: Partial<FullTask>) => {
@@ -947,7 +937,7 @@ export function TasksTable({
     [tasks, patchTask, toast, onChanged]
   );
 
-  // NEW: update priority (optimistic)
+  // update priority (optimistic)
   const onChangePriority = useCallback(
     async (id: string, p: Priority) => {
       const prev = tasks.find((t) => t.id === id)?.priority as Priority | undefined;
@@ -963,7 +953,6 @@ export function TasksTable({
         toast({ title: 'Priority updated', description: `Set to ${PRIORITY_META[p].label}` });
         onChanged?.();
       } catch (e: any) {
-        // revert
         if (prev) patchTask(id, { priority: prev as FullTask['priority'] });
         toast({ title: 'Error', description: e?.message || 'Failed to update priority', variant: 'destructive' });
       }
@@ -1019,7 +1008,7 @@ export function TasksTable({
     [tasks, patchTask, toast, onChanged, fetchTasks]
   );
 
-  // inside TasksTable.tsx
+  // CREATE/UPDATE (with optimistic add for create)
   const submitTask = useCallback(
     async (data: TaskFormData, initialSteps?: TaskStepFormData[]) => {
       try {
@@ -1044,17 +1033,11 @@ export function TasksTable({
 
           // If switched to steps on edit and we have steps to seed, push them now
           if (data.progress_mode === 'steps' && initialSteps?.length) {
-            const stepsToSend = initialSteps.map(s => ({
-              ...s,
-              id: undefined, // ensure insert
-            }));
+            const stepsToSend = initialSteps.map(s => ({ ...s, id: undefined }));
             const r2 = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}/progress`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json', ...authHeaders() },
-              body: JSON.stringify({
-                progress_mode: 'steps',
-                steps: stepsToSend,
-              }),
+              body: JSON.stringify({ progress_mode: 'steps', steps: stepsToSend }),
             });
 
             if (r2.status === 403) {
@@ -1077,24 +1060,23 @@ export function TasksTable({
           });
           if (!createRes.ok) throw new Error('Failed to create task');
 
-          const created = await createRes.json(); // contains created id
+          const created = await createRes.json();
+
+          // Show immediately (optimistic insert)
+          const normalized = normalize(created);
+          const withOverdueUI =
+            isOverdue(normalized) && normalized.status !== 'Overdue'
+              ? ({ ...normalized, status: 'Overdue' as const })
+              : normalized;
+          setTasks((prev) => [withOverdueUI, ...prev]);
 
           // Seed steps immediately if step-based
           if (data.progress_mode === 'steps' && initialSteps?.length) {
-            const stepsToSend = initialSteps.map(s => ({
-              ...s,
-              id: undefined, // let server insert
-              task_id: created.id, // safe to include or omit; server uses URL id
-            }));
-
+            const stepsToSend = initialSteps.map(s => ({ ...s, id: undefined, task_id: created.id }));
             const r2 = await fetch(`${API_BASE}/api/tasks/${created.id}/progress`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json', ...authHeaders() },
-              body: JSON.stringify({
-                progress_mode: 'steps',
-                steps: stepsToSend,
-                // progress_percentage can be omitted; server recomputes
-              }),
+              body: JSON.stringify({ progress_mode: 'steps', steps: stepsToSend }),
             });
 
             if (r2.status === 403) {
@@ -1105,13 +1087,14 @@ export function TasksTable({
               });
               return;
             }
-
             if (!r2.ok) throw new Error('Failed to seed steps for new task');
           }
         }
 
         setShowTaskForm(false);
         setTaskToEdit(null);
+
+        // Fresh read (cache-busting) so server-enriched fields show up
         await fetchTasks();
         onChanged?.();
       } catch (e: any) {
@@ -1128,8 +1111,9 @@ export function TasksTable({
   /* ---------- fetch full task (with steps) before opening progress ---------- */
   const fetchTaskById = useCallback(async (id: string): Promise<FullTask | null> => {
     try {
-      const r = await fetch(`${API_BASE}/api/tasks/${id}`, {
+      const r = await fetch(`${API_BASE}/api/tasks/${id}?ts=${Date.now()}`, {
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        cache: 'no-store',
       });
       if (!r.ok) return null;
       const t = await r.json();
@@ -1287,7 +1271,6 @@ export function TasksTable({
           <DialogHeader>
             <DialogTitle>{taskToEdit ? 'Edit Task' : 'New Task'}</DialogTitle>
           </DialogHeader>
-          {/* TIP: ensure your TaskForm also exposes a Priority field using the same values 'High' | 'Medium' | 'Low' */}
           <TaskForm
             task={taskToEdit as any}
             onCancel={() => {
