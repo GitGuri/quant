@@ -1,21 +1,33 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+// TasksDashboard.tsx
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Plus, BarChart3, CheckCircle2, Clock3, AlertTriangle, FolderPlus, Filter } from 'lucide-react';
+import { Plus, BarChart3, CheckCircle2, Clock3, AlertTriangle, FolderPlus, Filter, Mic, StopCircle } from 'lucide-react';
 import { KpiCard } from './KpiCard';
 import { TasksTable } from './TasksTable';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { ProjectForm, type ProjectFormData } from './ProjectForm';
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
+
+// Declare global types for SpeechRecognition if not already available
+declare global {
+  interface Window {
+    webkitSpeechRecognition: any;
+    SpeechRecognition: any;
+  }
+}
 
 const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
-type Project = { id: string; name: string };
+type Project = {
+  id: string;
+  name: string;
+  progress_percentage?: number;
+};
+
 type Task = {
   id: string;
   title: string;
@@ -24,6 +36,7 @@ type Task = {
   due_date?: string | null;
   assignee_id?: string | null;
   project_id?: string | null;
+  project_name?: string | null;
   priority: 'Low' | 'Medium' | 'High';
 };
 
@@ -38,6 +51,17 @@ export default function TasksDashboard() {
   // Add Project dialog
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [users, setUsers] = useState<{ id: string; name: string; email?: string | null }[]>([]);
+
+  // Projects Progress UX state
+  const [projQuery, setProjQuery] = useState('');
+  const [projSort, setProjSort] = useState<'name' | 'progress_desc' | 'progress_asc'>('progress_desc');
+  const [showAllProjects, setShowAllProjects] = useState(false);
+  const [condensed, setCondensed] = useState(true);
+
+  // Voice Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcribedText, setTranscribedText] = useState('');
+  const recognitionRef = useRef<any>(null);
 
   const authHeaders = () => {
     const token = localStorage.getItem('token');
@@ -82,62 +106,143 @@ export default function TasksDashboard() {
     fetchProjects();
     fetchUsers();
   }, [fetchTasks, fetchProjects, fetchUsers]);
-// --- helpers to mirror TasksTable/Kanban logic ---
-// --- Match TasksTable/Kanban rules exactly ---
-type TaskStatus = Task['status'];
 
-const statusFromPct = (pct: number): TaskStatus =>
-  pct >= 100 ? 'Done' : pct >= 1 ? 'In Progress' : 'To Do';
+  // Voice Recording
+  const startRecording = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      toast({
+        title: 'Speech Recognition Not Supported',
+        description: 'Your browser does not support speech recognition. Please try Chrome.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
-// This is the *UI* status your table shows
-const deriveUiStatus = (t: Task): TaskStatus => {
-  if (t.status === 'Archived') return 'Archived';
-  const pctStatus = statusFromPct(Math.round(t.progress_percentage || 0));
-  if (pctStatus === 'Done') return 'Done';          // 100% always Done
-  if (isOverdue(t)) return 'Overdue';               // otherwise overdue beats everything
-  if (t.status === 'Review') return 'Review';       // keep Review if backend set it
-  return pctStatus;                                 // To Do or In Progress
-};
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = true;
 
+    recognition.onstart = () => {
+      setIsRecording(true);
+      setTranscribedText('');
+      toast({ title: 'Recording Started', description: 'Listening...' });
+    };
 
+    recognition.onresult = (event: any) => {
+      const transcript = Array.from(event.results).map((r: any) => r[0].transcript).join('');
+      setTranscribedText(transcript);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event);
+      toast({
+        title: 'Speech Recognition Error',
+        description: `Error occurred: ${event.error}. Please try again.`,
+        variant: 'destructive',
+      });
+      setIsRecording(false);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+      if (transcribedText.trim()) {
+        window.dispatchEvent(new CustomEvent('tasks:add', { detail: { initialText: transcribedText } }));
+      } else {
+        toast({ title: 'Recording Stopped', description: 'No text was captured.' });
+      }
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
+
+  const stopRecording = () => {
+    if (recognitionRef.current && isRecording) {
+      recognitionRef.current.stop();
+    }
+  };
+
+  // helpers to mirror TasksTable/Kanban logic
+  type TaskStatus = Task['status'];
+
+  const pctNum = (v: unknown) => Math.max(0, Math.min(100, Math.round(Number(v ?? 0))));
+  const statusFromPct = (pct: number): TaskStatus => (pct >= 100 ? 'Done' : pct >= 1 ? 'In Progress' : 'To Do');
+
+  const isOverdue = (t: { due_date?: string | null; status: Task['status']; progress_percentage: number | string }) => {
+    if (!t.due_date) return false;
+    if (t.status === 'Done' || t.status === 'Archived') return false;
+    if (pctNum(t.progress_percentage) >= 100) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = new Date(t.due_date as string);
+    due.setHours(0, 0, 0, 0);
+    return due.getTime() < today.getTime();
+  };
+
+  const deriveUiStatus = (t: Task): TaskStatus => {
+    if (t.status === 'Archived') return 'Archived';
+    const pctStatus = statusFromPct(Math.round(t.progress_percentage || 0));
+    if (pctStatus === 'Done') return 'Done';
+    if (isOverdue(t)) return 'Overdue';
+    if (t.status === 'Review') return 'Review';
+    return pctStatus;
+  };
 
   // KPIs
-// --- copy these to TasksDashboard (same as TasksTable) ---
-const pctNum = (v: unknown) =>
-  Math.max(0, Math.min(100, Math.round(Number(v ?? 0))));
+  const kpis = useMemo(() => {
+    const total = tasks.length;
 
-const isOverdue = (t: { due_date?: string | null; status: Task['status']; progress_percentage: number | string }) => {
-  if (!t.due_date) return false;
-  if (t.status === 'Done' || t.status === 'Archived') return false;
-  if (pctNum(t.progress_percentage) >= 100) return false;
-  const today = new Date(); today.setHours(0,0,0,0);
-  const due = new Date(t.due_date); due.setHours(0,0,0,0);
-  return due.getTime() < today.getTime();
-};
+    const completed = tasks.filter((t) => t.status !== 'Archived' && pctNum(t.progress_percentage) >= 100).length;
 
-// --- KPIs that mirror TasksTable filtering exactly ---
-const kpis = useMemo(() => {
-  const total = tasks.length;
+    const inProgress = tasks.filter((t) => {
+      const p = pctNum(t.progress_percentage);
+      return t.status !== 'Archived' && p >= 1 && p < 100;
+    }).length;
 
-  // completed: not archived AND pct >= 100
-  const completed = tasks.filter(t =>
-    t.status !== 'Archived' && pctNum(t.progress_percentage) >= 100
-  ).length;
+    const overdue = tasks.filter((t) => isOverdue(t)).length;
 
-  // in-progress: not archived AND 1 <= pct < 100
-  // (This matches your table: overdue items with pct<100 are INCLUDED here.)
-  const inProgress = tasks.filter(t => {
-    const p = pctNum(t.progress_percentage);
-    return t.status !== 'Archived' && p >= 1 && p < 100;
-  }).length;
+    return { total, completed, inProgress, overdue };
+  }, [tasks]);
 
-  // overdue: same logic as TasksTable's isOverdue()
-  const overdue = tasks.filter(t => isOverdue(t)).length;
+  // Per-project progress
+  const projectsWithProgress = useMemo<Project[]>(() => {
+    if (!projects.length) return projects;
 
-  return { total, completed, inProgress, overdue };
-}, [tasks]);
+    const sums = new Map<string, { total: number; count: number }>();
+    tasks.forEach((t) => {
+      const pid = t.project_id || '';
+      if (!pid) return;
+      const entry = sums.get(pid) || { total: 0, count: 0 };
+      entry.total += pctNum(t.progress_percentage);
+      entry.count += 1;
+      sums.set(pid, entry);
+    });
 
+    return projects.map((p) => {
+      const agg = sums.get(p.id);
+      const progress = agg && agg.count > 0 ? Math.round(agg.total / agg.count) : 0;
+      return { ...p, progress_percentage: progress };
+    });
+  }, [projects, tasks]);
 
+  // Filter/sort/topN for Projects Progress card
+  const filteredSortedProjects = useMemo(() => {
+    let rows = projectsWithProgress;
+    if (projQuery.trim()) {
+      const q = projQuery.toLowerCase();
+      rows = rows.filter((p) => p.name.toLowerCase().includes(q));
+    }
+    rows = [...rows].sort((a, b) => {
+      const pa = a.progress_percentage ?? 0;
+      const pb = b.progress_percentage ?? 0;
+      if (projSort === 'name') return a.name.localeCompare(b.name);
+      if (projSort === 'progress_desc') return pb - pa;
+      return pa - pb; // progress_asc
+    });
+    return rows;
+  }, [projectsWithProgress, projQuery, projSort]);
 
   const onProjectSaved = async (data: ProjectFormData) => {
     try {
@@ -161,18 +266,79 @@ const kpis = useMemo(() => {
     }
   };
 
-  // filtered params to pass to table
   const currentFilters = { search, projectId: projectFilter === 'all' ? undefined : projectFilter, tab: activeTab };
 
   return (
     <div className="space-y-6">
       {/* KPI row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard title="Total Tasks" value={kpis.total} description="All tasks" icon={BarChart3} /> {/* :contentReference[oaicite:4]{index=4} */}
-        <KpiCard title="In Progress" value={kpis.inProgress} description="Working & in review" icon={Clock3} /> {/* :contentReference[oaicite:5]{index=5} */}
+        <KpiCard title="Total Tasks" value={kpis.total} description="All tasks" icon={BarChart3} />
+        <KpiCard title="In Progress" value={kpis.inProgress} description="Working & in review" icon={Clock3} />
         <KpiCard title="Completed" value={kpis.completed} description="Done" icon={CheckCircle2} />
         <KpiCard title="Overdue" value={kpis.overdue} description="Needs attention" icon={AlertTriangle} />
       </div>
+
+      {/* Projects Progress */}
+      <Card className="p-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h2 className="font-semibold">Projects Progress</h2>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCondensed((v) => !v)}
+              className="hidden sm:inline-flex"
+              title="Toggle compact rows"
+            >
+              {condensed ? 'Comfortable' : 'Condensed'}
+            </Button>
+
+            <Select value={projSort} onValueChange={(v) => setProjSort(v as 'name' | 'progress_desc' | 'progress_asc')}>
+              <SelectTrigger className="w-[160px]">
+                <SelectValue placeholder="Sort by" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="progress_desc">Top progress</SelectItem>
+                <SelectItem value="progress_asc">Lowest progress</SelectItem>
+                <SelectItem value="name">Name (A–Z)</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <div className="w-[220px]">
+              <Input placeholder="Search projects…" value={projQuery} onChange={(e) => setProjQuery(e.target.value)} />
+            </div>
+
+            <Button variant="outline" size="sm" onClick={() => setShowAllProjects((s) => !s)}>
+              {showAllProjects ? 'Show top 5' : 'Show all'}
+            </Button>
+          </div>
+        </div>
+
+        {filteredSortedProjects.length === 0 ? (
+          <p className="text-sm text-muted-foreground mt-3">No projects.</p>
+        ) : (
+          <div className="mt-4 pr-1" style={{ maxHeight: 280, overflowY: 'auto' }}>
+            {(showAllProjects ? filteredSortedProjects : filteredSortedProjects.slice(0, 5)).map((p) => (
+              <div key={p.id} className={condensed ? 'mb-2' : 'mb-3'}>
+                <div className={`flex justify-between ${condensed ? 'mb-0.5' : 'mb-1'}`}>
+                  <span className={`text-sm ${condensed ? 'leading-tight' : ''}`}>{p.name}</span>
+                  <span className="text-xs text-gray-500">{p.progress_percentage ?? 0}%</span>
+                </div>
+                <div className={condensed ? 'h-2 bg-gray-200 rounded-full' : 'h-2.5 bg-gray-200 rounded-full'}>
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{
+                      width: `${p.progress_percentage ?? 0}%`,
+                      background: 'linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)',
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
 
       {/* Toolbar */}
       <Card className="p-4">
@@ -181,6 +347,15 @@ const kpis = useMemo(() => {
             <Button onClick={() => window.dispatchEvent(new CustomEvent('tasks:add'))}>
               <Plus className="h-4 w-4 mr-2" /> Add Task
             </Button>
+            {isRecording ? (
+              <Button onClick={stopRecording} variant="outline" className="text-red-500 hover:bg-red-100">
+                <StopCircle className="h-4 w-4 mr-2" /> Stop Recording
+              </Button>
+            ) : (
+              <Button onClick={startRecording} variant="outline" className="text-purple-600 hover:bg-purple-100">
+                <Mic className="h-4 w-4 mr-2" /> Record Task
+              </Button>
+            )}
             <Button variant="outline" onClick={() => setProjectDialogOpen(true)}>
               <FolderPlus className="h-4 w-4 mr-2" /> Add Project
             </Button>
@@ -188,20 +363,26 @@ const kpis = useMemo(() => {
 
           <div className="flex flex-1 gap-2 md:justify-end">
             <div className="w-full max-w-[420px] relative">
-              <Input
-                placeholder="Search tasks…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+              <Input placeholder="Search tasks…" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <Select value={projectFilter} onValueChange={(v) => setProjectFilter(v as any)}>
               <SelectTrigger className="w-[220px]">
                 <SelectValue placeholder="Filter by project" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all"><span className="inline-flex items-center"><Filter className="h-4 w-4 mr-2" />All projects</span></SelectItem>
-                {projects.map(p => (
-                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                <SelectItem value="all">
+                  <span className="inline-flex items-center">
+                    <Filter className="h-4 w-4 mr-2" />
+                    All projects
+                  </span>
+                </SelectItem>
+                {projectsWithProgress.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    <div className="flex justify-between items-center w-full">
+                      <span>{p.name}</span>
+                      <span className="text-xs text-gray-500">{p.progress_percentage ?? 0}%</span>
+                    </div>
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -209,7 +390,7 @@ const kpis = useMemo(() => {
         </div>
       </Card>
 
-      {/* Tabs + Table (full width) */}
+      {/* Tabs + Table */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="w-full">
         <TabsList className="grid grid-cols-5 w-full">
           <TabsTrigger value="all">All</TabsTrigger>
@@ -219,56 +400,70 @@ const kpis = useMemo(() => {
           <TabsTrigger value="archived">Archived</TabsTrigger>
         </TabsList>
 
-<TabsContent value="all" className="mt-4">
-  <TasksTable
-    mode="all"
-    filters={currentFilters}
-    onChanged={fetchTasks}
-    projects={projects}
-    users={users}
-  />
-</TabsContent>
+        <TabsContent value="all" className="mt-4">
+          <TasksTable
+            mode="all"
+            filters={currentFilters}
+            onChanged={async () => {
+              await fetchTasks();
+              await fetchProjects();
+            }}
+            projects={projects}
+            users={users}
+          />
+        </TabsContent>
 
-<TabsContent value="inprogress" className="mt-4">
-  <TasksTable
-    mode="inprogress"
-    filters={currentFilters}
-    onChanged={fetchTasks}
-    projects={projects}
-    users={users}
-  />
-</TabsContent>
+        <TabsContent value="inprogress" className="mt-4">
+          <TasksTable
+            mode="inprogress"
+            filters={currentFilters}
+            onChanged={async () => {
+              await fetchTasks();
+              await fetchProjects();
+            }}
+            projects={projects}
+            users={users}
+          />
+        </TabsContent>
 
-<TabsContent value="completed" className="mt-4">
-  <TasksTable
-    mode="completed"
-    filters={currentFilters}
-    onChanged={fetchTasks}
-    projects={projects}
-    users={users}
-  />
-</TabsContent>
+        <TabsContent value="completed" className="mt-4">
+          <TasksTable
+            mode="completed"
+            filters={currentFilters}
+            onChanged={async () => {
+              await fetchTasks();
+              await fetchProjects();
+            }}
+            projects={projects}
+            users={users}
+          />
+        </TabsContent>
 
-<TabsContent value="overdue" className="mt-4">
-  <TasksTable
-    mode="overdue"
-    filters={currentFilters}
-    onChanged={fetchTasks}
-    projects={projects}
-    users={users}
-  />
-</TabsContent>
+        <TabsContent value="overdue" className="mt-4">
+          <TasksTable
+            mode="overdue"
+            filters={currentFilters}
+            onChanged={async () => {
+              await fetchTasks();
+              await fetchProjects();
+            }}
+            projects={projects}
+            users={users}
+          />
+        </TabsContent>
 
-<TabsContent value="archived" className="mt-4">
-  <TasksTable
-    mode="archived"
-    filters={currentFilters}
-    onChanged={fetchTasks}
-    projects={projects}
-    users={users}
-  />
-</TabsContent>
-
+        <TabsContent value="archived" className="mt-4">
+          <TasksTable
+            mode="archived"
+            filters={currentFilters}
+            onChanged={async () => {
+              await fetchTasks();
+              await fetchProjects();
+            }}
+            projects={projects}
+            users={users}
+          />
+        </TabsContent>
       </Tabs>
 
       {/* Add Project Dialog */}
@@ -276,8 +471,10 @@ const kpis = useMemo(() => {
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle>New Project</DialogTitle>
+            {/* Fix: add description (can be screen-reader only) */}
+            <DialogDescription className="sr-only">Create a new project</DialogDescription>
           </DialogHeader>
-          <ProjectForm users={users} onSave={onProjectSaved} onCancel={() => setProjectDialogOpen(false)} /> {/* :contentReference[oaicite:6]{index=6} */}
+          <ProjectForm users={users} onSave={onProjectSaved} onCancel={() => setProjectDialogOpen(false)} />
         </DialogContent>
       </Dialog>
     </div>

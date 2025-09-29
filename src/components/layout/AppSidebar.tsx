@@ -82,9 +82,9 @@ const businessItems: NavigationItem[] = [
     icon: CreditCard,
     allowedRoles: ['manager', 'pos-admin', 'user', 'admin', 'ceo'],
     children: [
-      { title: 'Products', url: '/pos/products', icon: Package, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
-      { title: 'Credits', url: '/pos/credits', icon: DollarSign, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
-      { title: 'Cash', url: '/pos/cash', icon: Wallet, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
+      { title: 'Products and Services', url: '/pos/products', icon: Package, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
+      { title: 'Credit Payments', url: '/pos/credits', icon: DollarSign, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
+      { title: 'Cash In', url: '/pos/cash', icon: Wallet, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
     ],
   },
   { title: 'Projections', url: '/projections', icon: TrendingUp, allowedRoles: ['admin', 'manager', 'projections', 'user'] },

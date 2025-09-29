@@ -49,7 +49,13 @@ Histogram(Highcharts);
 // global opts
 Highcharts.setOptions({
   accessibility: { enabled: false },
-  chart: { backgroundColor: 'transparent' },
+  chart: { backgroundColor: 'transparent' 
+  },
+  // --- Add this section to remove credits ---
+  credits: {
+    enabled: false // This disables the Highcharts.com credits
+  }
+  // --- End credits section ---
 });
 
 // dev sanity check

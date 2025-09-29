@@ -736,7 +736,7 @@ const Projections = () => {
                     Refreshing...
                   </>
                 ) : (
-                  'Project'
+                  'Forecast'
                 )}
               </Button>
             </CardTitle>

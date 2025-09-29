@@ -76,6 +76,18 @@ interface Transaction {
   includeInImport?: boolean;
 }
 
+interface ProductDB {
+  id: number;
+  name: string;
+  description: string | null;
+  unit_price: number;
+  cost_price: number | null;
+  sku: string | null;
+  is_service: boolean;
+  stock_quantity: number;
+  tax_rate_value?: number;
+}
+
 interface Account {
   id: string;
   code: string;
@@ -572,7 +584,7 @@ const EditableTransactionTable = ({
   const [isCancelled, setIsCancelled] = useState(false);
   const [localForceCash, setLocalForceCash] = useState(!!forceCash);
   const [confirmClicked, setConfirmClicked] = useState(false);
-
+  const [confirmationInitiated, setConfirmationInitiated] = useState(false);
   const hasZeroSelected = useMemo(
     () => transactions.some(t => t.includeInImport !== false && Number(t.amount) === 0),
     [transactions]
@@ -582,18 +594,28 @@ const EditableTransactionTable = ({
     [transactions]
   );
 
-  useEffect(() => {
+// ... find the useEffect that resets confirmClicked ...
+useEffect(() => {
+  // Only reset if the confirmation process hasn't been initiated yet
+  // This prevents resetting after the button has been successfully clicked
+  if (!confirmationInitiated) {
     setConfirmClicked(false);
-    clickedRef.current = false;
-  }, [initialTransactions]);
+  }
+  // Always reset the ref to allow potential re-submission if data changes *before* a click
+  clickedRef.current = false;
+  // Optional: Also reset the flag if data changes significantly after initiation
+  // For now, let's keep it tied to the initial render/data load before any click
+}, [initialTransactions, confirmationInitiated]);
 
-  const handleConfirmOnce = () => {
-    // hard guard against double triggers (and block zero amounts)
-    if (clickedRef.current || confirmClicked || isBusy || hasZeroSelected) return;
-    clickedRef.current = true;     // blocks any immediate second click
-    setConfirmClicked(true);       // visually disable + change label
-    onConfirm(transactions);       // kick off parent flow (sets importBusy)
-  };
+const handleConfirmOnce = () => {
+  // hard guard against double triggers (and block zero amounts)
+  if (clickedRef.current || confirmClicked || isBusy || hasZeroSelected) return;
+  clickedRef.current = true; // blocks any immediate second click
+  setConfirmClicked(true); // visually disable + change label
+  setConfirmationInitiated(true); // Mark that the process started from a click
+
+  onConfirm(transactions); // kick off parent flow (sets importBusy)
+};
 
   // sticky horizontal bar sync
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
@@ -982,16 +1004,15 @@ const EditableTransactionTable = ({
           <Button variant="secondary" onClick={onCancel} disabled={isBusy}>
             <XCircle size={18} className="mr-2" /> Cancel Review
           </Button>
-          <Button
-            onClick={handleConfirmOnce}
-            disabled={isCancelled || isBusy || confirmClicked || hasZeroSelected}
-            aria-disabled={isCancelled || isBusy || confirmClicked || hasZeroSelected}
-            aria-busy={isBusy}
-            title={hasZeroSelected ? 'Fix zero-amount rows first' : undefined}
-          >
-            <CheckCircle size={18} className="mr-2" />
-            {isBusy ? 'Working…' : confirmClicked ? 'Submitted' : 'Confirm & Submit Selected'}
-          </Button>
+<Button
+  onClick={handleConfirmOnce}
+  disabled={isCancelled || isBusy || confirmClicked || hasZeroSelected} // This should now work as intended
+  aria-disabled={isCancelled || isBusy || confirmClicked || hasZeroSelected}
+  aria-busy={isBusy}
+  title={hasZeroSelected ? 'Fix zero-amount rows first' : undefined}
+>
+  {isBusy ? 'Working…' : confirmClicked ? 'Submitted' : 'Confirm & Submit Selected'} 
+</Button>
         </div>
       </div>
     </div>
@@ -1017,10 +1038,11 @@ const ChatInterface = () => {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  const [confirmationInitiated, setConfirmationInitiated] = useState(false);
   // evidence modal state
 const [evidenceOpen, setEvidenceOpen] = useState(false);
 const [evidenceNotes, setEvidenceNotes] = useState<string>('');
-
+const [products, setProducts] = useState<ProductDB[]>([]);
   // [ADD] keep queued Excel sales here so we post them after user confirms
 const [pendingSales, setPendingSales] = useState<Array<{
   customer_name: string;
@@ -1054,6 +1076,56 @@ const pendingSalesRef = useRef<typeof pendingSales>([]);
     if (chatContainerRef.current) chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
   }, [messages]);
 
+
+// very-light heuristics
+const looksLikeSale = (s: string) =>
+  /\b(sold|sell|sale|invoice|billed?|charged?)\b/i.test(s);
+
+// already in your file; keep these (or paste if missing)
+const moneyRx = /(?:^|[\s])(?:r|rand|\$)?\s*([0-9]+(?:[.,][0-9]{1,2})?)(?=$|[\s.,])/gi;
+const qtyRx   = /(?:^|[\s])(?:x|qty|quantity|units?|pcs?)\s*([0-9]+)|(?:^|[\s])([0-9]+)\s*(?:x|units?|pcs?)(?=$|[\s.,])/i;
+
+const norm = (s:string) => s.toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
+const tokenSet2 = (s:string) => new Set(norm(s).split(' ').filter(Boolean));
+const jaccard2 = (a:Set<string>, b:Set<string>) => {
+  if (!a.size && !b.size) return 1;
+  let inter = 0; for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter || 1);
+};
+
+function bestProductMatch(text:string, list: ProductDB[]) {
+  const t = tokenSet2(text);
+  let best: ProductDB | null = null, bestScore = 0;
+  list.forEach(p => {
+    const s = jaccard2(t, tokenSet2(p.name));
+    const boost = norm(text).includes(norm(p.name)) ? 0.2 : 0;
+    const score = s + boost;
+    if (score > bestScore) { bestScore = score; best = p; }
+  });
+  return bestScore >= 0.35 ? best : null; // tolerate misspelling like "Accomodation"
+}
+
+function parseSaleLocally(text:string, list: ProductDB[]) {
+  // qty
+  let qty = 1;
+  const q = qtyRx.exec(text);
+  if (q) qty = Number(q[1] || q[2]) || 1;
+
+  // total/each price
+  let total: number | null = null, each: number | null = null;
+  const m = [...text.matchAll(moneyRx)].map(x => Number(String(x[1]).replace(',','.')));
+  if (m.length === 1) total = m[0];
+  if (m.length >= 2) { each = m[0]; total = m[1]; }
+  if (each != null && total == null) total = Math.round((each * qty) * 100) / 100;
+
+  const product = bestProductMatch(text, list);
+  if (!product) return null;
+
+  return { product, qty, total, each };
+}
+
+
+
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
 
   // Load accounts
@@ -1078,7 +1150,50 @@ const pendingSalesRef = useRef<typeof pendingSales>([]);
     fetchAccounts();
   }, [isAuthenticated, token, getAuthHeaders]);
 
+  
 
+  // ImportScreen.tsx
+
+// Inside the ChatInterface component...
+
+  // ... after the useEffect that fetches accounts ...
+
+  // NEW: Add a useEffect to fetch products
+  useEffect(() => {
+    const fetchProducts = async () => {
+      if (!isAuthenticated || !token) {
+        setProducts([]);
+        return;
+      }
+      try {
+        const response = await fetch(`${API_BASE_URL}/products-services`, {
+          headers: getAuthHeaders(),
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to fetch products with status: ${response.status}`);
+        }
+        const data: ProductDB[] = await response.json();
+        // Ensure numeric fields are correctly parsed, just in case
+        const parsedData = data.map(p => ({
+            ...p,
+            unit_price: parseFloat(p.unit_price as any),
+            cost_price: p.cost_price != null ? parseFloat(p.cost_price as any) : null,
+            stock_quantity: parseInt(p.stock_quantity as any, 10),
+        }));
+        setProducts(Array.isArray(parsedData) ? parsedData : []);
+        console.log('Products loaded for AI context.'); // For debugging
+      } catch (error: any) {
+        console.error('Failed to fetch products:', error);
+        setProducts([]);
+        // We don't need to show a chat message for this, it can fail silently
+        // as it's just for improving the AI prompt.
+      }
+    };
+    fetchProducts();
+  }, [isAuthenticated, token, getAuthHeaders]);
+
+
+  
   const openEvidenceFor = (txs: Transaction[], sourceLabel: string) => {
   if (!txs || txs.length === 0) return;
   // pick the first selected / visible row to seed the notes
@@ -1121,35 +1236,43 @@ const pendingSalesRef = useRef<typeof pendingSales>([]);
   const addUserMessage = (content: string) =>
     setMessages(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, sender: 'user', content }]);
   // [ADD] make sure a customer exists (GET by name, else POST)
-const ensureCustomer = async (customer_name: string, office?: string | null) => {
-  if (!isAuthenticated || !token) throw new Error('Authentication required.');
-  try {
-    const qs = new URLSearchParams({ name: customer_name }).toString();
-    const findRes = await fetch(`${API_BASE_URL}/customers?${qs}`, {
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-    });
-    if (findRes.ok) {
-      const list = await findRes.json();
-      if (Array.isArray(list) && list.length > 0) return list[0];
+// ImportScreen.tsx
+
+// ... inside the ChatInterface component
+
+  // Helper function to find or create a customer (needed for sales)
+  const ensureCustomer = async (customerName: string) => {
+    if (!isAuthenticated || !token) throw new Error('Authentication required.');
+    const searchName = customerName || "Walk-in Customer"; // Default if no name is found
+    try {
+      // Check if customer already exists by name
+      const response = await fetch(`${API_BASE_URL}/api/customers?search=${encodeURIComponent(searchName)}`, {
+        headers: getAuthHeaders(),
+      });
+      if (response.ok) {
+        const customers: any[] = await response.json();
+        const existing = customers.find(c => c.name.toLowerCase() === searchName.toLowerCase());
+        if (existing) {
+          return existing; // Return existing customer
+        }
+      }
+
+      // If not found, create a new one
+      const createRes = await fetch(`${API_BASE_URL}/api/customers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ name: searchName }),
+      });
+      if (!createRes.ok) throw new Error('Failed to create customer');
+      return await createRes.json();
+    } catch (error) {
+      console.error("Error ensuring customer exists:", error);
+      // Fallback to a default structure if creation fails, to avoid crashing the flow
+      return { id: 'default', name: 'Walk-in Customer' };
     }
-  } catch { /* fall through to create */ }
+  };
 
-  const createRes = await fetch(`${API_BASE_URL}/customers`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-    body: JSON.stringify({
-      name: customer_name,
-      contact_person: null,
-      email: null,
-      phone: null,
-      address: office || null,
-      tax_id: null,
-    }),
-  });
-  if (!createRes.ok) throw new Error(`Failed to create customer "${customer_name}"`);
-  return await createRes.json();
-};
-
+// ... your handleTypedDescriptionSubmit function will go here next
 // [ADD] post a sale to /api/sales (Excel-only)
 const submitSale = async (sale: {
   customer_name: string;
@@ -1160,7 +1283,7 @@ const submitSale = async (sale: {
 }) => {
   if (!isAuthenticated || !token) throw new Error('Authentication required.');
 
-  const customer = await ensureCustomer(sale.customer_name, sale.office);
+  const customer = await ensureCustomer(sale.customer_name);
 
   // simple service-line cart → no inventory/COGS touched
   const cart = [{
@@ -1437,96 +1560,299 @@ prepared.push({
   };
 
   // Text input
-  const handleTypedDescriptionSubmit = async () => {
-    if (!typedDescription.trim()) { addAssistantMessage('Please enter a description.'); return; }
-    if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to process text.'); return; }
+// ImportScreen.tsx
 
-    const userMessageContent = typedDescription;
-    addUserMessage(userMessageContent);
-    addAssistantMessage(<TableLoading message="Analyzing your description…" />);
-    setTypedDescription('');
+// This is the complete function with the new sales logic integrated.
+// --- UI helper: green success bubble ---
+const successBubble = (title: string, lines?: string[]) => (
+  <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+    <div className="font-semibold mb-1">{title}</div>
+    {Array.isArray(lines) && lines.length > 0 && (
+      <ul className="list-disc ml-5 mt-1 text-sm">
+        {lines.map((l, i) => <li key={i}>{l}</li>)}
+      </ul>
+    )}
+  </div>
+);
 
-    try {
-      const response = await fetch(`${RAIRO_API_BASE_URL}/process-text`, {
+const handleTypedDescriptionSubmit = async () => {
+  if (!typedDescription.trim()) { addAssistantMessage('Please enter a description.'); return; }
+  if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to process text.'); return; }
+
+  const userMessageContent = typedDescription;
+
+  addUserMessage(userMessageContent);
+  addAssistantMessage(<TableLoading message="Analyzing your description…" />);
+  setTypedDescription('');
+
+  // --- EARLY LOCAL SALE DETECTION (only for simple one-sale sentences) ---
+  // NOTE: make sure moneyRx/qtyRx were defined with the global flag /.../ig earlier.
+  const moneyHits = [...userMessageContent.matchAll(moneyRx)].length;
+  const hasManyClauses = /[,;&]| and | also /i.test(userMessageContent);
+  if (looksLikeSale(userMessageContent) && products.length && moneyHits <= 1 && !hasManyClauses) {
+    const local = parseSaleLocally(userMessageContent, products);
+    if (local) {
+      const { product, qty, total, each } = local;
+      const computedTotal = (total != null ? total : (each ?? product.unit_price) * qty) || 0;
+      const unitPrice = qty > 0 ? computedTotal / qty : Number(product.unit_price || 0);
+
+      const customer = await ensureCustomer('Walk-in Customer'); // default
+
+      const salePayload = {
+        cart: [{
+          id: product.id,
+          name: product.name,
+          quantity: qty,
+          unit_price: unitPrice,
+          subtotal: unitPrice * qty,
+          is_service: !!product.is_service,
+          tax_rate_value: product.tax_rate_value ?? 0,
+        }],
+        total: unitPrice * qty,
+        paymentType: 'Bank',
+        customer: { id: customer.id, name: customer.name },
+        tellerName: 'Chat Import',
+        amountPaid: unitPrice * qty,
+        change: 0,
+        dueDate: null,
+      };
+
+      const saleResponse = await fetch(`${API_BASE_URL}/api/sales`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: userMessageContent }),
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(salePayload),
       });
-      const result = await response.json();
 
-      if (response.ok) {
-        addAssistantMessage('Description analyzed! Building preview…');
-
-        const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
-          const transactionType = tx.Type?.toLowerCase() || 'expense';
-
-          let transactionCategory = tx.Destination_of_funds || tx.Customer_name || 'N/A';
-          if (transactionType === 'income' && ['income','general income'].includes((transactionCategory || '').toLowerCase())) {
-            transactionCategory = 'Sales Revenue';
-          }
-
-          let inferredCategory = transactionCategory;
-          const lowerDescription = (tx.Description || '').toLowerCase();
-          if (!inferredCategory || inferredCategory.toLowerCase() === 'n/a') {
-            if (lowerDescription.includes('rent') || lowerDescription.includes('rental')) inferredCategory = 'Rent Expense';
-            else if (lowerDescription.includes('salary') || lowerDescription.includes('wages') || lowerDescription.includes('payroll')) inferredCategory = 'Salaries and wages';
-            else if (lowerDescription.includes('fuel') || lowerDescription.includes('petrol')) inferredCategory = 'Fuel';
-            else if (lowerDescription.includes('utilities') || lowerDescription.includes('water') || lowerDescription.includes('electricity')) inferredCategory = 'Utilities Expenses';
-            else if (lowerDescription.includes('groceries') || lowerDescription.includes('shopping') || lowerDescription.includes('food')) inferredCategory = 'Groceries';
-            else if (lowerDescription.includes('sale') || lowerDescription.includes('revenue') || lowerDescription.includes('money for services')) inferredCategory = 'Sales Revenue';
-          }
-
-          let transactionDate: string;
-          try {
-            transactionDate = tx.Date
-              ? new Date(tx.Date.split('/').reverse().join('-')).toISOString().split('T')[0]
-              : new Date().toISOString().split('T')[0];
-          } catch { transactionDate = new Date().toISOString().split('T')[0]; }
-
-          const { accountId, confidence } = suggestAccountForText(
-            { type: transactionType, category: inferredCategory, description: tx.Description },
-            accounts
-          );
-
-          return {
-            _tempId: crypto.randomUUID(),
-            type: transactionType as 'income' | 'expense' | 'debt',
-            amount: tx.Amount ? parseFloat(tx.Amount) : 0,
-            description: tx.Description || 'Imported Transaction',
-            date: transactionDate,
-            category: inferredCategory,
-            account_id: accountId || '',
-            original_text: userMessageContent,
-            source: 'text-input',
-            is_verified: true,
-            confidenceScore: confidence,
-          };
-        });
-
-        const flagged = markDuplicates(transformed, existingTxs);
-
-        addAssistantMessage(
-          <EditableTransactionTable
-            transactions={flagged}
-            accounts={accounts}
-            categories={categories}
-            onConfirm={handleConfirmProcessedTransaction}
-            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-            forceCash={forceCash}
-            onToggleForceCash={setForceCash}
-            isBusy={importBusy}
-          />
-        );
-
-        openEvidenceFor(flagged, 'typed')
-      } else {
-        addAssistantMessage(`Error analyzing description: ${result.error || 'Unknown error'}`);
+      if (!saleResponse.ok) {
+        let detail = '';
+        try { const err = await saleResponse.json(); detail = err?.detail || err?.error || ''; } catch {}
+        throw new Error(detail || 'Failed to process sale.');
       }
-    } catch (error: any) {
-      console.error('Network error during text processing:', error);
-      addAssistantMessage(`Network error during text processing: ${error.message || 'API is unavailable.'}`);
+
+      addAssistantMessage(
+        <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+          <div className="font-semibold mb-1">✅ Sale Recorded & Stock Updated!</div>
+          <div>Sold {qty} × “{product.name}” for R {(unitPrice * qty).toFixed(2)}.</div>
+          {product.is_service ? <div className="text-xs mt-1">Note: Service item — no stock deduction.</div> : null}
+        </div>
+      );
+      return; // handled by the local fast path
     }
-  };
+  }
+
+  try {
+    // Build prompt with known product names to help the model match
+    const productNames = products.map(p => p.name);
+    const prompt = `
+Analyze the following text from a user describing a financial transaction.
+Text: "${userMessageContent}"
+
+First, determine if this is a SALE of a product or service.
+If it is a sale, identify the product name, the quantity sold, the total amount, and the customer name if mentioned.
+Your list of available products is: ${JSON.stringify(productNames)}. Try to match a product from this list.
+
+Respond with a JSON object with this exact schema:
+{
+  "isSale": boolean,
+  "transactions": [
+    {
+      "Type": "income" | "expense" | "debt",
+      "Amount": number,
+      "Description": "a clean description of the transaction",
+      "Date": "YYYY-MM-DD",
+      "Destination_of_funds": "a suggested category",
+      "Customer_name": "customer name if mentioned, otherwise null",
+      "Product_name": "the name of the product sold, if isSale is true, otherwise null",
+      "Quantity": number
+    }
+  ]
+}
+`;
+
+    const response = await fetch(`${RAIRO_API_BASE_URL}/process-text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: prompt }),
+    });
+    const result = await response.json();
+
+    if (!(response.ok && result.transactions && result.transactions.length > 0)) {
+      addAssistantMessage(`Error analyzing description: ${result.error || 'Unknown error'}`);
+      return;
+    }
+// 2) THEN post the queued sales
+try {
+  const salesToSubmit = [...pendingSalesRef.current];
+  if (salesToSubmit.length) {
+    addAssistantMessage(`Posting ${salesToSubmit.length} sale(s) to /api/sales…`);
+    let ok = 0;
+    for (const s of salesToSubmit) {
+      try { 
+        await submitSale(s); 
+        ok++; 
+        // 🔽 ADD THIS
+        addAssistantMessage(
+          successBubble('✅ Sale Recorded', [
+            `Sold "${s.description || 'Sale'}" for R ${Number(s.amount || 0).toFixed(2)}`
+          ])
+        );
+      } catch (e: any) {
+        addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+      }
+    }
+    addAssistantMessage(`Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`);
+  }
+} finally {
+  pendingSalesRef.current = [];
+  setPendingSales([]);
+}
+
+    // --- Split output into sales queue vs journal rows ---
+    const salesQueue: Array<{ customer_name: string; office?: string | null; date: string; description: string; amount: number; }> = [];
+    const journalRows: Transaction[] = [];
+
+    // local helpers
+    const lc = (s?: string) => (s || '').toLowerCase().trim();
+    const pickProduct = (nameFromAI?: string, textForFallback?: string) => {
+      const text = lc(nameFromAI);
+      if (!text && !textForFallback) return null;
+      const inText = lc(textForFallback || '');
+      let p = text ? products.find(x => lc(x.name) === text) : null;
+      if (!p && text) p = products.find(x => lc(x.name).includes(text) || text.includes(lc(x.name)));
+      if (!p && inText) p = products.find(x => inText.includes(lc(x.name)));
+      return p || null;
+    };
+
+    for (const tx of result.transactions as any[]) {
+      const ttype = lc(tx.Type);
+      const desc  = (tx.Description || '').trim();
+
+      // normalize date
+      const date = (() => {
+        try {
+          return tx.Date
+            ? new Date(tx.Date.split('/').reverse().join('-')).toISOString().split('T')[0]
+            : new Date().toISOString().split('T')[0];
+        } catch { return new Date().toISOString().split('T')[0]; }
+      })();
+
+      // treat income that looks like a sale as a sale (queues to /api/sales later)
+      const looksSale =
+        ttype === 'income' &&
+        (tx.Product_name || /\b(sold|sale|invoice|billed?|charged?)\b/i.test(desc));
+
+      if (looksSale) {
+        const qty   = Math.max(1, Number(tx.Quantity || 1));
+        const total = Number(tx.Amount || 0);
+        const product = pickProduct(tx.Product_name, desc);
+
+        if (product) {
+          salesQueue.push({
+            customer_name: tx.Customer_name || 'Walk-in',
+            office: null,
+            date,
+            description: `${desc || product.name} [Sale]`,
+            amount: total > 0 ? total : Number(product.unit_price || 0) * qty,
+          });
+        } else {
+          // graceful service fallback (no stock deduction)
+          salesQueue.push({
+            customer_name: tx.Customer_name || 'Walk-in',
+            office: null,
+            date,
+            description: desc || 'Service Sale',
+            amount: total || 0,
+          });
+        }
+        continue;
+      }
+
+      // journal row (expense/debt or income that isn't a sale)
+      let cat = tx.Destination_of_funds || tx.Customer_name || 'N/A';
+      const ld = lc(desc);
+      if (!cat || lc(cat) === 'n/a') {
+        if (ld.includes('rent')) cat = 'Rent Expense';
+        else if (ld.includes('salary') || ld.includes('payroll')) cat = 'Salaries and wages';
+        else if (ld.includes('fuel')) cat = 'Fuel';
+        else if (ld.includes('utilities') || ld.includes('electricity') || ld.includes('water')) cat = 'Utilities Expenses';
+        else if (ld.includes('sale') || ld.includes('revenue')) cat = 'Sales Revenue';
+      }
+
+      const { accountId, confidence } = suggestAccountForText(
+        { type: ttype, category: cat, description: desc },
+        accounts
+      );
+
+      journalRows.push({
+        _tempId: crypto.randomUUID(),
+        type: (ttype as 'income'|'expense'|'debt') || 'expense',
+        amount: tx.Amount ? parseFloat(tx.Amount) : 0,
+        description: desc || 'Imported Transaction',
+        date,
+        category: cat,
+        account_id: accountId || '',
+        original_text: userMessageContent,
+        source: 'text-input',
+        is_verified: true,
+        confidenceScore: confidence,
+        includeInImport: true,
+      });
+    }
+
+    // Queue sales to be posted after journals on Confirm
+    if (salesQueue.length) {
+      pendingSalesRef.current = [...pendingSalesRef.current, ...salesQueue];
+      setPendingSales(pendingSalesRef.current);
+      const totalSales = salesQueue.reduce((s, x) => s + Number(x.amount || 0), 0);
+      addAssistantMessage(
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
+          <div className="font-semibold">Sales queued for posting:</div>
+          <div>{salesQueue.length} sale(s), total R {totalSales.toFixed(2)} — will be submitted to <code>/api/sales</code> after you click <em>Confirm &amp; Submit Selected</em>.</div>
+        </div>
+      );
+    }
+
+    // Show journal table if any; else immediately post queued sales
+    if (journalRows.length) {
+      const flagged = markDuplicates(journalRows, existingTxs);
+      addAssistantMessage(
+        <EditableTransactionTable
+          transactions={flagged}
+          accounts={accounts}
+          categories={categories}
+          onConfirm={handleConfirmProcessedTransaction}
+          onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+          forceCash={forceCash}
+          onToggleForceCash={setForceCash}
+          isBusy={importBusy}
+        />
+      );
+      openEvidenceFor(journalRows, 'typed');
+    } else {
+      // No journals → post sales right away
+      try {
+        const q = [...pendingSalesRef.current];
+        let ok = 0;
+        for (const s of q) {
+          try { await submitSale(s); ok++; }
+          catch (e:any) {
+            addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+          }
+        }
+        addAssistantMessage(`Sales posting complete: ${ok}/${q.length} succeeded.`);
+      } finally {
+        pendingSalesRef.current = [];
+        setPendingSales([]);
+      }
+    }
+
+  } catch (error: any) {
+    console.error('Network error during text processing:', error);
+    addAssistantMessage(`Network error during text processing: ${error.message || 'API is unavailable.'}`);
+  }
+};
+
+
 
   // Voice (unchanged except minor UX)
   const startRecording = () => {
@@ -1825,6 +2151,21 @@ if (toSubmit.length === 0) {
       sendProgress('posting', 'running');
 // [KEEP THIS ORDER] 1) commit journal batch
 const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
+// Build pretty confirmations per imported row
+const prettyLines = toSubmit.map(t => {
+  const amt = Number(t.amount || 0).toFixed(2);
+  const d   = t.date || new Date().toISOString().slice(0,10);
+  if (t.type === 'expense') return `Paid ${t.description} — R ${amt} on ${d}`;
+  if (t.type === 'income')  return `Received ${t.description} — R ${amt} on ${d}`;
+  if (t.type === 'debt')    return `Debt entry: ${t.description} — R ${amt} on ${d}`;
+  return `${t.type} ${t.description} — R ${amt} on ${d}`;
+});
+
+// Show the green confirmations
+addAssistantMessage(
+  successBubble('✅ Transactions recorded', prettyLines)
+);
+
 sendProgress('posting', 'done');
 
 addAssistantMessage(

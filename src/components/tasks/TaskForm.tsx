@@ -1,414 +1,356 @@
 // TaskForm.tsx
-import { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { DialogFooter } from '@/components/ui/dialog';
-import { ChevronRight, Plus, Minus } from 'lucide-react';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Card } from '@/components/ui/card';
 
-// --- Types ---
-interface Project {
-  id: string;
-  name: string;
-}
-interface User {
-  id: string; // backend expects int, but we pass as string and backend coerces with ::int
-  name: string;
-  email?: string | null;
-}
-
-export interface TaskStepFormData {
-  id?: string;
+export type TaskStepFormData = {
+  id?: string; // Optional for new steps being created
   title: string;
-  weight: number;
-  is_done: boolean;
-  position: number;
-}
+  weight?: number | null;
+  is_done?: boolean;
+  position?: number;
+};
 
 export type TaskFormData = {
+  id?: string;
   title: string;
-  description?: string;
-  priority: 'Low' | 'Medium' | 'High';
-  assignee_id?: string | null;
-  due_date?: string | null;            // <-- allow null so we never send ""
-  progress_percentage: number;
+  description?: string | null;
+  priority?: 'Low' | 'Medium' | 'High';
+  due_date?: string | null; // YYYY-MM-DD
   project_id?: string | null;
 
-  progress_mode: 'manual' | 'target' | 'steps';
-  progress_goal?: number | null;
-  progress_current?: number | null;
+  // assignment (legacy single + new multi)
+  assignee_id?: string | null;
+  assignee_ids?: string[];
+
+  // progress
+  progress_mode?: 'manual' | 'target' | 'steps';
+  progress_percentage?: number; // manual
+  progress_goal?: number | null; // target
+  progress_current?: number | null; // target
 };
 
-export type TaskFormProps = {
-  task?: TaskFormData;
-  onSave: (data: TaskFormData, initialStepsToAdd?: TaskStepFormData[]) => void | Promise<void>;
+type Props = {
+  task?: Partial<TaskFormData> | null;
+  projects: { id: string; name: string }[];
+  users: { id: string; name: string; email?: string | null }[];
+  onSave: (data: TaskFormData, initialSteps?: TaskStepFormData[]) => void;
   onCancel: () => void;
-  projects?: Project[];
-  users?: User[];
 };
 
-const assigneePlaceholderValue = 'unassigned';
-const projectPlaceholderValue = 'unassigned';
+const PRIORITIES: Array<TaskFormData['priority']> = ['High', 'Medium', 'Low'];
 
-export function TaskForm({
-  task,
-  onSave,
-  onCancel,
-  projects = [],
-  users = [],
-}: TaskFormProps) {
-  const [formData, setFormData] = useState<TaskFormData>({
-    title: task?.title || '',
-    description: task?.description || '',
-    priority: task?.priority || 'Medium',
-    assignee_id: task?.assignee_id ?? null,
-    // store as null (not ""), input expects '' when empty
-    due_date: task?.due_date ?? null,
-    progress_percentage: task?.progress_percentage ?? 0,
-    project_id: task?.project_id ?? null,
-    progress_mode: task?.progress_mode || 'manual',
-    progress_goal: task?.progress_goal ?? null,
-    progress_current: task?.progress_current ?? 0,
-  });
+const toYYYYMMDD = (d?: string | null) => {
+  if (!d) return '';
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return d; // assume already yyyy-mm-dd
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
 
-  const [initialSteps, setInitialSteps] = useState<TaskStepFormData[]>([]);
+export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
+  // base fields
+  const [title, setTitle] = useState(task?.title ?? '');
+  const [projectId, setProjectId] = useState<string | null>((task?.project_id as string) ?? null);
+  const [priority, setPriority] = useState<TaskFormData['priority']>(task?.priority ?? 'Medium');
+  const [dueDate, setDueDate] = useState<string>(toYYYYMMDD(task?.due_date ?? null));
+  const [description, setDescription] = useState(task?.description ?? '');
+
+  // assignment
+  const [assigneeId, setAssigneeId] = useState<string | null>((task?.assignee_id as string) ?? null);
+  const [assigneeIds, setAssigneeIds] = useState<string[]>(
+    Array.isArray(task?.assignee_ids) ? task!.assignee_ids! : (assigneeId ? [assigneeId] : [])
+  );
+
+  // progress mode
+  const [mode, setMode] = useState<TaskFormData['progress_mode']>(task?.progress_mode ?? 'manual');
+  const [manualPct, setManualPct] = useState<number>(Math.round(Number(task?.progress_percentage ?? 0)));
+  const [goal, setGoal] = useState<number | ''>(task?.progress_goal ?? '');
+  const [current, setCurrent] = useState<number>(Number(task?.progress_current ?? 0));
+
+  // step seeding (only used when creating or switching to steps)
   const [newStepTitle, setNewStepTitle] = useState('');
-  const [newStepWeight, setNewStepWeight] = useState(1);
+  const [seedSteps, setSeedSteps] = useState<TaskStepFormData[]>([]);
+
+  // Define a unique value to represent "No project"
+  const NO_PROJECT_VALUE = "__no_project__";
 
   useEffect(() => {
-    setFormData({
-      title: task?.title || '',
-      description: task?.description || '',
-      priority: task?.priority || 'Medium',
-      assignee_id: task?.assignee_id ?? null,
-      due_date: task?.due_date ?? null, // normalize to null
-      progress_percentage: task?.progress_percentage ?? 0,
-      project_id: task?.project_id ?? null,
-      progress_mode: task?.progress_mode || 'manual',
-      progress_goal: task?.progress_goal ?? null,
-      progress_current: task?.progress_current ?? 0,
-    });
-
-    if (task?.progress_mode === 'steps') {
-      setInitialSteps([]); // hydrate with existing steps later if you pass them in
-    } else {
-      setInitialSteps([]);
+    if (!assigneeIds?.length && assigneeId) {
+      setAssigneeIds([assigneeId]);
     }
-  }, [task]);
+  }, [assigneeId]); // keep legacy single in sync
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    const dataToSave: TaskFormData = {
-      ...formData,
-      // never send empty strings for nullable fields
-      due_date: formData.due_date && String(formData.due_date).trim() !== '' ? formData.due_date : null,
-      assignee_id: formData.assignee_id || null,
-      project_id: formData.project_id || null,
-      // only keep goal/current in target mode
-      progress_goal: formData.progress_mode === 'target' ? (formData.progress_goal ?? null) : null,
-      progress_current: formData.progress_mode === 'target' ? (formData.progress_current ?? 0) : 0,
-    };
-
-    onSave(dataToSave, formData.progress_mode === 'steps' ? initialSteps : undefined);
-  };
-
-  const handleAddStep = () => {
-    if (!newStepTitle.trim()) return;
-    const newStep: TaskStepFormData = {
-      title: newStepTitle.trim(),
-      weight: newStepWeight,
-      is_done: false,
-      position: initialSteps.length,
-    };
-    setInitialSteps((prev) => [...prev, newStep]);
-    setNewStepTitle('');
-    setNewStepWeight(1);
-  };
-
-  const handleRemoveStep = (index: number) => {
-    setInitialSteps((prev) => prev.filter((_, i) => i !== index).map((s, i) => ({ ...s, position: i })));
-  };
-
-  const handleModeChange = (value: string) => {
-    const mode = value as 'manual' | 'target' | 'steps';
-    setFormData((prev) => ({
+  const addSeedStep = () => {
+    const t = newStepTitle.trim();
+    if (!t) return;
+    setSeedSteps((prev) => [
       ...prev,
-      progress_mode: mode,
-      ...(mode !== 'target' ? { progress_goal: null, progress_current: 0 } : {}),
-    }));
-    if (mode !== 'steps') setInitialSteps([]);
+      { id: `tmp-${Date.now()}`, title: t, weight: 1, is_done: false, position: prev.length },
+    ]);
+    setNewStepTitle('');
   };
+  const removeSeedStep = (idx: number) => {
+    setSeedSteps((prev) => prev.filter((_, i) => i !== idx).map((s, i) => ({ ...s, position: i })));
+  };
+
+  const canSave = title.trim().length > 0;
+
+  const handleSave = () => {
+    const payload: TaskFormData = {
+      id: task?.id as string | undefined,
+      title: title.trim(),
+      description: description?.trim() || '',
+      priority: priority ?? 'Medium',
+      due_date: dueDate ? dueDate : null,
+      project_id: projectId || null,
+
+      // assignment: keep both
+      assignee_id: assigneeId || null,
+      assignee_ids: assigneeIds ?? [],
+
+      progress_mode: mode ?? 'manual',
+    };
+
+    if (mode === 'manual') {
+      payload.progress_percentage = Math.max(0, Math.min(100, Math.round(manualPct || 0)));
+    } else if (mode === 'target') {
+      payload.progress_goal = goal === '' ? null : Number(goal);
+      payload.progress_current = Number(current || 0);
+    }
+
+    // note: if mode === 'steps' we just pass seedSteps back; server will insert on create/update (your table code already does this)
+    onSave(payload, mode === 'steps' ? seedSteps : undefined);
+  };
+
+  const toggleMultiAssignee = (id: string) => {
+    setAssigneeIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      return [...prev, id];
+    });
+    // keep legacy single for compatibility (first selected)
+    setAssigneeId((prevSingle) => {
+      const next = assigneeIds.includes(id) ? assigneeIds.filter((x) => x !== id) : [...assigneeIds, id];
+      return next[0] ?? null;
+    });
+  };
+
+  const usersSorted = useMemo(
+    () => [...users].sort((a, b) => a.name.localeCompare(b.name)),
+    [users]
+  );
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      {/* Title */}
-      <div>
-        <Label htmlFor="title">Title *</Label>
-        <Input
-          id="title"
-          value={formData.title}
-          onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-          required
-        />
-      </div>
-
-      {/* Description */}
-      <div>
-        <Label htmlFor="description">Description</Label>
-        <Textarea
-          id="description"
-          value={formData.description}
-          onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-          rows={3}
-        />
-      </div>
-
-      {/* Priority */}
-      <div>
-        <Label htmlFor="priority">Priority</Label>
-        <Select
-          value={formData.priority}
-          onValueChange={(value) => setFormData({ ...formData, priority: value as 'Low' | 'Medium' | 'High' })}
-        >
-          <SelectTrigger id="priority">
-            <SelectValue placeholder="Select priority" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="Low">Low</SelectItem>
-            <SelectItem value="Medium">Medium</SelectItem>
-            <SelectItem value="High">High</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Due date */}
-      <div>
-        <Label htmlFor="due_date">Due date</Label>
-        <Input
-          id="due_date"
-          type="date"
-          value={formData.due_date ?? ''} // input wants '' when empty
-          onChange={(e) =>
-            setFormData({
-              ...formData,
-              due_date: e.target.value ? e.target.value : null, // never store ""
-            })
-          }
-        />
-      </div>
-
-      {/* Progress Mode */}
-      <div>
-        <Label htmlFor="progress_mode">Progress Tracking Mode</Label>
-        <Select value={formData.progress_mode} onValueChange={handleModeChange}>
-          <SelectTrigger id="progress_mode">
-            <SelectValue placeholder="Select progress mode" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="manual">Manual</SelectItem>
-            <SelectItem value="target">Target-Based</SelectItem>
-            <SelectItem value="steps">Step-Based</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Target settings */}
-      {formData.progress_mode === 'target' && (
-        <div className="space-y-2 p-3 bg-blue-50 rounded-md">
-          <h4 className="font-medium text-sm text-blue-800">Target Settings</h4>
-          <div>
-            <Label htmlFor="progress_goal">Goal *</Label>
+    <div className="space-y-6">
+      {/* Top section: Title + Project (moved up) */}
+      <Card className="p-4">
+        <div className="grid gap-4">
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label className="text-right">Title</Label>
             <Input
-              id="progress_goal"
-              type="number"
-              min={0}
-              value={formData.progress_goal ?? ''}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  progress_goal: e.target.value ? Number(e.target.value) : null,
-                })
-              }
-              required
+              className="col-span-3"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g., Prepare client report"
             />
           </div>
-          <div>
-            <Label htmlFor="progress_current">Current</Label>
+
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label className="text-right">Project</Label>
+            <div className="col-span-3">
+              {/* Updated Select for Project */}
+              <Select
+                value={projectId ?? NO_PROJECT_VALUE} // Use the unique value when projectId is null
+                onValueChange={(v) => setProjectId(v === NO_PROJECT_VALUE ? null : v)} // Map the unique value back to null
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a project" />
+                </SelectTrigger>
+                <SelectContent>
+                  {/* Changed the value prop here */}
+                  <SelectItem value={NO_PROJECT_VALUE}>No project</SelectItem>
+                  {projects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label className="text-right">Priority</Label>
+            <div className="col-span-3">
+              <Select
+                value={priority ?? 'Medium'}
+                onValueChange={(v) => setPriority(v as any)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Priority" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRIORITIES.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {p}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label className="text-right">Due date</Label>
             <Input
-              id="progress_current"
-              type="number"
-              min={0}
-              value={formData.progress_current ?? 0}
-              onChange={(e) => setFormData({ ...formData, progress_current: Number(e.target.value || '0') })}
+              type="date"
+              className="col-span-3"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
             />
-            {formData.progress_goal !== null && formData.progress_goal > 0 && (
-              <p className="text-xs text-gray-500">
-                {formData.progress_current} / {formData.progress_goal} (
-                {Math.min(
-                  100,
-                  Math.round(((formData.progress_current ?? 0) / (formData.progress_goal ?? 1)) * 100)
-                )}
-                %)
-              </p>
-            )}
+          </div>
+
+          <div className="grid grid-cols-4 items-start gap-4">
+            <Label className="text-right mt-2">Description</Label>
+            <Textarea
+              className="col-span-3"
+              value={description ?? ''}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Optional details"
+              rows={4}
+            />
           </div>
         </div>
-      )}
+      </Card>
 
-      {/* Steps setup */}
-      {formData.progress_mode === 'steps' && (
-        <Collapsible className="space-y-2 p-3 bg-green-50 rounded-md">
-          <CollapsibleTrigger asChild>
-            <Button
-              variant="ghost"
-              className="p-0 h-auto font-medium text-sm text-green-800 flex items-center gap-1"
-              type="button"
-            >
-              <span>Initial Steps ({initialSteps.length})</span>
-              <ChevronRight className="h-4 w-4 collapsible-icon" />
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-2 data-[state=open]:pt-2">
-            <div className="flex gap-2">
+      {/* Assignees */}
+      <Card className="p-4">
+        <div className="grid gap-4">
+          <div className="grid grid-cols-4 items-start gap-4">
+            <Label className="text-right mt-1">Assignees</Label>
+            <div className="col-span-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
+                {usersSorted.map((u) => (
+                  <label key={u.id} className="flex items-center gap-2 rounded-md border p-2">
+                    <Checkbox
+                      checked={assigneeIds.includes(u.id)}
+                      onCheckedChange={() => toggleMultiAssignee(u.id)}
+                    />
+                    <span className="text-sm">
+                      {u.name}
+                      {u.email ? <span className="text-xs text-gray-500"> — {u.email}</span> : null}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Progress */}
+      <Card className="p-4">
+        <div className="grid gap-4">
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label className="text-right">Progress mode</Label>
+            <div className="col-span-3">
+              <Select value={mode ?? 'manual'} onValueChange={(v) => setMode(v as any)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="manual">Manual (%)</SelectItem>
+                  <SelectItem value="target">Target (goal/current)</SelectItem>
+                  <SelectItem value="steps">Steps</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {mode === 'manual' && (
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">Progress (%)</Label>
               <Input
-                value={newStepTitle}
-                onChange={(e) => setNewStepTitle(e.target.value)}
-                placeholder="New step title..."
-                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddStep())}
-              />
-              <Input
+                className="col-span-3"
                 type="number"
                 min={0}
-                value={newStepWeight}
-                onChange={(e) => setNewStepWeight(Number(e.target.value || '0'))}
-                className="w-20"
-                placeholder="Weight"
+                max={100}
+                value={manualPct}
+                onChange={(e) => setManualPct(Number(e.target.value))}
               />
-              <Button type="button" onClick={handleAddStep} size="sm">
-                <Plus className="h-4 w-4" />
-              </Button>
             </div>
+          )}
 
-            <div className="space-y-1 max-h-40 overflow-y-auto">
-              {initialSteps.length > 0 ? (
-                initialSteps.map((step, index) => (
-                  <div key={`${step.title}-${index}`} className="flex items-center gap-2 p-2 bg-white border rounded">
-                    <span className="text-sm flex-1">
-                      {step.title} (Weight: {step.weight})
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 w-6 p-0 text-red-500 hover:text-red-700"
-                      onClick={() => handleRemoveStep(index)}
-                    >
-                      <Minus className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ))
-              ) : (
-                <p className="text-xs text-gray-500 italic">No initial steps added.</p>
-              )}
+          {mode === 'target' && (
+            <>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right">Goal</Label>
+                <Input
+                  className="col-span-3"
+                  type="number"
+                  value={goal}
+                  onChange={(e) => setGoal(e.target.value === '' ? '' : Number(e.target.value))}
+                />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right">Current</Label>
+                <Input
+                  className="col-span-3"
+                  type="number"
+                  value={current}
+                  onChange={(e) => setCurrent(Number(e.target.value))}
+                />
+              </div>
+            </>
+          )}
+
+          {mode === 'steps' && (
+            <div className="grid grid-cols-4 items-start gap-4">
+              <Label className="text-right mt-2">Seed steps</Label>
+              <div className="col-span-3">
+                <div className="flex gap-2 mb-2">
+                  <Input
+                    value={newStepTitle}
+                    onChange={(e) => setNewStepTitle(e.target.value)}
+                    placeholder="Add a step and press +"
+                    onKeyDown={(e) => e.key === 'Enter' && addSeedStep()}
+                  />
+                  <Button onClick={addSeedStep}>+</Button>
+                </div>
+                {seedSteps.length ? (
+                  <ul className="space-y-2">
+                    {seedSteps.map((s, i) => (
+                      <li key={s.id} className="flex items-center justify-between rounded bg-gray-50 p-2">
+                        <span className="text-sm">{i + 1}. {s.title}</span>
+                        <Button variant="ghost" size="sm" onClick={() => removeSeedStep(i)}>
+                          Remove
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-gray-500">No steps yet.</p>
+                )}
+              </div>
             </div>
-          </CollapsibleContent>
-        </Collapsible>
-      )}
+          )}
+        </div>
+      </Card>
 
-      {/* Assignee */}
-      <div>
-        <Label htmlFor="assignee">Assignee</Label>
-        <Select
-          value={formData.assignee_id ?? assigneePlaceholderValue}
-          onValueChange={(value) =>
-            setFormData({
-              ...formData,
-              assignee_id: value === assigneePlaceholderValue ? null : value,
-            })
-          }
-        >
-          <SelectTrigger id="assignee">
-            <SelectValue placeholder="Select assignee" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={assigneePlaceholderValue}>Unassigned</SelectItem>
-            {(users ?? []).map((u) => (
-              <SelectItem key={u.id} value={u.id}>
-                {u.name} {u.email ? `— ${u.email}` : ''}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Project */}
-      <div>
-        <Label htmlFor="project">Project</Label>
-        <Select
-          value={formData.project_id ?? projectPlaceholderValue}
-          onValueChange={(value) =>
-            setFormData({
-              ...formData,
-              project_id: value === projectPlaceholderValue ? null : value,
-            })
-          }
-        >
-          <SelectTrigger id="project">
-            <SelectValue placeholder="Select project" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={projectPlaceholderValue}>Unassigned</SelectItem>
-            {(projects ?? []).map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Progress percentage (manual only) */}
-      <div className="opacity-70">
-        <Label htmlFor="progress_percentage">Progress Percentage (Auto-Calculated/Manual)</Label>
-        <Input
-          id="progress_percentage"
-          type="number"
-          min={0}
-          max={100}
-          value={formData.progress_percentage}
-          readOnly={formData.progress_mode !== 'manual'}
-          className={formData.progress_mode !== 'manual' ? 'bg-gray-100 cursor-not-allowed' : ''}
-          onChange={(e) =>
-            formData.progress_mode === 'manual'
-              ? setFormData({ ...formData, progress_percentage: Number(e.target.value || '0') })
-              : undefined
-          }
-        />
-        {formData.progress_mode !== 'manual' && (
-          <p className="text-xs text-gray-500 mt-1">This value is managed by the selected progress mode.</p>
-        )}
-      </div>
-
-      <DialogFooter>
-        <Button type="submit">Save And Update</Button>
-        <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
+      {/* Actions */}
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="outline" onClick={onCancel}>Cancel</Button>
+        <Button onClick={handleSave} disabled={!canSave}>
+          {task?.id ? 'Save changes' : 'Create task'}
         </Button>
-      </DialogFooter>
-    </form>
+      </div>
+    </div>
   );
 }

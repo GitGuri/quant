@@ -22,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Plus, Search, X, Edit3, Trash2, CheckCircle, PieChart, LayoutDashboard } from 'lucide-react';
+import { Plus, Search, X, Edit3, Trash2, CheckCircle, PieChart, LayoutDashboard, Filter } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   DndContext,
@@ -134,6 +134,12 @@ export function KanbanBoard() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>('all');
   const [isLoading, setIsLoading] = useState(true);
 
+  // --- NEW: Projects Progress UX state (for the compact progress card) ---
+  const [projQuery, setProjQuery] = useState('');
+  const [projSort, setProjSort] = useState<'name' | 'progress_desc' | 'progress_asc'>('progress_desc');
+  const [showAllProjects, setShowAllProjects] = useState(false);
+  const [condensed, setCondensed] = useState(true);
+
   const { toast } = useToast();
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
@@ -181,12 +187,11 @@ export function KanbanBoard() {
   });
 
   // --- PROGRESS → STATUS mapping
-const getStatusFromProgress = (progress: number): Task['status'] => {
-  if (progress >= 100) return 'Done';
-  if (progress >= 1) return 'In Progress';
-  return 'To Do';
-};
-
+  const getStatusFromProgress = (progress: number): Task['status'] => {
+    if (progress >= 100) return 'Done';
+    if (progress >= 1) return 'In Progress';
+    return 'To Do';
+  };
 
   // --- NEW: derive an effective status so 100% always shows in “Done”
   const getEffectiveStatus = (t: Task): Task['status'] => {
@@ -316,68 +321,65 @@ const getStatusFromProgress = (progress: number): Task['status'] => {
     setDraggedTask(task);
   };
 
-const handleDragEnd = async (event: DragEndEvent) => {
-  const { active, over } = event;
-  setDraggedTask(null);
-  if (!over) return;
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    setDraggedTask(null);
+    if (!over) return;
 
-  const activeId = active.id as string;
-  const overId = over.id as string;
-  if (activeId === overId) return;
+    const activeId = active.id as string;
+    const overId = over.id as string;
+    if (activeId === overId) return;
 
-  const activeTask = findTaskById(activeId);
-  const fromColumn = findColumnByTaskId(activeId);
-  const toColumn = findColumnById(overId) || findColumnByTaskId(overId);
-  if (!activeTask || !fromColumn || !toColumn) return;
+    const activeTask = findTaskById(activeId);
+    const fromColumn = findColumnByTaskId(activeId);
+    const toColumn = findColumnById(overId) || findColumnByTaskId(overId);
+    if (!activeTask || !fromColumn || !toColumn) return;
 
-  // Map column -> status and % rule
-  const statusMap: Record<string, Task['status']> = {
-    todo: 'To Do',
-    inprogress: 'In Progress',
-    done: 'Done',
+    // Map column -> status and % rule
+    const statusMap: Record<string, Task['status']> = {
+      todo: 'To Do',
+      inprogress: 'In Progress',
+      done: 'Done',
+    };
+    const newStatus = statusMap[toColumn.id] || activeTask.status;
+
+    // IMPORTANT: drive percent from destination column
+    let newPct = activeTask.progress_percentage ?? 0;
+    if (toColumn.id === 'todo') newPct = 0;
+    else if (toColumn.id === 'inprogress') newPct = Math.min(99, Math.max(1, newPct)); // ensure 1–99%
+    else if (toColumn.id === 'done') newPct = 100;
+
+    // Optimistic UI: update both status and % (UI groups by %)
+    setColumns(prev =>
+      prev.map(col => {
+        if (col.id === fromColumn.id) {
+          return { ...col, tasks: col.tasks.filter(t => t.id !== activeId) };
+        }
+        if (col.id === toColumn.id) {
+          return { ...col, tasks: [...col.tasks, { ...activeTask, status: newStatus, progress_percentage: newPct }] };
+        }
+        return col;
+      })
+    );
+
+    try {
+      const res = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${activeTask.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({
+          progress_percentage: newPct,
+          // optional: status: newStatus,
+        }),
+      });
+      if (!res.ok) throw new Error('Failed to update task on backend.');
+      toast({ title: 'Task moved', description: `Task moved from ${fromColumn.title} to ${toColumn.title}` });
+      fetchTasksAndProjects();
+    } catch (err) {
+      console.error('Error updating task status:', err);
+      toast({ title: 'Error', description: 'Failed to move task. Please try again.', variant: 'destructive' });
+      fetchTasksAndProjects();
+    }
   };
-  const newStatus = statusMap[toColumn.id] || activeTask.status;
-
-  // IMPORTANT: drive percent from destination column
-  let newPct = activeTask.progress_percentage ?? 0;
-  if (toColumn.id === 'todo') newPct = 0;
-  else if (toColumn.id === 'inprogress') newPct = Math.min(99, Math.max(1, newPct)); // ensure 1–99%
-  else if (toColumn.id === 'done') newPct = 100;
-
-  // Optimistic UI: update both status and % (UI groups by %)
-  setColumns(prev =>
-    prev.map(col => {
-      if (col.id === fromColumn.id) {
-        return { ...col, tasks: col.tasks.filter(t => t.id !== activeId) };
-      }
-      if (col.id === toColumn.id) {
-        return { ...col, tasks: [...col.tasks, { ...activeTask, status: newStatus, progress_percentage: newPct }] };
-      }
-      return col;
-    })
-  );
-
-  try {
-    // Server will also set status from % if you omit status,
-    // but sending both is fine.
-    const res = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${activeTask.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({
-        progress_percentage: newPct,
-        // optional: status: newStatus,
-      }),
-    });
-    if (!res.ok) throw new Error('Failed to update task on backend.');
-    toast({ title: 'Task moved', description: `Task moved from ${fromColumn.title} to ${toColumn.title}` });
-    fetchTasksAndProjects();
-  } catch (err) {
-    console.error('Error updating task status:', err);
-    toast({ title: 'Error', description: 'Failed to move task. Please try again.', variant: 'destructive' });
-    fetchTasksAndProjects();
-  }
-};
-
 
   const findTaskById = (id: string): Task | null => {
     for (const column of columns) {
@@ -632,6 +634,23 @@ const handleDragEnd = async (event: DragEndEvent) => {
     [projects]
   );
 
+  // --- NEW: filtered/sorted list for the Projects Progress card
+  const filteredSortedProjects = useMemo(() => {
+    let rows = projects;
+    if (projQuery.trim()) {
+      const q = projQuery.toLowerCase();
+      rows = rows.filter(p => p.name.toLowerCase().includes(q));
+    }
+    rows = [...rows].sort((a, b) => {
+      const pa = a.progress_percentage ?? 0;
+      const pb = b.progress_percentage ?? 0;
+      if (projSort === 'name') return a.name.localeCompare(b.name);
+      if (projSort === 'progress_desc') return pb - pa;
+      return pa - pb; // progress_asc
+    });
+    return rows;
+  }, [projects, projQuery, projSort]);
+
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
       <div className="mb-6">
@@ -644,6 +663,86 @@ const handleDragEnd = async (event: DragEndEvent) => {
           <KpiCard title="Completed Projects" value={completedProjectsCount} icon={CheckCircle} description="Projects that are finished" />
           <KpiCard title="In Progress Projects" value={inProgressProjectsCount} icon={LayoutDashboard} description="Projects currently active" />
         </div>
+
+        {/* NEW: Projects Progress — compact, scrollable, with search/sort/topN */}
+        <Card className="p-4 mb-6">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="font-semibold">Projects Progress</h2>
+
+            <div className="flex items-center gap-2">
+              {/* Condensed toggle */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCondensed(v => !v)}
+                className="hidden sm:inline-flex"
+                title="Toggle compact rows"
+              >
+                {condensed ? 'Comfortable' : 'Condensed'}
+              </Button>
+
+              {/* Sort */}
+              <Select
+                value={projSort}
+                onValueChange={(v) => setProjSort(v as 'name' | 'progress_desc' | 'progress_asc')}
+              >
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue placeholder="Sort by" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="progress_desc">Top progress</SelectItem>
+                  <SelectItem value="progress_asc">Lowest progress</SelectItem>
+                  <SelectItem value="name">Name (A–Z)</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {/* Search */}
+              <div className="w-[220px]">
+                <Input
+                  placeholder="Search projects…"
+                  value={projQuery}
+                  onChange={(e) => setProjQuery(e.target.value)}
+                />
+              </div>
+
+              {/* Show all / Top 8 (a bit more generous here since board sits below) */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAllProjects(s => !s)}
+              >
+                {showAllProjects ? 'Show top 8' : 'Show all'}
+              </Button>
+            </div>
+          </div>
+
+          {filteredSortedProjects.length === 0 ? (
+            <p className="text-sm text-muted-foreground mt-3">No projects.</p>
+          ) : (
+            <div
+              className="mt-4 pr-1"
+              style={{ maxHeight: 280, overflowY: 'auto' }}
+            >
+              {(showAllProjects ? filteredSortedProjects : filteredSortedProjects.slice(0, 8)).map((p) => (
+                <div key={p.id} className={condensed ? 'mb-2' : 'mb-3'}>
+                  <div className={`flex justify-between ${condensed ? 'mb-0.5' : 'mb-1'}`}>
+                    <span className={`text-sm ${condensed ? 'leading-tight' : ''}`}>{p.name}</span>
+                    <span className="text-xs text-gray-500">{p.progress_percentage ?? 0}%</span>
+                  </div>
+                  <div className={condensed ? 'h-2 bg-gray-200 rounded-full' : 'h-2.5 bg-gray-200 rounded-full'}>
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{
+                        width: `${p.progress_percentage ?? 0}%`,
+                        background: 'linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)',
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
 
         <div className="flex flex-col sm:flex-row gap-4 mb-4">
           <div className="relative flex-1">
@@ -667,7 +766,12 @@ const handleDragEnd = async (event: DragEndEvent) => {
                 <SelectValue placeholder="Filter by Project" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Projects</SelectItem>
+                <SelectItem value="all">
+                  <span className="inline-flex items-center">
+                    <Filter className="h-4 w-4 mr-2" />
+                    All Projects
+                  </span>
+                </SelectItem>
                 <SelectItem value="unassigned">Unassigned Tasks</SelectItem>
                 {projects.map((project) => (
                   <SelectItem key={project.id} value={project.id}>

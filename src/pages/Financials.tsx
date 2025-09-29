@@ -21,6 +21,61 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
 
+// --- Period / Compare helpers ---
+type PresetKey = 'custom' | '2m' | 'quarter' | 'half' | 'year';
+type CompareMode = 'none' | 'prev-period' | 'prev-year';
+
+const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const endOfDay = (d: Date) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; };
+const iso = (d: Date) => d.toISOString().split('T')[0];
+const addMonths = (d: Date, m: number) => { const x = new Date(d); x.setMonth(x.getMonth() + m); return x; };
+const startOfQuarter = (d: Date) => { const q = Math.floor(d.getMonth() / 3); return new Date(d.getFullYear(), q * 3, 1); };
+const endOfQuarter = (d: Date) => { const s = startOfQuarter(d); return new Date(s.getFullYear(), s.getMonth() + 3, 0); };
+
+function computePresetRange(preset: PresetKey, anchorDate = new Date()): { from: string; to: string } {
+  const today = startOfDay(anchorDate);
+  if (preset === '2m') {
+    const from = startOfDay(addMonths(today, -2));
+    return { from: iso(from), to: iso(today) };
+  }
+  if (preset === 'quarter') {
+    const s = startOfQuarter(today);
+    const e = endOfQuarter(today);
+    return { from: iso(s), to: iso(e) };
+  }
+  if (preset === 'half') {
+    const from = startOfDay(addMonths(today, -6));
+    return { from: iso(from), to: iso(today) };
+  }
+  if (preset === 'year') {
+    const from = startOfDay(addMonths(today, -12));
+    return { from: iso(from), to: iso(today) };
+  }
+  return { from: '', to: '' }; // custom
+}
+
+function previousPeriod(fromISO: string, toISO: string, mode: CompareMode): { prevFrom: string; prevTo: string } | null {
+  if (mode === 'none') return null;
+  const from = new Date(fromISO + 'T00:00:00');
+  const to = new Date(toISO + 'T00:00:00');
+  const ms = endOfDay(to).getTime() - startOfDay(from).getTime();
+  if (mode === 'prev-period') {
+    const prevTo = startOfDay(from);
+    const prevFrom = new Date(prevTo.getTime() - ms);
+    return { prevFrom: iso(prevFrom), prevTo: iso(new Date(prevTo.getTime() - 1)) };
+  }
+  // prev-year
+  const prevFrom = addMonths(from, -12);
+  const prevTo = addMonths(to, -12);
+  return { prevFrom: iso(prevFrom), prevTo: iso(prevTo) };
+}
+
+const pctChange = (current: number, prev: number) => {
+  if (!isFinite(prev) || Math.abs(prev) < 1e-9) return null;
+  return ((current - prev) / Math.abs(prev)) * 100;
+};
+const formatPct = (p: number | null) => (p === null ? '' : `${p.toFixed(1)}%`);
+
 // --- Types you already had ---
 interface Transaction {
   id: string;
@@ -62,8 +117,8 @@ interface BalanceSheetLineItem {
 
 // --- NEW: current assets detail coming from the API ---
 interface ApiCurrentAssetRow {
-  section: string;   // e.g. "cash_and_cash_equivalents"
-  label: string;     // e.g. "Cash And Cash Equivalents"
+  section: string;
+  label: string;
   amount: number;
   reporting_category_id?: number;
 }
@@ -75,8 +130,8 @@ interface ApiCurrentAssetsDetail {
 
 // --- NEW: types for PPE detail coming from the API ---
 interface ApiPpeRow {
-  section: string;          // normalized code (e.g. "computer_equipment")
-  label: string;            // nice label (e.g. "Computer equipment")
+  section: string;
+  label: string;
   gross_cost: number;
   accumulated_depreciation: number;
   net_book_value: number;
@@ -142,11 +197,11 @@ interface BalanceSheetData {
   liabilities: BalanceSheetLineItem[];
   equity: BalanceSheetLineItem[];
   totals: {
-    totalAssets: number;                 // uses control/effective when available
-    totalLiabilities: number;            // display liabilities total
-    totalEquity: number;                 // computed equity preferred
-    totalEquityAndLiabilities: number;   // uses control/effective when available
-    diff: number;                        // matches control.effective.diffComputed when present
+    totalAssets: number;
+    totalLiabilities: number;
+    totalEquity: number;
+    totalEquityAndLiabilities: number;
+    diff: number;
   };
 }
 
@@ -210,6 +265,9 @@ const Financials = () => {
   });
   const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0]);
 
+  const [preset, setPreset] = useState<PresetKey>('custom');
+  const [compareMode, setCompareMode] = useState<CompareMode>('none');
+
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [allAccounts, setAllAccounts] = useState<Account[]>([]);
   const [allAssets, setAllAssets] = useState<Asset[]>([]);
@@ -223,6 +281,15 @@ const Financials = () => {
     totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
   });
   const [cashflowData, setCashflowData] = useState<{ category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[]>([]);
+
+  // Previous-period datasets for compare mode
+  const [trialBalanceDataPrev, setTrialBalanceDataPrev] = useState<ApiTrialBalanceItem[]>([]);
+  const [incomeStatementDataPrev, setIncomeStatementDataPrev] = useState<typeof incomeStatementData>([]);
+  const [balanceSheetDataPrev, setBalanceSheetDataPrev] = useState<BalanceSheetData>({
+    assets: [], liabilities: [], equity: [],
+    totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
+  });
+  const [cashflowDataPrev, setCashflowDataPrev] = useState<typeof cashflowData>([]);
 
   const [activeTab, setActiveTab] = useState<'trial-balance' | 'income-statement' | 'balance-sheet' | 'cash-flow-statement'>('income-statement');
   const [selectedDocumentType, setSelectedDocumentType] = useState<string>('income-statement');
@@ -293,6 +360,48 @@ const Financials = () => {
     return Math.abs(n).toFixed(2);
   };
 
+  // Align helpers for comparative tables
+  type SimpleLine = { item: string; amount?: number | ''; isTotal?: boolean; isSubheader?: boolean; isAdjustment?: boolean; type?: string };
+  const toNumOrNull = (v: number | '' | undefined): number | null => (typeof v === 'number' ? v : null);
+
+  function alignByItem(current: SimpleLine[], prev: SimpleLine[]) {
+    const mapPrev = new Map(prev.map(l => [l.item, l]));
+    const keysOrdered: string[] = [];
+    current.forEach(l => keysOrdered.push(l.item));
+    prev.forEach(l => { if (!mapPrev.has(l.item) && !keysOrdered.includes(l.item)) keysOrdered.push(l.item); });
+    return keysOrdered.map(k => {
+      const c = current.find(x => x.item === k);
+      const p = prev.find(x => x.item === k);
+      return {
+        item: k,
+        type: (c?.type ?? p?.type),
+        isTotal: c?.isTotal || p?.isTotal,
+        isSubheader: c?.isSubheader || p?.isSubheader,
+        isAdjustment: c?.isAdjustment || p?.isAdjustment,
+        cur: toNumOrNull(c?.amount as any),
+        prev: toNumOrNull(p?.amount as any),
+      };
+    });
+  }
+
+  // Cashflow flatten -> simple lines
+  const flattenCashflow = (sections: { category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[]): SimpleLine[] => {
+    const out: SimpleLine[] = [];
+    sections.forEach(sec => {
+      out.push({ item: sec.category, isSubheader: true });
+      sec.items.forEach(it => out.push({ item: `  ${it.item}`, amount: it.amount }));
+      if (sec.showSubtotal) {
+        const label = sec.total >= 0 ? `Net cash from ${sec.category}` : `Net cash used in ${sec.category}`;
+        out.push({ item: label, amount: sec.total, isTotal: true });
+      } else {
+        // Net increase/decrease line
+        out.push({ item: sec.category, amount: sec.total, isTotal: true });
+      }
+    });
+    return out;
+  };
+
+  // Pull base lists for the period (transactions/accounts/assets)
   const fetchAllData = useCallback(async () => {
     if (!token) {
       setAllTransactions([]);
@@ -340,7 +449,14 @@ const Financials = () => {
     }
   }, [fetchAllData, isAuthenticated, token]);
 
-  // --- Income Statement ---
+  // When preset changes (and not custom), update date range
+  useEffect(() => {
+    if (preset === 'custom') return;
+    const { from, to } = computePresetRange(preset);
+    if (from && to) { setFromDate(from); setToDate(to); }
+  }, [preset]);
+
+  // --- Income Statement builder ---
   const buildIncomeStatementLines = (sections: ApiIncomeStatementSection[] | undefined) => {
     const lines: { item: string; amount: number | ''; type?: string }[] = [];
     if (!sections || !Array.isArray(sections)) return lines;
@@ -413,7 +529,7 @@ const Financials = () => {
     return lines;
   };
 
-  // --- Balance Sheet (current assets + PPE categories) ---
+  // --- Balance Sheet normalization ---
   const normalizeBalanceSheetFromServer = (response: ApiBalanceSheetResponse | undefined): BalanceSheetData => {
     const assets: BalanceSheetLineItem[] = [];
     const liabilities: BalanceSheetLineItem[] = [];
@@ -426,18 +542,14 @@ const Financials = () => {
       };
     }
 
-    // Equity pieces
-    const openingEquity   = num(response.equityBreakdown?.opening ?? response.openingEquity);
-    const periodProfit    = num(response.equityBreakdown?.periodProfit ?? response.netProfitLoss);
-    const priorRetained   = num(response.equityBreakdown?.priorRetained ?? 0);
-    const sinceInception  = num(response.equityBreakdown?.sinceInception ?? 0);
-    const equityAccounts  = num(response.equityBreakdown?.equityAccounts ?? response.closingEquity ?? 0);
+    const openingEquity = num(response.equityBreakdown?.opening ?? response.openingEquity);
+    const periodProfit = num(response.equityBreakdown?.periodProfit ?? response.netProfitLoss);
+    const priorRetained = num(response.equityBreakdown?.priorRetained ?? 0);
+    const sinceInception = num(response.equityBreakdown?.sinceInception ?? 0);
+    const equityAccounts = num(response.equityBreakdown?.equityAccounts ?? response.closingEquity ?? 0);
     const otherEquityMovements = num(response.otherEquityMovements ?? 0);
 
-    // Current assets from API sections
     const currentAssets = num(response.assets?.current ?? 0);
-
-    // Prefer detailed PPE NBV sum when present; fallback to section summary
     const ppe = response.non_current_assets_detail;
     const nonCurrentFromDetail = Array.isArray(ppe?.rows)
       ? ppe!.rows.reduce((sum, r) => sum + num(r.net_book_value), 0)
@@ -445,15 +557,12 @@ const Financials = () => {
     const nonCurrentFallback = num(response.assets?.non_current ?? 0);
     const nonCurrentAssets = nonCurrentFromDetail || nonCurrentFallback;
 
-    // Liabilities from sections
-    const currentLiabs    = num(response.liabilities?.current ?? 0);
+    const currentLiabs = num(response.liabilities?.current ?? 0);
     const nonCurrentLiabs = num(response.liabilities?.non_current ?? 0);
 
-    // DISPLAY totals (what we render in the list)
     const displayTotalAssets = currentAssets + nonCurrentAssets;
-    const displayTotalLiabs  = currentLiabs + nonCurrentLiabs;
+    const displayTotalLiabs = currentLiabs + nonCurrentLiabs;
 
-    // Equity used for display (prefer backend computed)
     const equityComputed =
       num(response.control?.effective?.equityComputed) ||
       num(response.equityBreakdown?.totalComputed) ||
@@ -462,15 +571,13 @@ const Financials = () => {
 
     const displayLiabPlusEquity = displayTotalLiabs + equityComputed;
 
-    // GL CONTROL totals (authoritative)
-    const controlAssetsTotal       = num(response.control?.assetsTotal);
+    const controlAssetsTotal = num(response.control?.assetsTotal);
     const controlLiabPlusEquityEff = num(response.control?.effective?.liabPlusEquityComputed);
-    const controlDiffEff           = num(response.control?.effective?.diffComputed);
+    const controlDiffEff = num(response.control?.effective?.diffComputed);
 
-    // Fallbacks when control missing
-    const totalAssetsFinal         = controlAssetsTotal || displayTotalAssets;
+    const totalAssetsFinal = controlAssetsTotal || displayTotalAssets;
     const totalEquityAndLiabsFinal = controlLiabPlusEquityEff || displayLiabPlusEquity;
-    const diffFinal                = Number((totalAssetsFinal - totalEquityAndLiabsFinal).toFixed(2));
+    const diffFinal = Number((totalAssetsFinal - totalEquityAndLiabsFinal).toFixed(2));
 
     // ----- Build asset lines -----
     assets.push({ item: 'Current Assets', amount: 0, isSubheader: true });
@@ -492,7 +599,7 @@ const Financials = () => {
         .forEach(r => {
           const gross = num(r.gross_cost);
           const accum = num(r.accumulated_depreciation);
-          const nbv   = num(r.net_book_value);
+          const nbv = num(r.net_book_value);
           assets.push({ item: `    ${r.label}`, amount: nbv });
           if (nonZero(gross)) assets.push({ item: `      Gross cost – ${r.label}`, amount: gross, isAdjustment: true });
           if (nonZero(accum)) assets.push({ item: `      Accumulated depreciation – ${r.label}`, amount: -Math.abs(accum), isAdjustment: true });
@@ -535,14 +642,9 @@ const Financials = () => {
     }
     equity.push({ item: 'TOTAL EQUITY', amount: equityComputed, isTotal: true, isSubheader: true });
 
-    const liabilitiesWithGrand = [
-      ...liabilities,
-      { item: 'TOTAL EQUITY AND LIABILITIES', amount: displayLiabPlusEquity, isTotal: true, isSubheader: true }
-    ];
-
     return {
       assets,
-      liabilities: liabilitiesWithGrand,
+      liabilities,
       equity,
       totals: {
         totalAssets: totalAssetsFinal,
@@ -597,62 +699,74 @@ const Financials = () => {
     async (type: ReportId) => {
       if (!token) return;
 
-      try {
-        let url = '';
-        const headers = { Accept: 'application/json', Authorization: `Bearer ${token}` };
+      const headers = { Accept: 'application/json', Authorization: `Bearer ${token}` };
 
-        switch (type) {
+      const buildUrl = (t: ReportId, start: string, end: string) => {
+        switch (t) {
           case 'income-statement':
-            url = `${API_BASE_URL}/reports/income-statement?start=${fromDate}&end=${toDate}`;
-            break;
+            return `${API_BASE_URL}/reports/income-statement?start=${start}&end=${end}`;
           case 'balance-sheet':
-            url = `${API_BASE_URL}/reports/balance-sheet?asOf=${toDate}&start=${fromDate}&debug=1`;
-            break;
+            return `${API_BASE_URL}/reports/balance-sheet?asOf=${end}&start=${start}&debug=1`;
           case 'trial-balance':
-            url = `${API_BASE_URL}/reports/trial-balance?start=${fromDate}&end=${toDate}`;
-            break;
+            return `${API_BASE_URL}/reports/trial-balance?start=${start}&end=${end}`;
           case 'cash-flow-statement':
-            url = `${API_BASE_URL}/reports/cash-flow?start=${fromDate}&end=${toDate}`;
-            break;
+            return `${API_BASE_URL}/reports/cash-flow?start=${start}&end=${end}`;
           default:
-            throw new Error(`Unsupported report type: ${type}`);
+            throw new Error(`Unsupported report type: ${t}`);
         }
+      };
 
+      const doFetch = async (url: string) => {
         const res = await fetch(url, { headers });
         if (!res.ok) {
           const errorText = await res.text();
-          throw new Error(`Failed to fetch ${type}: ${res.status} ${res.statusText}. Details: ${errorText}`);
+          throw new Error(`${res.status} ${res.statusText}. Details: ${errorText}`);
         }
-
-        const contentType = res.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
-          const text = await res.text();
-          throw new Error(`Expected JSON for ${type} but got ${contentType}. First bytes: ${text.slice(0, 100)}...`);
-        }
-
         const payload = await res.json();
+        return payload;
+      };
+
+      try {
+        // Current period
+        const url = buildUrl(type, fromDate, toDate);
+        const payload = await doFetch(url);
 
         if (type === 'income-statement') {
           const sections = payload?.sections as ApiIncomeStatementSection[] | undefined;
-          const lines = buildIncomeStatementLines(sections);
-          setIncomeStatementData(lines);
+          setIncomeStatementData(buildIncomeStatementLines(sections));
+        } else if (type === 'trial-balance') {
+          setTrialBalanceData((payload?.items as ApiTrialBalanceItem[]) || []);
+        } else if (type === 'balance-sheet') {
+          setBalanceSheetData(normalizeBalanceSheetFromServer(payload as ApiBalanceSheetResponse));
+        } else if (type === 'cash-flow-statement') {
+          setCashflowData(normalizeCashflow(payload?.sections as ApiCashFlowGrouped | undefined));
         }
 
-        if (type === 'trial-balance') {
-          const items = payload?.items as ApiTrialBalanceItem[] | undefined;
-          setTrialBalanceData(items || []);
-        }
+        // Comparison period
+        const prevRange = previousPeriod(fromDate, toDate, compareMode);
+        if (prevRange) {
+          const prevUrl = buildUrl(type, prevRange.prevFrom, prevRange.prevTo);
+          const prevPayload = await doFetch(prevUrl);
 
-        if (type === 'balance-sheet') {
-          const response = payload as ApiBalanceSheetResponse | undefined;
-          const normalized = normalizeBalanceSheetFromServer(response);
-          setBalanceSheetData(normalized);
-        }
-
-        if (type === 'cash-flow-statement') {
-          const groupedSections = payload?.sections as ApiCashFlowGrouped | undefined;
-          const normalizedSections = normalizeCashflow(groupedSections);
-          setCashflowData(normalizedSections);
+          if (type === 'income-statement') {
+            const sections = prevPayload?.sections as ApiIncomeStatementSection[] | undefined;
+            setIncomeStatementDataPrev(buildIncomeStatementLines(sections));
+          } else if (type === 'trial-balance') {
+            setTrialBalanceDataPrev((prevPayload?.items as ApiTrialBalanceItem[]) || []);
+          } else if (type === 'balance-sheet') {
+            setBalanceSheetDataPrev(normalizeBalanceSheetFromServer(prevPayload as ApiBalanceSheetResponse));
+          } else if (type === 'cash-flow-statement') {
+            setCashflowDataPrev(normalizeCashflow(prevPayload?.sections as ApiCashFlowGrouped | undefined));
+          }
+        } else {
+          // Clear prev sets when compare is off
+          setIncomeStatementDataPrev([]);
+          setTrialBalanceDataPrev([]);
+          setBalanceSheetDataPrev({
+            assets: [], liabilities: [], equity: [],
+            totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
+          });
+          setCashflowDataPrev([]);
         }
       } catch (err: any) {
         console.error(`Error fetching ${type}:`, err);
@@ -661,20 +775,16 @@ const Financials = () => {
           description: err.message || 'Please try again.',
           variant: 'destructive',
         });
-        switch (type) {
-          case 'income-statement': setIncomeStatementData([]); break;
-          case 'trial-balance': setTrialBalanceData([]); break;
-          case 'balance-sheet':
-            setBalanceSheetData({
-              assets: [], liabilities: [], equity: [],
-              totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
-            });
-            break;
-          case 'cash-flow-statement': setCashflowData([]); break;
-        }
+        if (type === 'income-statement') setIncomeStatementData([]);
+        if (type === 'trial-balance') setTrialBalanceData([]);
+        if (type === 'balance-sheet') setBalanceSheetData({
+          assets: [], liabilities: [], equity: [],
+          totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
+        });
+        if (type === 'cash-flow-statement') setCashflowData([]);
       }
     },
-    [fromDate, toDate, token, toast]
+    [fromDate, toDate, token, toast, compareMode]
   );
 
   useEffect(() => {
@@ -685,10 +795,10 @@ const Financials = () => {
   // Prefetch all four so exports always have data
   useEffect(() => {
     if (!isAuthenticated || !token) return;
-    (['income-statement','trial-balance','balance-sheet','cash-flow-statement'] as ReportId[])
+    (['income-statement', 'trial-balance', 'balance-sheet', 'cash-flow-statement'] as ReportId[])
       .forEach((t) => fetchServerStatement(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, isAuthenticated, token]);
+  }, [fromDate, toDate, isAuthenticated, token, compareMode]);
 
   // ------- PDF (existing) -------
   const handleDownloadPdf = async () => {
@@ -726,7 +836,7 @@ const Financials = () => {
     }
   };
 
-  // ------- CSV builders -------
+  // ------- CSV builders (unchanged single-period) -------
   const buildCsvRowsFor = (type: ReportId) => {
     const rows: (string | number | null | undefined)[][] = [];
     const periodStr = `${new Date(fromDate).toLocaleDateString('en-ZA')} to ${new Date(toDate).toLocaleDateString('en-ZA')}`;
@@ -769,7 +879,6 @@ const Financials = () => {
       rows.push([`As of ${new Date(toDate).toLocaleDateString('en-ZA')}`]);
       pushBlank();
 
-      // Assets
       rows.push(['ASSETS']);
       rows.push(['Item', 'Amount (R)']);
       (balanceSheetData.assets || [])
@@ -777,21 +886,15 @@ const Financials = () => {
         .forEach(li => rows.push([li.item, li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })]));
 
       pushBlank();
-
-      // Equity & Liabilities
       rows.push(['EQUITY AND LIABILITIES']);
       rows.push(['Item', 'Amount (R)']);
-      (balanceSheetData.liabilities || [])
-        .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
-        .forEach(li => rows.push([li.item, li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })]));
-      (balanceSheetData.equity || [])
+      [...(balanceSheetData.liabilities || []), ...(balanceSheetData.equity || [])]
         .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
         .forEach(li => rows.push([li.item, li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })]));
 
       pushBlank();
       rows.push(['TOTAL ASSETS (control)', csvAmount(balanceSheetData.totals.totalAssets, { alwaysShow: true })]);
       rows.push(['TOTAL EQUITY AND LIABILITIES (control)', csvAmount(balanceSheetData.totals.totalEquityAndLiabilities, { alwaysShow: true })]);
-
       return rows;
     }
 
@@ -820,7 +923,6 @@ const Financials = () => {
           pushBlank();
         }
       });
-
       return rows;
     }
 
@@ -845,7 +947,7 @@ const Financials = () => {
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
 
-      const ids: ReportId[] = ['income-statement','trial-balance','balance-sheet','cash-flow-statement'];
+      const ids: ReportId[] = ['income-statement', 'trial-balance', 'balance-sheet', 'cash-flow-statement'];
       ids.forEach((id) => {
         const rows = buildCsvRowsFor(id);
         const csv = rowsToCsvString(rows);
@@ -876,6 +978,9 @@ const Financials = () => {
     );
   }
 
+  // ====== UI ======
+  const showCompare = compareMode !== 'none';
+
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
       <Header />
@@ -885,9 +990,7 @@ const Financials = () => {
         transition={{ duration: 0.5 }}
         className="container mx-auto p-4 sm:p-6 lg:p-8"
       >
-        <Button onClick={() => navigate('/dashboard')} className="mb-6 flex items-center" variant="outline">
-          <ArrowLeft className="h-4 w-4 mr-2" /> Back to Dashboard
-        </Button>
+
 
         <Card className="mb-6 bg-white dark:bg-gray-800 shadow-lg rounded-lg">
           <CardHeader>
@@ -902,13 +1005,49 @@ const Financials = () => {
                 <label htmlFor="fromDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   From Date
                 </label>
-                <Input id="fromDate" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="w-full" />
+                <Input id="fromDate" type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setPreset('custom'); }} className="w-full" />
               </div>
               <div className="flex-1 w-full sm:w-auto">
                 <label htmlFor="toDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   To Date
                 </label>
-                <Input id="toDate" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="w-full" />
+                <Input id="toDate" type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setPreset('custom'); }} className="w-full" />
+              </div>
+
+              {/* Period Preset */}
+              <div className="flex-1 w-full sm:w-auto">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Period Preset
+                </label>
+                <Select value={preset} onValueChange={(v) => setPreset(v as PresetKey)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Choose a preset" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="custom">Custom (use dates)</SelectItem>
+                    <SelectItem value="2m">Last 2 months</SelectItem>
+                    <SelectItem value="quarter">This quarter</SelectItem>
+                    <SelectItem value="half">Last 6 months</SelectItem>
+                    <SelectItem value="year">Last 12 months</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Compare */}
+              <div className="flex-1 w-full sm:w-auto">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Compare
+                </label>
+                <Select value={compareMode} onValueChange={(v) => setCompareMode(v as CompareMode)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="No comparison" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No comparison</SelectItem>
+                    <SelectItem value="prev-period">Previous period</SelectItem>
+                    <SelectItem value="prev-year">Same period last year</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="flex-1 w-full sm:w-auto">
@@ -962,36 +1101,59 @@ const Financials = () => {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Item</TableHead>
-                      <TableHead className="text-right">Amount (R)</TableHead>
+                      {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                      {showCompare && (
+                        <>
+                          <TableHead className="text-right">Current (R)</TableHead>
+                          <TableHead className="text-right">Previous (R)</TableHead>
+                          <TableHead className="text-right">Δ</TableHead>
+                          <TableHead className="text-right">Δ%</TableHead>
+                        </>
+                      )}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {incomeStatementData && incomeStatementData.length > 0 ? (
-                      (incomeStatementData.filter(l => typeof l.amount !== 'number' || nonZero(l.amount))).map((item, index) => {
+                    {(!incomeStatementData || incomeStatementData.length === 0) ? (
+                      <TableRow>
+                        <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
+                          No data available for the selected period.
+                        </TableCell>
+                      </TableRow>
+                    ) : !showCompare ? (
+                      (incomeStatementData.filter(l => typeof l.amount !== 'number' || nonZero(l.amount))).map((item, idx) => {
                         const isTotalish = item.type === 'total' || item.type === 'subtotal';
                         const isHeaderish = item.type === 'header' || item.type === 'subheader';
                         const isExpenseDetail = item.type === 'detail-expense';
                         return (
-                          <TableRow
-                            key={index}
-                            className={[
-                              isTotalish ? 'font-bold border-t-2 border-b-2' : '',
-                              isHeaderish ? 'font-semibold text-gray-800' : '',
-                            ].join(' ')}
-                          >
+                          <TableRow key={idx} className={[
+                            isTotalish ? 'font-bold border-t-2 border-b-2' : '',
+                            isHeaderish ? 'font-semibold text-gray-800' : '',
+                          ].join(' ')}>
                             <TableCell className={isExpenseDetail ? 'pl-8' : ''}>{item.item}</TableCell>
-                            <TableCell className="text-right">
-                              {typeof item.amount === 'number' ? moneyOrBlank(item.amount) : ''}
-                            </TableCell>
+                            <TableCell className="text-right">{typeof item.amount === 'number' ? moneyOrBlank(item.amount) : ''}</TableCell>
                           </TableRow>
                         );
                       })
                     ) : (
-                      <TableRow>
-                        <TableCell colSpan={2} className="text-center text-gray-500">
-                          No data available for the selected period.
-                        </TableCell>
-                      </TableRow>
+                      alignByItem(incomeStatementData, incomeStatementDataPrev).map((row, idx) => {
+                        const isTotalish = row.type === 'total' || row.isTotal;
+                        const isHeaderish = row.type === 'header' || row.isSubheader;
+                        const cls = [
+                          isTotalish ? 'font-bold border-t-2 border-b-2' : '',
+                          isHeaderish ? 'font-semibold text-gray-800' : ''
+                        ].join(' ');
+                        const delta = (row.cur ?? 0) - (row.prev ?? 0);
+                        const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
+                        return (
+                          <TableRow key={idx} className={cls}>
+                            <TableCell className={row.type === 'detail-expense' ? 'pl-8' : ''}>{row.item}</TableCell>
+                            <TableCell className="text-right">{row.cur != null ? moneyOrBlank(row.cur) : ''}</TableCell>
+                            <TableCell className="text-right">{row.prev != null ? moneyOrBlank(row.prev) : ''}</TableCell>
+                            <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.cur != null || row.prev != null ? moneyOrBlank(delta) : ''}</TableCell>
+                            <TableCell className="text-right">{formatPct(pct)}</TableCell>
+                          </TableRow>
+                        );
+                      })
                     )}
                   </TableBody>
                 </Table>
@@ -1011,12 +1173,30 @@ const Financials = () => {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Account</TableHead>
-                      <TableHead className="text-right">Debit (R)</TableHead>
-                      <TableHead className="text-right">Credit (R)</TableHead>
+                      {!showCompare && (
+                        <>
+                          <TableHead className="text-right">Debit (R)</TableHead>
+                          <TableHead className="text-right">Credit (R)</TableHead>
+                        </>
+                      )}
+                      {showCompare && (
+                        <>
+                          <TableHead className="text-right">DR (Current)</TableHead>
+                          <TableHead className="text-right">CR (Current)</TableHead>
+                          <TableHead className="text-right">DR (Previous)</TableHead>
+                          <TableHead className="text-right">CR (Previous)</TableHead>
+                        </>
+                      )}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {trialBalanceData && trialBalanceData.length > 0 ? (
+                    {(!trialBalanceData || trialBalanceData.length === 0) ? (
+                      <TableRow>
+                        <TableCell colSpan={showCompare ? 5 : 3} className="text-center text-gray-500">
+                          No data available for the selected period.
+                        </TableCell>
+                      </TableRow>
+                    ) : !showCompare ? (
                       <>
                         {trialBalanceData
                           .filter(i => nonZero(num(i.balance_debit)) || nonZero(num(i.balance_credit)))
@@ -1038,11 +1218,47 @@ const Financials = () => {
                         </TableRow>
                       </>
                     ) : (
-                      <TableRow>
-                        <TableCell colSpan={3} className="text-center text-gray-500">
-                          No data available for the selected period.
-                        </TableCell>
-                      </TableRow>
+                      (() => {
+                        // Build prev map by "code-name" for alignment
+                        const prevMap = new Map<string, ApiTrialBalanceItem>();
+                        (trialBalanceDataPrev || []).forEach(p => prevMap.set(`${p.code}||${p.name}`, p));
+                        const allRows = [...trialBalanceData]
+                          .filter(i => nonZero(num(i.balance_debit)) || nonZero(num(i.balance_credit)) || prevMap.has(`${i.code}||${i.name}`))
+                          .sort((a, b) => a.code.localeCompare(b.code));
+
+                        return (
+                          <>
+                            {allRows.map((cur, idx) => {
+                              const key = `${cur.code}||${cur.name}`;
+                              const p = prevMap.get(key);
+                              return (
+                                <TableRow key={idx}>
+                                  <TableCell>{cur.code} - {cur.name}</TableCell>
+                                  <TableCell className="text-right">{moneyOrBlank(num(cur.balance_debit))}</TableCell>
+                                  <TableCell className="text-right">{moneyOrBlank(num(cur.balance_credit))}</TableCell>
+                                  <TableCell className="text-right">{p ? moneyOrBlank(num(p.balance_debit)) : ''}</TableCell>
+                                  <TableCell className="text-right">{p ? moneyOrBlank(num(p.balance_credit)) : ''}</TableCell>
+                                </TableRow>
+                              );
+                            })}
+                            <TableRow className="font-bold border-t-2">
+                              <TableCell>TOTALS</TableCell>
+                              <TableCell className="text-right">
+                                {formatCurrency(trialBalanceData.reduce((s, i) => s + num(i.balance_debit), 0))}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {formatCurrency(trialBalanceData.reduce((s, i) => s + num(i.balance_credit), 0))}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {formatCurrency((trialBalanceDataPrev || []).reduce((s, i) => s + num(i.balance_debit), 0))}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {formatCurrency((trialBalanceDataPrev || []).reduce((s, i) => s + num(i.balance_credit), 0))}
+                              </TableCell>
+                            </TableRow>
+                          </>
+                        );
+                      })()
                     )}
                   </TableBody>
                 </Table>
@@ -1058,77 +1274,186 @@ const Financials = () => {
                 <CardDescription>As of {new Date(toDate).toLocaleDateString('en-ZA')}</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-6">
-                  {/* Assets */}
-                  <div>
-                    <h3 className="font-semibold text-lg mb-3">ASSETS</h3>
-                    <div className="space-y-2 ml-4">
-                      {balanceSheetData.assets && balanceSheetData.assets.length > 0 ? (
+                {/* ASSETS comparative table */}
+                <div className="mb-8">
+                  <h3 className="font-semibold text-lg mb-3">ASSETS</h3>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Item</TableHead>
+                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                        {showCompare && (
+                          <>
+                            <TableHead className="text-right">Current (R)</TableHead>
+                            <TableHead className="text-right">Previous (R)</TableHead>
+                            <TableHead className="text-right">Δ</TableHead>
+                            <TableHead className="text-right">Δ%</TableHead>
+                          </>
+                        )}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(!balanceSheetData.assets || balanceSheetData.assets.length === 0) ? (
+                        <TableRow>
+                          <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
+                            No asset data available.
+                          </TableCell>
+                        </TableRow>
+                      ) : !showCompare ? (
                         balanceSheetData.assets
                           .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
                           .map((item, index) => (
-                            <div
-                              key={`asset-${index}`}
-                              className={`flex justify-between py-1
-                                ${item.isTotal ? 'font-bold border-t pt-2' : ''}
-                                ${item.isSubheader ? 'font-semibold text-md !mt-4' : ''}
-                                ${item.isAdjustment ? 'pl-4 text-sm text-gray-600 dark:text-gray-400' : ''}`}
-                            >
-                              <span>{item.item}</span>
-                              <span className="font-mono">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</span>
-                            </div>
+                            <TableRow key={`asset-${index}`}>
+                              <TableCell className={[
+                                item.isTotal ? 'font-bold' : '',
+                                item.isSubheader ? 'font-semibold !mt-4' : '',
+                                item.isAdjustment ? 'pl-4 text-sm text-gray-600 dark:text-gray-400' : ''
+                              ].join(' ')}>
+                                {item.item}
+                              </TableCell>
+                              <TableCell className="text-right">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</TableCell>
+                            </TableRow>
                           ))
                       ) : (
-                        <p className="text-gray-500">No asset data available.</p>
+                        alignByItem(balanceSheetData.assets, balanceSheetDataPrev.assets).map((row, idx) => {
+                          const delta = (row.cur ?? 0) - (row.prev ?? 0);
+                          const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
+                          return (
+                            <TableRow key={idx}>
+                              <TableCell className={[
+                                row.isTotal ? 'font-bold' : '',
+                                row.isSubheader ? 'font-semibold !mt-4' : '',
+                                row.isAdjustment ? 'pl-4 text-sm text-gray-600 dark:text-gray-400' : ''
+                              ].join(' ')}>
+                                {row.item}
+                              </TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : (row.cur != null ? moneyOrBlank(row.cur) : '')}</TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : (row.prev != null ? moneyOrBlank(row.prev) : '')}</TableCell>
+                              <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : formatPct(pct)}</TableCell>
+                            </TableRow>
+                          );
+                        })
                       )}
-                    </div>
-                  </div>
+                    </TableBody>
+                  </Table>
+                </div>
 
-                  {/* Liabilities & Equity */}
-                  <div>
-                    <h3 className="font-semibold text-lg mb-3 mt-6">EQUITY AND LIABILITIES</h3>
-                    <div className="space-y-2 ml-4">
-                      {balanceSheetData.liabilities && balanceSheetData.liabilities.length > 0 ? (
+                {/* EQUITY & LIABILITIES comparative tables (split for clarity) */}
+                <div className="mt-6">
+                  <h3 className="font-semibold text-lg mb-3">LIABILITIES</h3>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Item</TableHead>
+                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                        {showCompare && (
+                          <>
+                            <TableHead className="text-right">Current (R)</TableHead>
+                            <TableHead className="text-right">Previous (R)</TableHead>
+                            <TableHead className="text-right">Δ</TableHead>
+                            <TableHead className="text-right">Δ%</TableHead>
+                          </>
+                        )}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(!balanceSheetData.liabilities || balanceSheetData.liabilities.length === 0) ? (
+                        <TableRow>
+                          <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
+                            No liability data available.
+                          </TableCell>
+                        </TableRow>
+                      ) : !showCompare ? (
                         balanceSheetData.liabilities
                           .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
                           .map((item, index) => (
-                            <div
-                              key={`liab-${index}`}
-                              className={`flex justify-between py-1
-                                ${item.isTotal ? 'font-bold border-t pt-2' : ''}
-                                ${item.isSubheader ? 'font-semibold text-md !mt-4' : ''}
-                                ${item.isAdjustment ? 'pl-4' : ''}`}
-                            >
-                              <span>{item.item}</span>
-                              <span className="font-mono">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</span>
-                            </div>
+                            <TableRow key={`liab-${index}`}>
+                              <TableCell className={[
+                                item.isTotal ? 'font-bold' : '',
+                                item.isSubheader ? 'font-semibold !mt-4' : ''
+                              ].join(' ')}>
+                                {item.item}
+                              </TableCell>
+                              <TableCell className="text-right">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</TableCell>
+                            </TableRow>
                           ))
                       ) : (
-                        <p className="text-gray-500">No liability data available.</p>
+                        alignByItem(balanceSheetData.liabilities, balanceSheetDataPrev.liabilities).map((row, idx) => {
+                          const delta = (row.cur ?? 0) - (row.prev ?? 0);
+                          const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
+                          return (
+                            <TableRow key={idx}>
+                              <TableCell className={[row.isTotal ? 'font-bold' : '', row.isSubheader ? 'font-semibold !mt-4' : ''].join(' ')}>{row.item}</TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : (row.cur != null ? moneyOrBlank(row.cur) : '')}</TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : (row.prev != null ? moneyOrBlank(row.prev) : '')}</TableCell>
+                              <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : formatPct(pct)}</TableCell>
+                            </TableRow>
+                          );
+                        })
                       )}
+                    </TableBody>
+                  </Table>
+                </div>
 
-                      {balanceSheetData.equity && balanceSheetData.equity.length > 0 ? (
+                <div className="mt-6">
+                  <h3 className="font-semibold text-lg mb-3">EQUITY</h3>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Item</TableHead>
+                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                        {showCompare && (
+                          <>
+                            <TableHead className="text-right">Current (R)</TableHead>
+                            <TableHead className="text-right">Previous (R)</TableHead>
+                            <TableHead className="text-right">Δ</TableHead>
+                            <TableHead className="text-right">Δ%</TableHead>
+                          </>
+                        )}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(!balanceSheetData.equity || balanceSheetData.equity.length === 0) ? (
+                        <TableRow>
+                          <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
+                            No equity data available.
+                          </TableCell>
+                        </TableRow>
+                      ) : !showCompare ? (
                         balanceSheetData.equity
                           .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
                           .map((item, index) => (
-                            <div
-                              key={`equity-${index}`}
-                              className={`flex justify-between py-1
-                                ${item.isTotal ? 'font-bold border-t pt-2' : ''}
-                                ${item.isSubheader ? 'font-semibold text-md !mt-4' : ''}
-                                ${item.isAdjustment ? 'pl-4' : ''}`}
-                            >
-                              <span>{item.item}</span>
-                              <span className="font-mono">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</span>
-                            </div>
+                            <TableRow key={`equity-${index}`}>
+                              <TableCell className={[
+                                item.isTotal ? 'font-bold' : '',
+                                item.isSubheader ? 'font-semibold !mt-4' : ''
+                              ].join(' ')}>
+                                {item.item}
+                              </TableCell>
+                              <TableCell className="text-right">{item.isSubheader ? '' : moneyOrBlank(item.amount)}</TableCell>
+                            </TableRow>
                           ))
                       ) : (
-                        <p className="text-gray-500">No equity data available.</p>
+                        alignByItem(balanceSheetData.equity, balanceSheetDataPrev.equity).map((row, idx) => {
+                          const delta = (row.cur ?? 0) - (row.prev ?? 0);
+                          const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
+                          return (
+                            <TableRow key={idx}>
+                              <TableCell className={[row.isTotal ? 'font-bold' : '', row.isSubheader ? 'font-semibold !mt-4' : ''].join(' ')}>{row.item}</TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : (row.cur != null ? moneyOrBlank(row.cur) : '')}</TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : (row.prev != null ? moneyOrBlank(row.prev) : '')}</TableCell>
+                              <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
+                              <TableCell className="text-right">{row.isSubheader ? '' : formatPct(pct)}</TableCell>
+                            </TableRow>
+                          );
+                        })
                       )}
-                    </div>
-                  </div>
+                    </TableBody>
+                  </Table>
 
-                  {/* Equality Check (uses control/effective when available) */}
+                  {/* Equality Check (control totals) */}
                   <div className="mt-6 border-t pt-3 space-y-1">
                     <div className="flex justify-between">
                       <span className="font-semibold">TOTAL ASSETS (control)</span>
@@ -1161,59 +1486,67 @@ const Financials = () => {
               </CardHeader>
 
               <CardContent>
-                <div className="space-y-6">
-                  {cashflowData && cashflowData.length > 0 ? (
-                    cashflowData
-                      .filter(section => {
-                        const isNetLine = section.category === 'Net Increase / (Decrease) in Cash';
-                        return isNetLine || section.items.length > 0 || nonZero(section.total);
-                      })
-                      .map((section, sectionIndex) => {
-                        const isNetLine = section.category === 'Net Increase / (Decrease) in Cash';
-                        const subtotalLabel =
-                          section.total >= 0
-                            ? `Net cash from ${section.category}`
-                            : `Net cash used in ${section.category}`;
-
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Line</TableHead>
+                      {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                      {showCompare && (
+                        <>
+                          <TableHead className="text-right">Current (R)</TableHead>
+                          <TableHead className="text-right">Previous (R)</TableHead>
+                          <TableHead className="text-right">Δ</TableHead>
+                          <TableHead className="text-right">Δ%</TableHead>
+                        </>
+                      )}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(!cashflowData || cashflowData.length === 0) ? (
+                      <TableRow>
+                        <TableCell colSpan={showCompare ? 5 : 2} className="text-center text-gray-500">
+                          No cash flow data available for the selected period.
+                        </TableCell>
+                      </TableRow>
+                    ) : !showCompare ? (
+                      normalizeCashflow(cashflowData as any) /* already normalized, but harmless */
+                      && flattenCashflow(cashflowData)
+                        .map((row, idx) => (
+                          <TableRow key={idx}>
+                            <TableCell className={[
+                              row.isTotal ? 'font-bold' : '',
+                              row.isSubheader ? 'font-semibold !mt-4' : '',
+                            ].join(' ')}>
+                              {row.item}
+                            </TableCell>
+                            <TableCell className="text-right">{row.isSubheader ? '' : moneyOrBlank(row.amount as number)}</TableCell>
+                          </TableRow>
+                        ))
+                    ) : (
+                      alignByItem(
+                        flattenCashflow(cashflowData),
+                        flattenCashflow(cashflowDataPrev)
+                      ).map((row, idx) => {
+                        const delta = (row.cur ?? 0) - (row.prev ?? 0);
+                        const pct = pctChange(row.cur ?? 0, row.prev ?? 0);
                         return (
-                          <div key={sectionIndex}>
-                            <h3 className={`font-semibold text-lg mb-3 ${isNetLine ? 'mt-6' : ''}`}>
-                              {section.category}
-                            </h3>
-
-                            {section.items.length > 0 ? (
-                              <div className="space-y-2 ml-4">
-                                {section.items.map((item, itemIndex) => (
-                                  <div key={itemIndex} className="flex justify-between py-1">
-                                    <span>{item.item}</span>
-                                    <span className="font-mono">{formatCurrency(item.amount)}</span>
-                                  </div>
-                                ))}
-
-                                {section.showSubtotal && (
-                                  <div className="flex justify-between py-1 font-bold border-t pt-2">
-                                    <span>{subtotalLabel}</span>
-                                    <span className="font-mono">{formatCurrency(section.total)}</span>
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              isNetLine && (
-                                <div className="flex justify-between py-2 font-bold border-t-2 text-lg">
-                                  <span>{section.category}</span>
-                                  <span className="font-mono">{formatCurrency(section.total)}</span>
-                                </div>
-                              )
-                            )}
-                          </div>
+                          <TableRow key={idx}>
+                            <TableCell className={[
+                              row.isTotal ? 'font-bold' : '',
+                              row.isSubheader ? 'font-semibold !mt-4' : '',
+                            ].join(' ')}>
+                              {row.item}
+                            </TableCell>
+                            <TableCell className="text-right">{row.isSubheader ? '' : (row.cur != null ? moneyOrBlank(row.cur) : '')}</TableCell>
+                            <TableCell className="text-right">{row.isSubheader ? '' : (row.prev != null ? moneyOrBlank(row.prev) : '')}</TableCell>
+                            <TableCell className={`text-right ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{row.isSubheader ? '' : moneyOrBlank(delta)}</TableCell>
+                            <TableCell className="text-right">{row.isSubheader ? '' : formatPct(pct)}</TableCell>
+                          </TableRow>
                         );
                       })
-                  ) : (
-                    <p className="text-center text-gray-500 py-4">
-                      No cash flow data available for the selected period.
-                    </p>
-                  )}
-                </div>
+                    )}
+                  </TableBody>
+                </Table>
               </CardContent>
             </Card>
           </TabsContent>

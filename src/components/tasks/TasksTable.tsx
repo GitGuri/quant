@@ -1,14 +1,19 @@
+// TasksTable.tsx
 import React, { useEffect, useMemo, useState, useCallback, useRef, memo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { Loader2, Edit, Archive, Save, ListChecks, Gauge, RefreshCw } from 'lucide-react';
+import { Loader2, Edit, Archive, Save, ListChecks, Gauge, RefreshCw, Edit3 } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { TaskForm, type TaskFormData } from './TaskForm';
+import { TaskForm, type TaskFormData, type TaskStepFormData } from './TaskForm';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
+
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 
 const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
@@ -19,8 +24,8 @@ type BaseTask = {
   status: 'To Do' | 'In Progress' | 'Review' | 'Done' | 'Archived' | 'Overdue';
   progress_percentage: number;
   due_date?: string | null;
-  assignee_name?: string | null;
-  assignee_id?: string | null;
+  assignee_name?: string | null; // legacy single
+  assignee_id?: string | null;   // legacy single
   project_id?: string | null;
   project_name?: string | null;
   priority: 'Low' | 'Medium' | 'High';
@@ -35,11 +40,14 @@ type TaskStep = {
   position: number;
 };
 
+type AssigneeLite = { id: string; name: string; email?: string | null };
+
 type FullTask = BaseTask & {
   progress_mode: 'manual' | 'target' | 'steps';
   progress_goal: number | null;
   progress_current: number | null;
   steps: TaskStep[];
+  assignees?: AssigneeLite[]; // NEW: multi-assignees, optional for backward compatibility
 };
 
 type Filters = {
@@ -128,6 +136,57 @@ const deriveUnarchivedStatus = (t: FullTask): FullTask['status'] => {
   const overdue = isOverdue({ due_date: t.due_date!, status: base, progress_percentage: pct });
   return overdue ? 'Overdue' : base;
 };
+
+/* ---------- Priority UI ---------- */
+const PRIORITY_META = {
+  High:   { short: 'H', label: 'High',   dot: 'bg-red-500',    ring: 'ring-red-200' },
+  Medium: { short: 'M', label: 'Medium', dot: 'bg-yellow-500', ring: 'ring-yellow-200' },
+  Low:    { short: 'L', label: 'Low',    dot: 'bg-green-500',  ring: 'ring-green-200' },
+} as const;
+
+type Priority = keyof typeof PRIORITY_META;
+
+function PriorityBadge({ value }: { value: Priority }) {
+  const meta = PRIORITY_META[value];
+  return (
+    <span className={`inline-flex items-center gap-2 px-2 py-1 rounded-md ring-1 ${meta.ring} bg-white`}>
+      <span className={`w-2.5 h-2.5 rounded-full ${meta.dot}`} />
+      <span className="text-xs font-medium">{meta.label}</span>
+      <span className="text-[10px] text-gray-500">{meta.short}</span>
+    </span>
+  );
+}
+
+function PrioritySelect({
+  value,
+  onChange,
+}: {
+  value: Priority;
+  onChange: (val: Priority) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as Priority)}>
+      <SelectTrigger className="h-8 w-[70px]">
+        <SelectValue placeholder="Select priority">
+          <div className="flex items-center gap-2">
+            <PriorityBadge value={value} />
+          </div>
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {(Object.keys(PRIORITY_META) as Priority[]).map((p) => (
+          <SelectItem key={p} value={p}>
+            <div className="flex items-center gap-2">
+              <span className={`w-2.5 h-2.5 rounded-full ${PRIORITY_META[p].dot}`} />
+              <span className="text-sm">{PRIORITY_META[p].label}</span>
+              <span className="ml-1 text-[10px] text-gray-500">{PRIORITY_META[p].short}</span>
+            </div>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 /* ---------- Progress dialogs (return patches to avoid full refetch) ---------- */
 function TargetDialog({
@@ -452,12 +511,14 @@ function ProgressOptionsDialog({
     }
   };
 
+  
+
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Edit className="h-5 w-5" /> Edit Progress — "{task.title}"
+            <Edit3 className="h-5 w-5" /> Edit Progress — "{task.title}"
           </DialogTitle>
           <DialogDescription>Choose how you want to update the progress.</DialogDescription>
         </DialogHeader>
@@ -542,20 +603,6 @@ function ProgressOptionsDialog({
   );
 }
 
-/* ---------- Priority dot ---------- */
-const PriorityDot = ({ priority }: { priority: FullTask['priority'] }) => {
-  const priorityStyles = {
-    High: 'bg-red-500',
-    Medium: 'bg-yellow-500',
-    Low: 'bg-green-500',
-  } as const;
-  const priorityTitles = {
-    High: 'High Priority',
-    Medium: 'Medium Priority',
-    Low: 'Low Priority',
-  } as const;
-  return <div className={`w-3 h-3 rounded-full ${priorityStyles[priority]}`} title={priorityTitles[priority]} />;
-};
 
 /* ---------- Memoized row ---------- */
 type RowProps = {
@@ -568,6 +615,7 @@ type RowProps = {
   onUnarchive: (id: string) => void;
   onOpenProgress: (task: FullTask) => void;
   formatDate: (d?: string | null) => string;
+  onChangePriority: (id: string, p: Priority) => void;
 };
 
 const TaskRow = memo(function TaskRow({
@@ -577,14 +625,31 @@ const TaskRow = memo(function TaskRow({
   onUnarchive,
   onOpenProgress,
   formatDate,
+  onChangePriority,
 }: RowProps) {
   return (
     <TableRow className={t.status === 'Overdue' ? 'bg-red-50' : ''}>
       <TableCell className="font-medium">{t.title}</TableCell>
       <TableCell>{t.project_name || '—'}</TableCell>
-      <TableCell>{t.assignee_name || '—'}</TableCell>
       <TableCell>
-        <PriorityDot priority={t.priority} />
+        {Array.isArray(t.assignees) && t.assignees.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {t.assignees.map((u) => (
+              <span
+                key={u.id}
+                className="inline-block text-xs bg-gray-100 rounded-full px-2 py-0.5"
+                title={u.email || undefined}
+              >
+                {u.name}
+              </span>
+            ))}
+          </div>
+        ) : (
+          t.assignee_name || '—'
+        )}
+      </TableCell>
+      <TableCell>
+        <PrioritySelect value={t.priority as Priority} onChange={(p) => onChangePriority(t.id, p)} />
       </TableCell>
       <TableCell>{formatDate(t.due_date)}</TableCell>
       <TableCell>
@@ -610,7 +675,7 @@ const TaskRow = memo(function TaskRow({
       <TableCell className="text-right">
         <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={() => onEdit(t)} title="Edit">
-            <Edit className="h-4 w-4" />
+            <Edit3 className="h-4 w-4" />
           </Button>
 
           {t.status === 'Archived' ? (
@@ -643,6 +708,7 @@ const TaskRow = memo(function TaskRow({
     a.title === b.title &&
     a.project_name === b.project_name &&
     a.assignee_name === b.assignee_name &&
+    JSON.stringify(a.assignees || []) === JSON.stringify(b.assignees || []) &&
     a.priority === b.priority &&
     a.due_date === b.due_date &&
     a.progress_percentage === b.progress_percentage &&
@@ -651,6 +717,66 @@ const TaskRow = memo(function TaskRow({
 });
 
 /* ---------- Main table ---------- */
+
+// helpers to keep payloads clean for your backend
+const UUIDish = (v?: string | null) => !!v && /^[0-9a-fA-F-]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(v);
+const pickValidIds = (ids?: string[]) => (Array.isArray(ids) ? ids.filter((v) => UUIDish(v)) : []);
+
+const buildCreatePayload = (d: TaskFormData) => {
+  const isTarget = d.progress_mode === 'target';
+  const due = d.due_date && String(d.due_date).trim() !== '' ? d.due_date : null;
+
+  const payload: any = {
+    title: d.title,
+    description: d.description ?? null,
+    priority: d.priority ?? 'Medium',
+    due_date: due,
+    project_id: d.project_id ?? null,
+    progress_mode: d.progress_mode ?? 'manual',
+    assignee_ids: pickValidIds(d.assignee_ids), // NEW: multi-assignees
+  };
+
+  if (d.progress_mode === 'manual') {
+    payload.progress_percentage = Math.max(0, Math.min(100, Math.round(d.progress_percentage ?? 0)));
+  }
+  if (isTarget) {
+    payload.progress_goal = d.progress_goal ?? null;
+    payload.progress_current = d.progress_current ?? 0;
+  }
+
+  // keep legacy single as well if your API still supports it
+  if (UUIDish(d.assignee_id)) {
+    payload.assignee_id = d.assignee_id!;
+  }
+  return payload;
+};
+
+const buildUpdatePayload = (d: TaskFormData) => {
+  const isTarget = d.progress_mode === 'target';
+  const due = d.due_date && String(d.due_date).trim() !== '' ? d.due_date : null;
+
+  const payload: any = {
+    title: d.title,
+    description: d.description ?? null,
+    priority: d.priority ?? 'Medium',
+    due_date: due,
+    project_id: d.project_id ?? null,
+    progress_mode: d.progress_mode ?? 'manual',
+    assignee_ids: pickValidIds(d.assignee_ids), // NEW: multi-assignees
+  };
+
+  if (d.progress_mode === 'manual') {
+    payload.progress_percentage = Math.max(0, Math.min(100, Math.round(d.progress_percentage ?? 0)));
+  } else if (isTarget) {
+    payload.progress_goal = d.progress_goal ?? null;
+    payload.progress_current = d.progress_current ?? 0;
+  }
+
+  // legacy single (optional)
+  payload.assignee_id = UUIDish(d.assignee_id) ? d.assignee_id! : null;
+  return payload;
+};
+
 export function TasksTable({
   mode,
   filters,
@@ -685,6 +811,7 @@ export function TasksTable({
     progress_goal: t.progress_goal ?? null,
     progress_current: t.progress_current ?? 0,
     steps: Array.isArray(t.steps) ? t.steps : [],
+    assignees: Array.isArray(t.assignees) ? t.assignees : [], // NEW
   });
 
   const fetchTasks = useCallback(async () => {
@@ -791,6 +918,30 @@ export function TasksTable({
     [tasks, patchTask, toast, onChanged]
   );
 
+  // NEW: update priority (optimistic)
+  const onChangePriority = useCallback(
+    async (id: string, p: Priority) => {
+      const prev = tasks.find((t) => t.id === id)?.priority as Priority | undefined;
+      patchTask(id, { priority: p as FullTask['priority'] });
+
+      try {
+        const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ priority: p }),
+        });
+        if (!res.ok) throw new Error('Failed to update priority');
+        toast({ title: 'Priority updated', description: `Set to ${PRIORITY_META[p].label}` });
+        onChanged?.();
+      } catch (e: any) {
+        // revert
+        if (prev) patchTask(id, { priority: prev as FullTask['priority'] });
+        toast({ title: 'Error', description: e?.message || 'Failed to update priority', variant: 'destructive' });
+      }
+    },
+    [patchTask, tasks, toast, onChanged]
+  );
+
   const onEdit = useCallback((task: FullTask) => {
     setTaskToEdit(task);
     setShowTaskForm(true);
@@ -839,42 +990,112 @@ export function TasksTable({
     [tasks, patchTask, toast, onChanged, fetchTasks]
   );
 
-  const submitTask = useCallback(
-    async (data: TaskFormData) => {
-      try {
-        if (taskToEdit) {
-          const r = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}`, {
+  // inside TasksTable.tsx
+const submitTask = useCallback(
+  async (data: TaskFormData, initialSteps?: TaskStepFormData[]) => {
+    try {
+      if (taskToEdit) {
+        // UPDATE
+        const r = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify(buildUpdatePayload(data)),
+        });
+
+        if (r.status === 403) {
+          toast({
+            title: 'Not allowed',
+            description: 'Only the creator or company owner can edit this task.',
+            variant: 'destructive',
+          });
+          return;
+        }
+
+        if (!r.ok) throw new Error('Failed to update task');
+
+        // If switched to steps on edit and we have steps to seed, push them now
+        if (data.progress_mode === 'steps' && initialSteps?.length) {
+          const stepsToSend = initialSteps.map(s => ({
+            ...s,
+            id: undefined, // ensure insert
+          }));
+          const r2 = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}/progress`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({
-              ...data,
-              progress_mode: data.progress_mode,
-              progress_goal: data.progress_mode === 'target' ? data.progress_goal : null,
-              progress_current: data.progress_mode === 'target' ? data.progress_current : 0,
+              progress_mode: 'steps',
+              steps: stepsToSend,
             }),
           });
-          if (!r.ok) throw new Error('Failed to update task');
-        } else {
-          const r = await fetch(`${API_BASE}/api/tasks`, {
-            method: 'POST',
+
+          if (r2.status === 403) {
+            toast({
+              title: 'Not allowed',
+              description: 'You cannot update steps for a task you are not assigned to.',
+              variant: 'destructive',
+            });
+            return;
+          }
+
+          if (!r2.ok) throw new Error('Failed to seed steps');
+        }
+      } else {
+        // CREATE
+        const createRes = await fetch(`${API_BASE}/api/tasks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify(buildCreatePayload(data)),
+        });
+        if (!createRes.ok) throw new Error('Failed to create task');
+
+        const created = await createRes.json(); // contains created id
+
+        // Seed steps immediately if step-based
+        if (data.progress_mode === 'steps' && initialSteps?.length) {
+          const stepsToSend = initialSteps.map(s => ({
+            ...s,
+            id: undefined, // let server insert
+            task_id: created.id, // safe to include or omit; server uses URL id
+          }));
+
+          const r2 = await fetch(`${API_BASE}/api/tasks/${created.id}/progress`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({
-              ...data,
-              assignee_id: data.assignee_id ?? null,
+              progress_mode: 'steps',
+              steps: stepsToSend,
+              // progress_percentage can be omitted; server recomputes
             }),
           });
-          if (!r.ok) throw new Error('Failed to create task');
+
+          if (r2.status === 403) {
+            toast({
+              title: 'Not allowed',
+              description: 'You cannot update steps for a task you are not assigned to.',
+              variant: 'destructive',
+            });
+            return;
+          }
+
+          if (!r2.ok) throw new Error('Failed to seed steps for new task');
         }
-        setShowTaskForm(false);
-        setTaskToEdit(null);
-        fetchTasks();
-        onChanged?.();
-      } catch (e: any) {
-        toast({ title: 'Error', description: e.message || 'Failed to save task', variant: 'destructive' });
       }
-    },
-    [taskToEdit, fetchTasks, onChanged, toast]
-  );
+
+      setShowTaskForm(false);
+      setTaskToEdit(null);
+      await fetchTasks();
+      onChanged?.();
+    } catch (e: any) {
+      toast({
+        title: 'Error',
+        description: e.message || 'Failed to save task',
+        variant: 'destructive',
+      });
+    }
+  },
+  [taskToEdit, fetchTasks, onChanged, toast]
+);
+
 
   /* ---------- fetch full task (with steps) before opening progress ---------- */
   const fetchTaskById = useCallback(async (id: string): Promise<FullTask | null> => {
@@ -940,7 +1161,6 @@ export function TasksTable({
         rows = rows.filter(
           (t) => t.status !== 'Archived' && (t.progress_percentage ?? 0) >= 1 && (t.progress_percentage ?? 0) < 100
         );
-        // If you want to exclude overdue from this view, add: && t.status !== 'Overdue'
       } else if (mode === 'completed') {
         rows = rows.filter((t) => t.status !== 'Archived' && (t.progress_percentage ?? 0) >= 100);
       } else if (mode === 'overdue') {
@@ -953,12 +1173,17 @@ export function TasksTable({
     if (filters?.projectId) rows = rows.filter((t) => t.project_id === filters.projectId);
     if (filters?.search) {
       const q = filters.search.toLowerCase();
-      rows = rows.filter(
-        (t) =>
+      rows = rows.filter((t) => {
+        const names = Array.isArray(t.assignees)
+          ? t.assignees.map((u) => (u.name || '').toLowerCase()).join(' ')
+          : (t.assignee_name || '').toLowerCase();
+
+        return (
           t.title.toLowerCase().includes(q) ||
-          (t.assignee_name || '').toLowerCase().includes(q) ||
-          (t.project_name || '').toLowerCase().includes(q)
-      );
+          (t.project_name || '').toLowerCase().includes(q) ||
+          names.includes(q)
+        );
+      });
     }
     rows = [...rows].sort((a, b) => {
       const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
@@ -984,7 +1209,7 @@ export function TasksTable({
               <TableRow>
                 <TableHead>Task</TableHead>
                 <TableHead>Project</TableHead>
-                <TableHead>Assignee</TableHead>
+                <TableHead>Assignees</TableHead>
                 <TableHead>Priority</TableHead>
                 <TableHead>Due date</TableHead>
                 <TableHead className="w-[220px]">Progress</TableHead>
@@ -1004,13 +1229,14 @@ export function TasksTable({
                     key={t.id}
                     task={t}
                     savingId={savingId}
-                    onRangeChange={onRangeChange}
+                    onRangeChange={() => {}}
                     onSaveProgress={onSaveProgress}
                     onEdit={onEdit}
                     onArchive={onArchive}
                     onUnarchive={onUnarchive}
                     onOpenProgress={onOpenProgress}
                     formatDate={formatDate}
+                    onChangePriority={onChangePriority}
                   />
                 ))
               )}
@@ -1033,6 +1259,7 @@ export function TasksTable({
           <DialogHeader>
             <DialogTitle>{taskToEdit ? 'Edit Task' : 'New Task'}</DialogTitle>
           </DialogHeader>
+          {/* TIP: ensure your TaskForm also exposes a Priority field using the same values 'High' | 'Medium' | 'Low' */}
           <TaskForm
             task={taskToEdit as any}
             onCancel={() => {

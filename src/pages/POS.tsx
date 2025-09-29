@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'; 
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Button,
   Card,
@@ -28,9 +28,37 @@ const useBreakpoint = Grid.useBreakpoint;
 const { Title, Text } = Typography;
 const { Option } = Select; // Destructure Option from Select
 
+// ---- Simple online status hook ----
+const useOnline = () => {
+  const [online, setOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => {
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+    };
+  }, []);
+  return online;
+};
+
+// ---- Small helpers for cache & outbox ----
+const CKEY_CUSTOMERS = 'pos.cache.customers';
+const CKEY_PRODUCTS  = 'pos.cache.products';
+const OKEY_SALES     = 'pos.outbox.sales';
+
+const readJSON = <T,>(key: string, fallback: T): T => {
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; }
+};
+const writeJSON = (key: string, value: any) => {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+};
+
 // --- START: MODIFIED TYPES TO MATCH BACKEND API ---
 interface ProductDB {
-  id: number;
+  id: number | string; // allow string for offline custom items (e.g. "custom-123")
   name: string;
   description: string | null;
   unit_price: number; // Ensure this is number
@@ -38,8 +66,8 @@ interface ProductDB {
   sku: string | null;
   is_service: boolean;
   stock_quantity: number;
-  created_at: Date;
-  updated_at: Date;
+  created_at?: Date;
+  updated_at?: Date;
   tax_rate_id: number | null;
   category: string | null;
   unit: string | null;
@@ -57,13 +85,12 @@ interface CustomerFrontend {
   balanceDue?: number;
   creditLimit?: number;
 }
-// CartItem now fully uses ProductDB structure, as custom items become ProductDB on add
+// CartItem now fully uses (possibly-local) ProductDB, id can be number|string
 type CartItem = ProductDB & { quantity: number; subtotal: number };
 type PaymentType = 'Cash' | 'Bank' | 'Credit';
 // --- END: MODIFIED TYPES TO MATCH BACKEND API ---
 
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'; // <-- set your API URL
-
 
 // ===== Credit Score (frontend-only, flag not block) =====
 type ScoreColor = 'green' | 'blue' | 'orange' | 'red' | 'default';
@@ -128,6 +155,7 @@ const getUserNameFromLocalStorage = () => {
 export default function POSScreen() {
   const [messageApi, contextHolder] = message.useMessage();
   const screens = useBreakpoint();
+  const isOnline = useOnline();
   const [customers, setCustomers] = useState<CustomerFrontend[]>([]);
   const [products, setProducts] = useState<ProductDB[]>([]);
   const [selectedCustomer, setSelectedCustomer] =
@@ -167,6 +195,40 @@ export default function POSScreen() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
 
+  // === NEW: Outbox flush ===
+  const flushOutbox = useCallback(async () => {
+    if (!isAuthenticated || !token || !isOnline) return;
+    const queue = readJSON<any[]>(OKEY_SALES, []);
+    if (!queue.length) return;
+
+    const remaining: any[] = [];
+    for (const job of queue) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/sales`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify(job.payload),
+        });
+        if (!res.ok) {
+          // keep it if server rejected for a non-network reason
+          const err = await res.json().catch(() => ({}));
+          console.warn('Outbox sale failed (kept in queue):', err);
+          remaining.push(job);
+        } else {
+          messageApi.success(`Synced offline sale (${job.localId}).`);
+        }
+      } catch (e) {
+        // network again, keep it
+        remaining.push(job);
+      }
+    }
+    writeJSON(OKEY_SALES, remaining);
+  }, [isAuthenticated, token, isOnline, getAuthHeaders, messageApi]);
+
+  useEffect(() => {
+    flushOutbox();
+  }, [flushOutbox]);
+
   // === NEW: simple cache for account list and name → id helper ===
   const [accountsCache, setAccountsCache] = useState<any[] | null>(null);
 
@@ -188,50 +250,40 @@ export default function POSScreen() {
     }
   }, [isAuthenticated, token, getAuthHeaders, accountsCache]);
 
-// Assuming getAuthHeaders is available in scope or passed as a parameter
-async function findAccountIdByNames(candidates: string[]): Promise<number | null> {
-  try {
-    // --- FIX: Fetch from /accounts, not /products-services ---
-    const response = await fetch(`${API_BASE_URL}/accounts`, {
-      headers: getAuthHeaders(), // Ensure auth headers are included
-    });
+  // Assuming getAuthHeaders is available in scope or passed as a parameter
+  async function findAccountIdByNames(candidates: string[]): Promise<number | null> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/accounts`, {
+        headers: getAuthHeaders(),
+      });
 
-    if (!response.ok) {
-      console.error(`Failed to fetch accounts: ${response.status} ${response.statusText}`);
-      // Optionally throw or handle error
+      if (!response.ok) {
+        console.error(`Failed to fetch accounts: ${response.status} ${response.statusText}`);
+        return null;
+      }
+
+      const list = await response.json();
+      const usable = (a: any) => a?.is_postable === true && a?.is_active === true && !!a?.reporting_category_id;
+
+      for (const name of candidates) {
+        const m = list.find((a: any) => (a?.name || '').toLowerCase().includes(name.toLowerCase()));
+        if (m && usable(m)) {
+          return Number(m.id);
+        }
+      }
+      console.warn('Account not found for any of:', candidates);
+      return null;
+    } catch (error) {
+      console.error("Error in findAccountIdByNames:", error);
       return null;
     }
-
-    const list = await response.json();
-
-    // Optional: Add a log to see the fetched accounts (for debugging)
-    // console.log("Account list fetched for search:", list);
-
-    // --- DEFINE THE 'usable' FUNCTION HERE ---
-    const usable = (a: any) => a?.is_postable === true && a?.is_active === true && !!a?.reporting_category_id;
-    // --- END DEFINE ---
-
-    for (const name of candidates) {
-      // Use the same search logic (contains, case-insensitive)
-      const m = list.find((a: any) => (a?.name || '').toLowerCase().includes(name.toLowerCase()));
-      if (m && usable(m)) { // Ensure 'usable' function is defined and accessible
-        console.log(`Found account for '${name}':`, m); // Optional: Log the found account
-        return Number(m.id);
-      }
-    }
-    console.warn('Account not found for any of:', candidates);
-    return null;
-  } catch (error) {
-    console.error("Error in findAccountIdByNames:", error);
-    return null; // Or re-throw if preferred
   }
-}
   // === END NEW ===
 
   // Fetch score & cache when customer is selected
   const fetchAndCacheCustomerScore = useCallback(
     async (customerId: string) => {
-      if (!isAuthenticated || !token) return;
+      if (!isAuthenticated || !token || !isOnline) return;
       if (creditScoreCache[customerId]) return; // already cached
       try {
         const resp = await fetch(
@@ -249,7 +301,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
         }));
       }
     },
-    [isAuthenticated, token, getAuthHeaders, creditScoreCache],
+    [isAuthenticated, token, getAuthHeaders, creditScoreCache, isOnline],
   );
   useEffect(() => {
     if (selectedCustomer?.id) {
@@ -257,15 +309,21 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
     }
   }, [selectedCustomer?.id, fetchAndCacheCustomerScore]);
 
-  // Fetch customers & products
+  // Fetch customers & products (with offline cache)
   useEffect(() => {
     async function fetchCustomers() {
       if (!isAuthenticated || !token) {
-        messageApi.warning('Please log in to load customers.');
         setCustomers([]);
         return;
       }
-      setIsLoading(true); // Set global loading
+
+      if (!isOnline) {
+        const cached = readJSON<CustomerFrontend[]>(CKEY_CUSTOMERS, []);
+        setCustomers(cached);
+        return;
+      }
+
+      setIsLoading(true);
       try {
         const response = await fetch(`${API_BASE_URL}/api/customers`, {
           headers: getAuthHeaders(),
@@ -273,21 +331,31 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data: CustomerFrontend[] = await response.json();
         setCustomers(data);
+        writeJSON(CKEY_CUSTOMERS, data);
       } catch (error) {
         console.error('Error fetching customers:', error);
         messageApi.error('Failed to fetch customers.');
+        // fallback to cache
+        const cached = readJSON<CustomerFrontend[]>(CKEY_CUSTOMERS, []);
+        if (cached.length) setCustomers(cached);
       } finally {
-        setIsLoading(false); // End global loading
+        setIsLoading(false);
       }
     }
+
     async function fetchProducts() {
       if (!isAuthenticated || !token) {
-        messageApi.warning('Please log in to load products.');
         setProducts([]);
         return;
       }
-      console.log("Fetching products..."); // Log when product fetching starts
-      setIsLoading(true); // Set global loading
+
+      if (!isOnline) {
+        const cached = readJSON<ProductDB[]>(CKEY_PRODUCTS, []);
+        setProducts(cached);
+        return;
+      }
+
+      setIsLoading(true);
       try {
         const response = await fetch(`${API_BASE_URL}/products-services`, {
           headers: getAuthHeaders(),
@@ -296,21 +364,24 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
         const data: ProductDB[] = await response.json();
         // Explicitly parse numeric values to ensure they are numbers
         const parsedData = data.map(p => ({
-            ...p,
-            unit_price: parseFloat(p.unit_price as any),
-            cost_price: p.cost_price != null ? parseFloat(p.cost_price as any) : null,
-            stock_quantity: parseInt(p.stock_quantity as any, 10), // Assuming stock is integer
-            // Add other numeric fields if they might come as strings
+          ...p,
+          unit_price: parseFloat(p.unit_price as any),
+          cost_price: p.cost_price != null ? parseFloat(p.cost_price as any) : null,
+          stock_quantity: parseInt(p.stock_quantity as any, 10),
         }));
         setProducts(parsedData);
-        console.log(`Products fetched and set. Total products: ${parsedData.length}`); // Log when products are set
+        writeJSON(CKEY_PRODUCTS, parsedData);
       } catch (error) {
         console.error('Error fetching products:', error);
         messageApi.error('Failed to fetch products.');
+        // fallback to cache
+        const cached = readJSON<ProductDB[]>(CKEY_PRODUCTS, []);
+        if (cached.length) setProducts(cached);
       } finally {
-        setIsLoading(false); // End global loading
+        setIsLoading(false);
       }
     }
+
     if (isAuthenticated && token) {
       fetchCustomers();
       fetchProducts();
@@ -318,64 +389,90 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
       setCustomers([]);
       setProducts([]);
     }
-  }, [isAuthenticated, token, getAuthHeaders, messageApi]);
+  }, [isAuthenticated, token, getAuthHeaders, messageApi, isOnline]);
 
   // Add to cart
-  const addToCart = () => { // <-- Removed async
-    console.log("addToCart called!"); // Log at the very beginning of the function
+  const addToCart = () => {
     if (!isAuthenticated) {
       messageApi.error('Authentication required to add items to cart.');
       return;
     }
     let itemToAdd: CartItem | null = null;
     let finalProduct: ProductDB | null = null;
+
     if (showCustomProductForm) {
-      // Validate custom product form fields
-      customProductForm.validateFields().then(async (values) => { // <-- Use .then for form validation
+      customProductForm.validateFields().then(async (values) => {
         const customProductName = values.customProductName.trim();
-        const customProductUnitPrice = values.customProductUnitPrice;
-        const customProductDescription = values.customProductDescription;
+        const customProductUnitPrice = Number(values.customProductUnitPrice);
+        const customProductDescription = values.customProductDescription || null;
         const customProductTaxRate = parseFloat(values.customProductTaxRate);
-        const isService = values.isService; // Get the 'isService' value from the form
+        const isService = !!values.isService;
+
         setIsAddingCustomProduct(true);
         try {
-          const existingProduct = products.find(p => p.name.toLowerCase() === customProductName.toLowerCase());
-          if (existingProduct) {
-            finalProduct = existingProduct;
-            messageApi.info(`Product "${customProductName}" already exists. Using existing product.`);
-          } else {
-            const createProductPayload = {
+          if (!isOnline) {
+            // --- OFFLINE: NO server create; create a local, temporary item ---
+            finalProduct = {
+              id: `custom-${Date.now()}`, // string id so backend treats it as custom (product_id = null)
               name: customProductName,
-              description: customProductDescription || null,
+              description: customProductDescription,
               unit_price: customProductUnitPrice,
-              is_service: isService, // Use the value from the form
-              stock_quantity: isService ? 0 : 0, // Set stock to 0 for services, default 0 for products
-              tax_rate_value: customProductTaxRate,
-              category: null,
-              unit: isService ? 'service' : 'unit', // Set unit based on type
               cost_price: null,
+              sku: null,
+              is_service: isService,
+              stock_quantity: 0,
+              created_at: undefined,
+              updated_at: undefined,
+              tax_rate_id: null,
+              category: null,
+              unit: isService ? 'service' : 'unit',
+              tax_rate_value: customProductTaxRate,
             };
-            const createProductResponse = await fetch(`${API_BASE_URL}/products-services`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...getAuthHeaders(),
-              },
-              body: JSON.stringify(createProductPayload),
-            });
-            if (!createProductResponse.ok) {
-              const errorData = await createProductResponse.json();
-              throw new Error(errorData.error || 'Failed to create new product.');
-            }
-            finalProduct = await createProductResponse.json();
-            finalProduct.unit_price = parseFloat(finalProduct.unit_price as any);
-            if (finalProduct.cost_price != null) {
+          } else {
+            // ONLINE: Prefer existing, else create on server
+            const existingProduct = products.find(p => (p.name || '').toLowerCase() === customProductName.toLowerCase());
+            if (existingProduct) {
+              finalProduct = existingProduct;
+              messageApi.info(`Product "${customProductName}" already exists. Using existing product.`);
+            } else {
+              const createProductPayload = {
+                name: customProductName,
+                description: customProductDescription || null,
+                unit_price: customProductUnitPrice,
+                is_service: isService,
+                stock_quantity: isService ? 0 : 0,
+                tax_rate_value: customProductTaxRate,
+                category: null,
+                unit: isService ? 'service' : 'unit',
+                cost_price: null,
+              };
+              const createProductResponse = await fetch(`${API_BASE_URL}/products-services`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...getAuthHeaders(),
+                },
+                body: JSON.stringify(createProductPayload),
+              });
+              if (!createProductResponse.ok) {
+                const errorData = await createProductResponse.json().catch(() => ({}));
+                throw new Error(errorData.error || 'Failed to create new product.');
+              }
+              finalProduct = await createProductResponse.json();
+              finalProduct.unit_price = parseFloat(finalProduct.unit_price as any);
+              if (finalProduct.cost_price != null) {
                 finalProduct.cost_price = parseFloat(finalProduct.cost_price as any);
+              }
+              finalProduct.stock_quantity = parseInt(finalProduct.stock_quantity as any, 10);
+              setProducts(prev => {
+                const next = [...prev, finalProduct!];
+                writeJSON(CKEY_PRODUCTS, next);
+                return next;
+              });
+              messageApi.success(`New ${isService ? 'service' : 'product'} "${finalProduct!.name}" created and added to product list.`);
             }
-            finalProduct.stock_quantity = parseInt(finalProduct.stock_quantity as any, 10);
-            setProducts(prev => [...prev, finalProduct!]);
-            messageApi.success(`New ${isService ? 'service' : 'product'} "${finalProduct!.name}" created and added to product list.`);
           }
+
           itemToAdd = {
             ...finalProduct!,
             quantity: productQty,
@@ -384,7 +481,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
               finalProduct!.unit_price *
               (1 + (finalProduct!.tax_rate_value ?? 0)),
           };
-          // Common cart update logic for custom product
+
           if (itemToAdd) {
             const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
             if (existingCartItem) {
@@ -405,7 +502,6 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
             } else {
               setCart([...cart, itemToAdd]);
             }
-            // Reset selectors and form fields after successful addition
             setSelectedProduct(null);
             setProductQty(1);
             setProductModal(false);
@@ -419,157 +515,106 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
         } finally {
           setIsAddingCustomProduct(false);
         }
-      }).catch((errorInfo) => {
-        // Handle validation errors
+      }).catch(() => {
         messageApi.error('Please fill in all required custom product fields.');
       });
-      // Important: Return early to prevent the rest of the function from executing
-      // while the form validation promise resolves.
       return;
     } else {
-      // Existing product logic
-      if (!selectedProduct || productQty < 1) {
-        console.log("addToCart (existing product): Exiting early because no product selected or quantity < 1.", { selectedProduct, productQty });
-        return; // Early exit if no product selected or quantity is invalid
-      }
-      // If it's a service, skip stock checks entirely.
+      if (!selectedProduct || productQty < 1) return;
+
       if (selectedProduct.is_service) {
-          console.log(`addToCart (existing product): "${selectedProduct.name}" is a service, skipping stock check.`);
-          finalProduct = selectedProduct; // Set finalProduct for services
-          itemToAdd = {
-              ...selectedProduct,
-              quantity: productQty,
-              subtotal: productQty * selectedProduct.unit_price * (1 + (selectedProduct.tax_rate_value ?? 0)),
-          };
-          // Common cart update logic for service
-          if (itemToAdd) {
-            const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
-            if (existingCartItem) {
-              setCart(
-                cart.map((i) =>
-                  i.id === itemToAdd!.id
-                    ? {
-                        ...i,
-                        quantity: i.quantity + itemToAdd!.quantity,
-                        subtotal:
-                          (i.quantity + itemToAdd!.quantity) *
-                          i.unit_price *
-                          (1 + (i.tax_rate_value ?? 0)),
-                      }
-                    : i,
-                ),
-              );
-            } else {
-              setCart([...cart, itemToAdd]);
-            }
-            // Reset selectors and form fields after successful addition
-            setSelectedProduct(null);
-            setProductQty(1);
-            setProductModal(false);
-            setShowCustomProductForm(false);
-            messageApi.success(`"${itemToAdd.name}" added to cart.`);
-          }
+        itemToAdd = {
+          ...selectedProduct,
+          quantity: productQty,
+          subtotal: productQty * selectedProduct.unit_price * (1 + (selectedProduct.tax_rate_value ?? 0)),
+        };
       } else {
-          // Only perform stock check for non-service items
-          const availableQty = selectedProduct.stock_quantity ?? 0;
-          const alreadyInCart = cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
-          const totalRequested = productQty + alreadyInCart;
-          console.log(`Current product state for stock check:`, {
-              name: selectedProduct.name,
-              stock_quantity: selectedProduct.stock_quantity,
-              is_service: selectedProduct.is_service
-          });
-          console.log(`Stock check details: Requested Qty: ${productQty}, Already in Cart: ${alreadyInCart}, Available: ${availableQty}, Total Requested: ${totalRequested}`);
-          console.log(`Condition (availableQty < 1) for "${selectedProduct.name}" is: ${availableQty < 1}.`); // NEW LOG HERE
-          if (availableQty < 1) { // MODIFIED CONDITION: Flag if available stock is less than 1 (0 or negative)
-              console.log(`Attempting to show out-of-stock modal for: ${selectedProduct.name}. Available Stock: ${availableQty}`);
-              // --- FIXED MODAL LOGIC ---
-              Modal.confirm({
-                  title: 'Item Out of Stock',
-                  content: `"${selectedProduct.name}" is out of stock (only ${availableQty} units available). Do you want to add it to the cart anyway?`,
-                  okText: 'Yes, Add Anyway',
-                  cancelText: 'No, Cancel',
-                  onOk: () => { // <-- Use onOk callback
-                      const item = {
-                          ...selectedProduct,
-                          quantity: productQty,
-                          subtotal:
-                              productQty *
-                              selectedProduct.unit_price *
-                              (1 + (selectedProduct.tax_rate_value ?? 0)),
-                      };
-                      const existingCartItem = cart.find((i) => i.id === item.id);
-                      if (existingCartItem) {
-                          setCart(
-                              cart.map((i) =>
-                                  i.id === item.id
-                                      ? {
-                                          ...i,
-                                          quantity: i.quantity + item.quantity,
-                                          subtotal:
-                                              (i.quantity + item.quantity) *
-                                              i.unit_price *
-                                              (1 + (i.tax_rate_value ?? 0)),
-                                      }
-                                      : i,
-                              ),
-                          );
-                      } else {
-                          setCart([...cart, item]);
-                      }
-                      // Reset selectors and form fields after successful addition
-                      setSelectedProduct(null);
-                      setProductQty(1);
-                      setProductModal(false);
-                      setShowCustomProductForm(false);
-                      messageApi.success(`"${selectedProduct.name}" added to cart.`);
-                  },
-                  onCancel: () => { // <-- Use onCancel callback
-                      messageApi.info('Adding item to cart cancelled.');
-                  },
-              });
-              // Crucial: Return here so the rest of addToCart doesn't execute until modal callback.
-              return;
-              // --- END FIXED MODAL LOGIC ---
-          }
-          // If not out of stock (availableQty >= 1 for non-service), proceed to add to cart normally.
-          finalProduct = selectedProduct;
-          itemToAdd = {
-              ...selectedProduct,
-              quantity: productQty,
-              subtotal:
+        const availableQty = selectedProduct.stock_quantity ?? 0;
+        const alreadyInCart = cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
+        const totalRequested = productQty + alreadyInCart;
+
+        if (availableQty < 1) {
+          Modal.confirm({
+            title: 'Item Out of Stock',
+            content: `"${selectedProduct.name}" is out of stock (only ${availableQty} units available). Do you want to add it to the cart anyway?`,
+            okText: 'Yes, Add Anyway',
+            cancelText: 'No, Cancel',
+            onOk: () => {
+              const item = {
+                ...selectedProduct,
+                quantity: productQty,
+                subtotal:
                   productQty *
                   selectedProduct.unit_price *
                   (1 + (selectedProduct.tax_rate_value ?? 0)),
-          };
-          // Common cart update logic for in-stock product
-          if (itemToAdd) {
-            const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
-            if (existingCartItem) {
-              setCart(
-                cart.map((i) =>
-                  i.id === itemToAdd!.id
-                    ? {
-                        ...i,
-                        quantity: i.quantity + itemToAdd!.quantity,
-                        subtotal:
-                          (i.quantity + itemToAdd!.quantity) *
-                          i.unit_price *
-                          (1 + (i.tax_rate_value ?? 0)),
-                      }
-                    : i,
-                ),
-              );
-            } else {
-              setCart([...cart, itemToAdd]);
-            }
-            // Reset selectors and form fields after successful addition
-            setSelectedProduct(null);
-            setProductQty(1);
-            setProductModal(false);
-            setShowCustomProductForm(false);
-            messageApi.success(`"${selectedProduct.name}" added to cart.`);
-          }
+              };
+              const existingCartItem = cart.find((i) => i.id === item.id);
+              if (existingCartItem) {
+                setCart(
+                  cart.map((i) =>
+                    i.id === item.id
+                      ? {
+                          ...i,
+                          quantity: i.quantity + item.quantity,
+                          subtotal:
+                            (i.quantity + item.quantity) *
+                            i.unit_price *
+                            (1 + (i.tax_rate_value ?? 0)),
+                        }
+                      : i,
+                  ),
+                );
+              } else {
+                setCart([...cart, item]);
+              }
+              setSelectedProduct(null);
+              setProductQty(1);
+              setProductModal(false);
+              setShowCustomProductForm(false);
+              messageApi.success(`"${selectedProduct.name}" added to cart.`);
+            },
+            onCancel: () => {
+              messageApi.info('Adding item to cart cancelled.');
+            },
+          });
+          return;
+        }
+
+        itemToAdd = {
+          ...selectedProduct,
+          quantity: productQty,
+          subtotal:
+            productQty *
+            selectedProduct.unit_price *
+            (1 + (selectedProduct.tax_rate_value ?? 0)),
+        };
+      }
+
+      if (itemToAdd) {
+        const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
+        if (existingCartItem) {
+          setCart(
+            cart.map((i) =>
+              i.id === itemToAdd!.id
+                ? {
+                    ...i,
+                    quantity: i.quantity + itemToAdd!.quantity,
+                    subtotal:
+                      (i.quantity + itemToAdd!.quantity) *
+                      i.unit_price *
+                      (1 + (i.tax_rate_value ?? 0)),
+                  }
+                : i,
+            ),
+          );
+        } else {
+          setCart([...cart, itemToAdd]);
+        }
+        setSelectedProduct(null);
+        setProductQty(1);
+        setProductModal(false);
+        setShowCustomProductForm(false);
+        messageApi.success(`"${itemToAdd.name}" added to cart.`);
       }
     }
   };
@@ -589,6 +634,12 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
       messageApi.error('Authentication required to add new customers.');
       return;
     }
+
+    if (!isOnline) {
+      messageApi.warning('Cannot create a new customer while offline (read-only from cache).');
+      return;
+    }
+
     setIsLoading(true);
     try {
       const existingCustomerResponse = await fetch(
@@ -629,7 +680,11 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
           );
         }
         const newCustomer: CustomerFrontend = await response.json();
-        setCustomers((prev) => [...prev, newCustomer]);
+        setCustomers((prev) => {
+          const next = [...prev, newCustomer];
+          writeJSON(CKEY_CUSTOMERS, next);
+          return next;
+        });
         setSelectedCustomer(newCustomer);
         messageApi.success('New customer added and selected.');
       }
@@ -681,7 +736,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
       }
       // Flag low score (DO NOT block)
       try {
-        if (selectedCustomer?.id && !creditScoreCache[selectedCustomer.id]) {
+        if (selectedCustomer?.id && !creditScoreCache[selectedCustomer.id] && isOnline) {
           await fetchAndCacheCustomerScore(selectedCustomer.id);
         }
         const info = selectedCustomer?.id
@@ -699,46 +754,57 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
 
     // --- Validation for Bank Name (Optional but good practice) ---
     if (paymentType === 'Bank' && !bankName?.trim()) {
-        // messageApi.warning('Please enter the bank name for bank transfers.');
-        // return; // Uncomment if you want to make bank name mandatory
+      // messageApi.warning('Please enter the bank name for bank transfers.');
+      // return; // Uncomment if you want to make bank name mandatory
     }
-    // --- End Validation for Bank Name ---
 
-    // --- Get Teller Name from localStorage (similar to AuthPage) ---
-    const tellerName = getUserNameFromLocalStorage(); // Using local helper
-    // --- End Get Teller Name ---
+    const tellerName = getUserNameFromLocalStorage();
+
+    const salePayload = {
+      cart: cart.map((item) => {
+        return {
+          id: item.id, // number or custom string
+          name: item.name,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          subtotal: item.subtotal,
+          is_service: item.is_service || false,
+          tax_rate_value: item.tax_rate_value ?? 0,
+        };
+      }),
+      paymentType,
+      total,
+      customer: selectedCustomer
+        ? { id: selectedCustomer.id, name: selectedCustomer.name }
+        : null,
+      amountPaid: paymentType === 'Cash' ? amountPaid : 0,
+      change: paymentType === 'Cash' ? change : 0,
+      dueDate: paymentType === 'Credit' ? dueDate : null,
+      bankName: paymentType === 'Bank' ? bankName : null,
+      tellerName: tellerName,
+      branch: '',
+      companyName: '',
+    };
+
+    // If offline, queue and exit optimistically
+    if (!isOnline) {
+      const queue = readJSON<any[]>(OKEY_SALES, []);
+      queue.push({ localId: `sale-${Date.now()}`, payload: salePayload });
+      writeJSON(OKEY_SALES, queue);
+
+      // optimistic UI reset
+      setCart([]);
+      setAmountPaid(0);
+      setDueDate(null);
+      setBankName(null);
+      setSelectedCustomer(null);
+      setPaymentType('Cash');
+      messageApi.info('You are offline. Sale saved locally and will sync automatically when online.');
+      return;
+    }
 
     setIsLoading(true);
     try {
-      const salePayload = {
-        cart: cart.map((item) => {
-          return {
-            id: item.id, // Use the actual product ID
-            name: item.name,
-            quantity: item.quantity,
-            unit_price: item.unit_price,
-            subtotal: item.subtotal,
-            is_service: item.is_service || false,
-            tax_rate_value: item.tax_rate_value ?? 0,
-          };
-        }),
-        paymentType,
-        total,
-        customer: selectedCustomer
-          ? { id: selectedCustomer.id, name: selectedCustomer.name }
-          : null,
-        amountPaid: paymentType === 'Cash' ? amountPaid : 0,
-        change: paymentType === 'Cash' ? change : 0,
-        dueDate: paymentType === 'Credit' ? dueDate : null,
-        // --- Include bankName in payload ---
-        bankName: paymentType === 'Bank' ? bankName : null,
-        // --- End include bankName ---
-        // --- Use the fetched user's name instead of the dummy one ---
-        tellerName: tellerName, // Use name from localStorage
-        // --- End change ---
-        branch: '', // You might want to make this dynamic too
-        companyName: '', // You might want to make this dynamic too
-      };
       const response = await fetch(`${API_BASE_URL}/api/sales`, {
         method: 'POST',
         headers: {
@@ -747,22 +813,31 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
         },
         body: JSON.stringify(salePayload),
       });
+
+      // If online but network hiccup, queue it
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to submit sale.');
+        const isNetwork = response.status === 0;
+        if (isNetwork) {
+          const queue = readJSON<any[]>(OKEY_SALES, []);
+          queue.push({ localId: `sale-${Date.now()}`, payload: salePayload });
+          writeJSON(OKEY_SALES, queue);
+          messageApi.info('Network issue. Sale stored and will sync shortly.');
+        } else {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || 'Failed to submit sale.');
+        }
       }
 
-      // === NEW: also create a journal entry for the sale ===
+      // === (Optional) Create a journal entry for the sale ===
       try {
-        // Pick debit account by payment type (exact names you requested)
         const debitCandidates =
           paymentType === 'Cash'
-            ? ['Cash']                         // exact
+            ? ['Cash']
             : paymentType === 'Bank'
-            ? ['Bank Account']                 // exact
-            : ['Accounts Receivable'];         // exact
+            ? ['Bank Account']
+            : ['Accounts Receivable'];
 
-        const creditCandidates = ['Sales Revenue']; // exact
+        const creditCandidates = ['Sales Revenue'];
 
         const [debitId, creditId] = await Promise.all([
           findAccountIdByNames(debitCandidates),
@@ -794,52 +869,47 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
           if (!jr.ok) {
             const err = await jr.json().catch(() => null);
             console.warn('Journal create failed:', err?.error || jr.status);
-            messageApi.warning(
-              'Sale recorded, but journal could not be created automatically.',
-            );
+            messageApi.warning('Sale recorded, but journal could not be created automatically.');
           }
         } else {
-          console.warn('Missing account mapping for POS journal.', {
-            triedDebit: debitCandidates,
-            triedCredit: creditCandidates,
-          });
-          messageApi.warning(
-            'Sale recorded, but required accounts were not found to create a journal.',
-          );
+          messageApi.warning('Sale recorded, but required accounts were not found to create a journal.');
         }
       } catch (jeErr) {
         console.warn('Journal error:', jeErr);
-        // don’t block the sale UI — just warn
       }
-      // === END NEW ===
 
-      // Re-fetch products for fresh stock (or to include newly created products)
+      // Re-fetch products (online only)
       try {
         const productsResponse = await fetch(`${API_BASE_URL}/products-services`, {
           headers: getAuthHeaders(),
         });
         if (productsResponse.ok) {
-          const updatedProductsFromAPI: ProductDB[] =
-            await productsResponse.json();
+          const updatedProductsFromAPI: ProductDB[] = await productsResponse.json();
           setProducts(updatedProductsFromAPI);
+          writeJSON(CKEY_PRODUCTS, updatedProductsFromAPI);
         }
       } catch (fetchError) {
         console.warn('Error re-fetching products:', fetchError);
       }
+
       setCart([]);
       setAmountPaid(0);
       setDueDate(null);
-      // --- Reset bankName ---
       setBankName(null);
-      // --- End reset bankName ---
       setSelectedCustomer(null);
-      setPaymentType('Cash'); // Reset to default payment type
+      setPaymentType('Cash');
       messageApi.success('Sale submitted and recorded successfully!');
     } catch (err: any) {
       console.error('Error during sale submission:', err);
-      messageApi.error(err.message || 'Could not save sale.');
+      // As a safety, queue on unexpected network-type errors
+      const queue = readJSON<any[]>(OKEY_SALES, []);
+      queue.push({ localId: `sale-${Date.now()}`, payload: salePayload });
+      writeJSON(OKEY_SALES, queue);
+      messageApi.info('Could not reach the server. Sale saved locally and will sync automatically.');
     } finally {
       setIsLoading(false);
+      // try to flush if we’re online
+      flushOutbox();
     }
   };
 
@@ -847,7 +917,11 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
     <>
       {contextHolder}
       <div style={{ padding: 18, maxWidth: 650, margin: '0 auto' }}>
-        <Title level={3}>Point of Sale</Title>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 8 }}>
+          <Title level={3} style={{ margin: 0 }}>Point of Sale</Title>
+          <Tag color={isOnline ? 'green' : 'red'}>{isOnline ? 'Online' : 'Offline'}</Tag>
+        </div>
+
         {/* Customer Select */}
         <Card
           style={{ marginBottom: 12, cursor: 'pointer' }}
@@ -892,6 +966,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
           </div>
           <UserAddOutlined />
         </Card>
+
         {/* Product Select */}
         <Card
           style={{ marginBottom: 12, cursor: 'pointer' }}
@@ -899,9 +974,9 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
             setSelectedProduct(null);
             setShowCustomProductForm(false);
             setProductModal(true);
-            customProductForm.resetFields(); // Reset form fields on opening modal
-            setProductQty(1); // Ensure qty is reset for new product selection
-            setCustomProductIsService(false); // Reset custom product type
+            customProductForm.resetFields();
+            setProductQty(1);
+            setCustomProductIsService(false);
           }}
           bodyStyle={{
             display: 'flex',
@@ -913,11 +988,11 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
             <Text strong>
               {selectedProduct ? selectedProduct.name : 'Select Product'}
             </Text>
-<div style={{ fontSize: 12, color: '#888' }}>
-  Price: R
-  {(selectedProduct?.unit_price || 0).toFixed(2)}{' '}
-  {selectedProduct?.is_service ? '(Service)' : ''}
-</div>
+            <div style={{ fontSize: 12, color: '#888' }}>
+              Price: R
+              {(selectedProduct?.unit_price || 0).toFixed(2)}{' '}
+              {selectedProduct?.is_service ? '(Service)' : ''}
+            </div>
             {selectedProduct && (
               <div style={{ fontSize: 12, color: '#888' }}>
                 Stock: {selectedProduct.stock_quantity ?? 0} {selectedProduct.unit || ''}
@@ -926,6 +1001,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
           </div>
           <ShoppingCartOutlined />
         </Card>
+
         {/* Quantity & Add to Cart */}
         <Row gutter={6} align="middle" style={{ marginBottom: 10 }}>
           <Col>
@@ -935,7 +1011,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
               disabled={
                 !isAuthenticated ||
                 isLoading ||
-                isAddingCustomProduct || // Disable during custom product creation
+                isAddingCustomProduct ||
                 (!selectedProduct && !showCustomProductForm)
               }
             >
@@ -951,7 +1027,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
               disabled={
                 !isAuthenticated ||
                 isLoading ||
-                isAddingCustomProduct || // Disable during custom product creation
+                isAddingCustomProduct ||
                 (!selectedProduct && !showCustomProductForm)
               }
             />
@@ -966,7 +1042,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
               disabled={
                 !isAuthenticated ||
                 isLoading ||
-                isAddingCustomProduct || // Disable during custom product creation
+                isAddingCustomProduct ||
                 (!selectedProduct && !showCustomProductForm)
               }
             >
@@ -980,16 +1056,17 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
               disabled={
                 !isAuthenticated ||
                 isLoading ||
-                isAddingCustomProduct || // Disable during custom product creation
-                (!selectedProduct && !showCustomProductForm) || // Button disabled if no product selected AND not custom form
+                isAddingCustomProduct ||
+                (!selectedProduct && !showCustomProductForm) ||
                 (showCustomProductForm &&
-                  !customProductForm.getFieldValue('customProductName')?.trim()) // If custom form is open but name is empty
+                  !customProductForm.getFieldValue('customProductName')?.trim())
               }
             >
               Add to Cart
             </Button>
           </Col>
         </Row>
+
         {/* Cart */}
         <Card title="Cart" style={{ marginBottom: 14 }}>
           {isLoading && (
@@ -1050,6 +1127,9 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
                       {item.quantity} x R{item.unit_price.toFixed(2)}{' '}
                     </Tag>
                     <div>Total: R{item.subtotal.toFixed(2)}</div>
+                    {String(item.id).startsWith('custom-') && (
+                      <div style={{ fontSize: 12, color: '#999' }}>custom item</div>
+                    )}
                   </Col>
                   <Col>
                     <Button
@@ -1066,9 +1146,9 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
             ))
           )}
         </Card>
+
         {/* Payment and Submit - IMPROVED ALIGNMENT */}
         <Card>
-          {/* Use Flexbox for better alignment */}
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
             {/* Payment Method Field Group */}
             <div style={{ flex: 1, minWidth: 150 }}>
@@ -1079,10 +1159,9 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
                 value={paymentType}
                 onChange={(value) => {
                     setPaymentType(value);
-                    // Optional: Reset related fields when payment type changes
                     if (value !== 'Cash') setAmountPaid(0);
                     if (value !== 'Credit') setDueDate(null);
-                    if (value !== 'Bank') setBankName(null); // Reset bank name
+                    if (value !== 'Bank') setBankName(null);
                 }}
                 style={{ width: '100%' }}
                 disabled={!isAuthenticated || isLoading}
@@ -1093,7 +1172,6 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
               </Select>
             </div>
 
-            {/* Conditional Fields based on Payment Type */}
             {/* Amount Paid (Cash) */}
             {paymentType === 'Cash' && (
               <div style={{ flex: 1, minWidth: 150 }}>
@@ -1191,6 +1269,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
             Submit Sale
           </Button>
         </Card>
+
         {/* ----------- Modals ----------- */}
         <Modal
           open={customerModal}
@@ -1289,6 +1368,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
             </Form>
           )}
         </Modal>
+
         <Modal
           open={productModal}
           onCancel={() => {
@@ -1296,8 +1376,8 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
             setShowCustomProductForm(false);
             setSelectedProduct(null);
             setProductQty(1);
-            customProductForm.resetFields(); // Reset custom product form when modal closes
-            setCustomProductIsService(false); // Reset custom product type on modal close
+            customProductForm.resetFields();
+            setCustomProductIsService(false);
           }}
           footer={null}
           title="Select Product"
@@ -1313,7 +1393,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
               />
               <div style={{ maxHeight: 270, overflowY: 'auto', marginBottom: 10 }}>
                 {products.length === 0 ? (
-                  <Text type="secondary">No products found. Check your API endpoint.</Text>
+                  <Text type="secondary">No products found. {isOnline ? 'Check your API endpoint.' : 'You are offline and have no cached products.'}</Text>
                 ) : (
                   products
                     .filter(
@@ -1349,6 +1429,9 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
                           <div style={{ fontSize: 13, color: '#888' }}>
                             Stock: {p.stock_quantity ?? 0} {p.unit || ''}
                           </div>
+                          {String(p.id).startsWith('custom-') && (
+                            <div style={{ fontSize: 12, color: '#999' }}>custom item (local)</div>
+                          )}
                         </div>
                       </Card>
                     ))
@@ -1360,7 +1443,6 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
                 icon={<PlusOutlined />}
                 onClick={() => {
                   setShowCustomProductForm(true);
-                  // Set default for custom product as 'product'
                   customProductForm.setFieldsValue({ isService: false });
                 }}
                 disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
@@ -1404,12 +1486,11 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
                   disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 />
               </Form.Item>
-              {/* New: Select for Product/Service Type */}
               <Form.Item
                 name="isService"
                 label="Type"
                 rules={[{ required: true, message: 'Please select item type!' }]}
-                initialValue={false} // Default to Product
+                initialValue={false}
               >
                 <Select
                   style={{ width: '100%' }}
@@ -1437,7 +1518,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
               <Button
                 type="primary"
                 block
-                onClick={addToCart} // This will trigger form validation
+                onClick={addToCart}
                 disabled={
                   !isAuthenticated ||
                   isLoading ||
@@ -1454,7 +1535,7 @@ async function findAccountIdByNames(candidates: string[]): Promise<number | null
                 onClick={() => {
                   setShowCustomProductForm(false);
                   customProductForm.resetFields();
-                  setCustomProductIsService(false); // Reset custom product type
+                  setCustomProductIsService(false);
                 }}
                 disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
               >

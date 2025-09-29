@@ -42,7 +42,9 @@ import {
   CircleDollarSign, // High Value Icon
   Coins,            // Low Value Icon
   Repeat,          // Frequent Buyer Icon
-  Gem             // Big Spender Icon
+  Gem,             // Big Spender Icon
+  Target,          // Marketing Campaign Icon
+  Sparkles         // Suggested Products Icon
 } from 'lucide-react';
 // --- End Import Icons ---
 import { CustomerForm } from './CustomerForm';
@@ -69,6 +71,31 @@ interface Customer {
   averageOrderValue: number;   // Calculated by backend
 }
 // --- End Updated Customer Interface ---
+
+// --- NEW: Recommendation Interfaces ---
+// Updated interface to match the new aggregated response format
+interface RecommendedProduct {
+  productId: string;
+  productName: string;
+  reason: string; // e.g., "Not purchased", "High correlation with X"
+  suggestedPrice?: number; // NEW: Optional suggested price (e.g., for discounts)
+  // Optional: Add metrics like how many customers in the cluster *don't* have this product
+  // customersWithoutProduct?: number;
+}
+
+// Updated interface for the aggregated response
+interface ClusterRecommendationResponse {
+  cluster: CustomerCluster;
+  recommendations: RecommendedProduct[]; // Now directly an array of RecommendedProduct
+  message?: string; // Optional message from backend
+}
+
+interface RecommendationRequest {
+  cluster: CustomerCluster;
+  // Add other parameters if needed, e.g., minimum confidence score, product categories to avoid, etc.
+}
+
+// --- End NEW: Recommendation Interfaces ---
 
 interface CustomerSaveData {
   name: string;
@@ -102,11 +129,19 @@ export function CustomerManagement() {
   // --- State for Customer Clustering ---
   const [activeCluster, setActiveCluster] = useState<CustomerCluster>('All');
   // --- End State for Customer Clustering ---
+
+  // --- NEW: State for Marketing Recommendations ---
+  const [isRecommendationDialogOpen, setIsRecommendationDialogOpen] = useState(false);
+  // Updated state to hold the new aggregated recommendations format
+  const [recommendations, setRecommendations] = useState<RecommendedProduct[]>([]);
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationError, setRecommendationError] = useState<string | null>(null);
+  // --- End NEW: State for Marketing Recommendations ---
+
   const { toast } = useToast();
 
   const getAuthHeaders = useCallback(() => {
     const token = localStorage.getItem('token');
-    // console.log('Frontend: Token from localStorage in getAuthHeaders:', token ? token.substring(0, 10) + '...' : 'NONE'); // Optional debug log
     return token ? { 'Authorization': `Bearer ${token}` } : {};
   }, []);
 
@@ -116,7 +151,6 @@ export function CustomerManagement() {
     setError(null);
     try {
       const headers = getAuthHeaders();
-      // console.log('Frontend: Headers for fetchCustomersWithClusterData:', headers); // Optional debug log
 
       // --- CALL THE NEW BACKEND ENDPOINT ---
       const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/cluster-data`, {
@@ -149,10 +183,70 @@ export function CustomerManagement() {
 
   // --- Effect to Fetch Data on Mount and Search Change ---
   useEffect(() => {
-    // console.log('Frontend: useEffect in CustomerManagement triggered.'); // Optional debug log
     fetchCustomersWithClusterData();
-  }, [fetchCustomersWithClusterData, searchTerm]); // Add searchTerm if backend handles search, otherwise remove
+  }, [fetchCustomersWithClusterData]); // Remove searchTerm if backend doesn't handle search here
   // --- End Effect to Fetch Data ---
+
+  // --- NEW: Fetch Recommendations based on Cluster ---
+  const fetchRecommendations = useCallback(async (cluster: CustomerCluster) => {
+    setRecommendationLoading(true);
+    setRecommendationError(null);
+    try {
+      const headers = getAuthHeaders();
+      const request: RecommendationRequest = { cluster };
+
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/recommendations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers,
+        },
+        body: JSON.stringify(request),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Backend recommendation response for ${response.status}:`, errorText);
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+
+      // Use the updated interface for the response
+      const data: ClusterRecommendationResponse = await response.json();
+      if (data.cluster === cluster) {
+        // Set the recommendations array directly from the new response format
+        setRecommendations(data.recommendations);
+        if (data.message) {
+          console.log("Recommendation Message:", data.message);
+          // You could potentially show this message to the user if relevant
+        }
+      } else {
+        console.warn("Received recommendations for a different cluster than requested.");
+        setRecommendations([]);
+      }
+    } catch (err) {
+      console.error('Failed to fetch recommendations:', err);
+      setRecommendationError('Failed to fetch recommendations. Please try again.');
+      setRecommendations([]);
+    } finally {
+      setRecommendationLoading(false);
+    }
+  }, [getAuthHeaders]);
+  // --- End NEW: Fetch Recommendations ---
+
+  // --- NEW: Handle Run Campaign Button Click ---
+  const handleRunCampaign = async () => {
+    if (activeCluster === 'All') {
+        toast({
+            title: 'Cluster Required',
+            description: 'Please select a specific customer cluster to run the campaign on.',
+            variant: 'destructive',
+        });
+        return;
+    }
+    await fetchRecommendations(activeCluster);
+    setIsRecommendationDialogOpen(true);
+  };
+  // --- End NEW: Handle Run Campaign Button Click ---
 
   const handleFormSave = async (customerData: Customer) => {
     const payload: CustomerSaveData = {
@@ -325,6 +419,11 @@ export function CustomerManagement() {
       <CardHeader className='flex flex-col sm:flex-row items-start sm:items-center justify-between space-y-2 sm:space-y-0 pb-2'>
         <CardTitle className='text-xl font-medium'>Customer Management</CardTitle>
         <div className='flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 w-full sm:w-auto'>
+          {/* --- NEW: Run Marketing Campaign Button --- */}
+          <Button onClick={handleRunCampaign} variant="outline" className="w-full sm:w-auto">
+            <Target className="mr-2 h-4 w-4" />  Marketing Suggestions
+          </Button>
+          {/* --- End NEW: Run Marketing Campaign Button --- */}
           <Input
             placeholder='Search customers...'
             value={searchTerm}
@@ -457,6 +556,51 @@ export function CustomerManagement() {
         </Tabs>
         {/* --- End Tabs for Customer Clusters --- */}
       </CardContent>
+
+      {/* --- NEW: Recommendation Dialog --- */}
+      <Dialog open={isRecommendationDialogOpen} onOpenChange={setIsRecommendationDialogOpen}>
+        <DialogContent className="sm:max-w-4xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-purple-500" />
+              Marketing Recommendations for {activeCluster} Cluster
+            </DialogTitle>
+          </DialogHeader>
+          {recommendationLoading ? (
+            <div className='flex justify-center items-center h-40'>
+              <Loader2 className='h-8 w-8 animate-spin' />
+            </div>
+          ) : recommendationError ? (
+            <div className='text-red-500 text-center py-4'>{recommendationError}</div>
+          ) : recommendations.length === 0 ? (
+            <div className='text-center py-4'>
+              <p>No recommendations generated for the selected cluster.</p>
+              <p className="text-sm text-muted-foreground">This might be because all products have been purchased by this cluster, or no suitable products were found.</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Updated dialog content to match the new aggregated format */}
+              <div className="border rounded-lg p-4 bg-card">
+                <h4 className="font-semibold text-lg">Recommended Products for the {activeCluster} Cluster</h4>
+                <ul className="list-disc list-inside mt-2 space-y-1">
+                  {recommendations.map((prod, idx) => (
+                    <li key={idx} className="text-sm">
+                      <strong>{prod.productName}</strong> - {prod.reason}
+                      {prod.suggestedPrice !== undefined && (
+                        <span className="ml-2 text-xs text-gray-500">Suggested Price: R{prod.suggestedPrice.toFixed(2)}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button onClick={() => setIsRecommendationDialogOpen(false)}>Close</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* --- End NEW: Recommendation Dialog --- */}
     </Card>
   );
 }

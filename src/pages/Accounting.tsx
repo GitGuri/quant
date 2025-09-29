@@ -13,6 +13,9 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
+// top of file, with the other imports
+import LoansTab from './LoansTab';
+
 import { motion } from 'framer-motion';
 import { Plus, Edit, Trash2, Building, CreditCard, Calculator,Download , Play, Link as LinkIcon } from 'lucide-react';
 import { useAuth } from '../AuthPage';
@@ -93,7 +96,7 @@ const looksLikeBankOrCash = (acc: Account) =>
 type FundingMethod = 'none' | 'cash' | 'liability';
 
 const Accounting = () => {
-  const [activeTab, setActiveTab] = useState<'assets'|'expenses'|'accounts'|'opening'>('assets');
+  const [activeTab, setActiveTab] = useState<'assets'|'expenses'|'accounts'|'opening'|'loans'>('assets');
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [modalType, setModalType] = useState<'asset'|'expense'|'account'|''>('');
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -554,11 +557,13 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
       <Header title='Accounting' />
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }}>
         <Tabs value={activeTab} onValueChange={(v:any)=>setActiveTab(v)}>
-          <TabsList className='grid w-full grid-cols-4'>
+          <TabsList className='grid w-full grid-cols-5'>
             <TabsTrigger value='assets'>Assets</TabsTrigger>
             <TabsTrigger value='expenses'>Expenses</TabsTrigger>
             <TabsTrigger value='accounts'>Accounts</TabsTrigger>
             <TabsTrigger value='opening'>Opening Balances</TabsTrigger>
+            <TabsTrigger value='loans'>Loans</TabsTrigger>
+
           </TabsList>
 
           {/* Assets */}
@@ -779,6 +784,20 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
               </CardContent>
             </Card>
           </TabsContent>
+<TabsContent value='loans'>
+  <Card>
+    <CardHeader>
+      <CardTitle className='flex items-center gap-2'>
+        <CreditCard className='h-5 w-5' /> Loans
+      </CardTitle>
+    </CardHeader>
+    <CardContent>
+      {/* Pass the SAME lists you already fetched with authHeaders */}
+      <LoansTab assets={assets} accounts={accounts} />
+    </CardContent>
+  </Card>
+</TabsContent>
+
 
           {/* Opening Balances */}
           <TabsContent value='opening'>
