@@ -26,7 +26,7 @@ import { useAuth } from '../AuthPage'; // We'll still use this for isAuthenticat
 
 const useBreakpoint = Grid.useBreakpoint;
 const { Title, Text } = Typography;
-const { Option } = Select; // Destructure Option from Select
+const { Option } = Select;
 
 // ---- Simple online status hook ----
 const useOnline = () => {
@@ -58,11 +58,11 @@ const writeJSON = (key: string, value: any) => {
 
 // --- START: MODIFIED TYPES TO MATCH BACKEND API ---
 interface ProductDB {
-  id: number | string; // allow string for offline custom items (e.g. "custom-123")
+  id: number | string; // allow string for offline custom items
   name: string;
   description: string | null;
-  unit_price: number; // Ensure this is number
-  cost_price: number | null; // Ensure this is number or null
+  unit_price: number;
+  cost_price: number | null;
   sku: string | null;
   is_service: boolean;
   stock_quantity: number;
@@ -71,10 +71,10 @@ interface ProductDB {
   tax_rate_id: number | null;
   category: string | null;
   unit: string | null;
-  tax_rate_value?: number; // Added for convenience on frontend, assumed to be part of API response
+  tax_rate_value?: number;
 }
 interface CustomerFrontend {
-  id: string; // keep as string (safer for large IDs)
+  id: string;
   name: string;
   contactPerson: string | null;
   email: string | null;
@@ -85,21 +85,20 @@ interface CustomerFrontend {
   balanceDue?: number;
   creditLimit?: number;
 }
-// CartItem now fully uses (possibly-local) ProductDB, id can be number|string
 type CartItem = ProductDB & { quantity: number; subtotal: number };
 type PaymentType = 'Cash' | 'Bank' | 'Credit';
 // --- END: MODIFIED TYPES TO MATCH BACKEND API ---
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'; // <-- set your API URL
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
-// ===== Credit Score (frontend-only, flag not block) =====
+// ===== Credit Score =====
 type ScoreColor = 'green' | 'blue' | 'orange' | 'red' | 'default';
 interface CreditScoreInfo {
   score: number;
   label: 'Excellent' | 'Good' | 'Fair' | 'Poor' | 'Unknown';
   color: ScoreColor;
 }
-const MIN_SCORE = 60; // threshold to FLAG (not block)
+const MIN_SCORE = 60;
 const scoreFromRatio = (ratio: number): CreditScoreInfo => {
   const r = Math.max(0, Math.min(1, ratio));
   const score = Math.round(r * 100);
@@ -113,8 +112,8 @@ interface SaleHistoryRow {
   customer_id: number | string;
   total_amount: number;
   remaining_credit_amount: number;
-  due_date: string | null; // ISO
-  sale_date: string; // ISO
+  due_date: string | null;
+  sale_date: string;
 }
 const computeCreditScoreFromHistory = (
   history: SaleHistoryRow[] | undefined | null,
@@ -129,7 +128,7 @@ const computeCreditScoreFromHistory = (
     const due = h.due_date ? h.due_date.slice(0, 10) : null;
     const fullyPaid = h.remaining_credit_amount <= 0;
     if (!due) {
-      if (fullyPaid) onTimePaid++; // assume neutral-good if no due date but paid
+      if (fullyPaid) onTimePaid++;
       return;
     }
     if (fullyPaid) {
@@ -145,12 +144,11 @@ const computeCreditScoreFromHistory = (
   return scoreFromRatio(ratio);
 };
 
-// --- Helper to get user name from localStorage (similar to AuthPage) ---
+// --- Helper to get user name from localStorage ---
 const getUserNameFromLocalStorage = () => {
   const storedName = localStorage.getItem('userName');
   return storedName || 'Unknown User (Local Storage)';
 };
-// --- End Helper ---
 
 export default function POSScreen() {
   const [messageApi, contextHolder] = message.useMessage();
@@ -167,29 +165,20 @@ export default function POSScreen() {
   const [selectedProduct, setSelectedProduct] = useState<ProductDB | null>(null);
   const [productModal, setProductModal] = useState(false);
   const [productSearch, setProductSearch] = useState('');
-  const [productQty, setProductQty] = useState(1);
-  // Custom product state
+  const [productQty, setProductQty] = useState(1); // for existing products only
   const [showCustomProductForm, setShowCustomProductForm] = useState(false);
-  const [customProductForm] = Form.useForm(); // New Form instance for custom product
-  // New state for custom product type (product or service)
+  const [customProductForm] = Form.useForm();
   const [customProductIsService, setCustomProductIsService] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [paymentType, setPaymentType] = useState<PaymentType>('Cash');
   const [amountPaid, setAmountPaid] = useState(0);
   const [dueDate, setDueDate] = useState<string | null>(null);
-  // --- State for Bank Name ---
   const [bankName, setBankName] = useState<string | null>(null);
-  // --- End State for Bank Name ---
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-  // Global loading state for the screen
   const [isLoading, setIsLoading] = useState(false);
-  // Specific loading state for adding custom product (to disable custom product form elements)
   const [isAddingCustomProduct, setIsAddingCustomProduct] = useState(false);
-  // Cache scores by customer id (string)
-  const [creditScoreCache, setCreditScoreCache] = useState<
-    Record<string, CreditScoreInfo>
-  >({});
+  const [creditScoreCache, setCreditScoreCache] = useState<Record<string, CreditScoreInfo>>({});
 
   const getAuthHeaders = useCallback(() => {
     return token ? { Authorization: `Bearer ${token}` } : {};
@@ -210,15 +199,13 @@ export default function POSScreen() {
           body: JSON.stringify(job.payload),
         });
         if (!res.ok) {
-          // keep it if server rejected for a non-network reason
           const err = await res.json().catch(() => ({}));
           console.warn('Outbox sale failed (kept in queue):', err);
           remaining.push(job);
         } else {
           messageApi.success(`Synced offline sale (${job.localId}).`);
         }
-      } catch (e) {
-        // network again, keep it
+      } catch {
         remaining.push(job);
       }
     }
@@ -229,9 +216,8 @@ export default function POSScreen() {
     flushOutbox();
   }, [flushOutbox]);
 
-  // === NEW: simple cache for account list and name → id helper ===
+  // === Accounts helper (unchanged) ===
   const [accountsCache, setAccountsCache] = useState<any[] | null>(null);
-
   const loadAccountsOnce = useCallback(async () => {
     if (!isAuthenticated || !token) return [];
     if (accountsCache) return accountsCache;
@@ -244,47 +230,35 @@ export default function POSScreen() {
       setAccountsCache(list || []);
       return list || [];
     } catch (e) {
-      console.warn('Failed to load accounts for mapping', e);
+      console.warn('Failed to load accounts', e);
       setAccountsCache([]);
       return [];
     }
   }, [isAuthenticated, token, getAuthHeaders, accountsCache]);
 
-  // Assuming getAuthHeaders is available in scope or passed as a parameter
   async function findAccountIdByNames(candidates: string[]): Promise<number | null> {
     try {
       const response = await fetch(`${API_BASE_URL}/accounts`, {
         headers: getAuthHeaders(),
       });
-
-      if (!response.ok) {
-        console.error(`Failed to fetch accounts: ${response.status} ${response.statusText}`);
-        return null;
-      }
-
+      if (!response.ok) return null;
       const list = await response.json();
       const usable = (a: any) => a?.is_postable === true && a?.is_active === true && !!a?.reporting_category_id;
-
       for (const name of candidates) {
         const m = list.find((a: any) => (a?.name || '').toLowerCase().includes(name.toLowerCase()));
-        if (m && usable(m)) {
-          return Number(m.id);
-        }
+        if (m && usable(m)) return Number(m.id);
       }
-      console.warn('Account not found for any of:', candidates);
       return null;
-    } catch (error) {
-      console.error("Error in findAccountIdByNames:", error);
+    } catch {
       return null;
     }
   }
-  // === END NEW ===
 
   // Fetch score & cache when customer is selected
   const fetchAndCacheCustomerScore = useCallback(
     async (customerId: string) => {
       if (!isAuthenticated || !token || !isOnline) return;
-      if (creditScoreCache[customerId]) return; // already cached
+      if (creditScoreCache[customerId]) return;
       try {
         const resp = await fetch(
           `${API_BASE_URL}/api/sales/customer/${customerId}/credit-history`,
@@ -294,7 +268,7 @@ export default function POSScreen() {
         const history: SaleHistoryRow[] = await resp.json();
         const info = computeCreditScoreFromHistory(history);
         setCreditScoreCache((prev) => ({ ...prev, [customerId]: info }));
-      } catch (e) {
+      } catch {
         setCreditScoreCache((prev) => ({
           ...prev,
           [customerId]: { score: 50, label: 'Unknown', color: 'default' },
@@ -304,9 +278,7 @@ export default function POSScreen() {
     [isAuthenticated, token, getAuthHeaders, creditScoreCache, isOnline],
   );
   useEffect(() => {
-    if (selectedCustomer?.id) {
-      fetchAndCacheCustomerScore(selectedCustomer.id);
-    }
+    if (selectedCustomer?.id) fetchAndCacheCustomerScore(selectedCustomer.id);
   }, [selectedCustomer?.id, fetchAndCacheCustomerScore]);
 
   // Fetch customers & products (with offline cache)
@@ -316,26 +288,20 @@ export default function POSScreen() {
         setCustomers([]);
         return;
       }
-
       if (!isOnline) {
         const cached = readJSON<CustomerFrontend[]>(CKEY_CUSTOMERS, []);
         setCustomers(cached);
         return;
       }
-
       setIsLoading(true);
       try {
-        const response = await fetch(`${API_BASE_URL}/api/customers`, {
-          headers: getAuthHeaders(),
-        });
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const response = await fetch(`${API_BASE_URL}/api/customers`, { headers: getAuthHeaders() });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data: CustomerFrontend[] = await response.json();
         setCustomers(data);
         writeJSON(CKEY_CUSTOMERS, data);
-      } catch (error) {
-        console.error('Error fetching customers:', error);
+      } catch (e) {
         messageApi.error('Failed to fetch customers.');
-        // fallback to cache
         const cached = readJSON<CustomerFrontend[]>(CKEY_CUSTOMERS, []);
         if (cached.length) setCustomers(cached);
       } finally {
@@ -348,21 +314,16 @@ export default function POSScreen() {
         setProducts([]);
         return;
       }
-
       if (!isOnline) {
         const cached = readJSON<ProductDB[]>(CKEY_PRODUCTS, []);
         setProducts(cached);
         return;
       }
-
       setIsLoading(true);
       try {
-        const response = await fetch(`${API_BASE_URL}/products-services`, {
-          headers: getAuthHeaders(),
-        });
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const response = await fetch(`${API_BASE_URL}/products-services`, { headers: getAuthHeaders() });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data: ProductDB[] = await response.json();
-        // Explicitly parse numeric values to ensure they are numbers
         const parsedData = data.map(p => ({
           ...p,
           unit_price: parseFloat(p.unit_price as any),
@@ -371,10 +332,8 @@ export default function POSScreen() {
         }));
         setProducts(parsedData);
         writeJSON(CKEY_PRODUCTS, parsedData);
-      } catch (error) {
-        console.error('Error fetching products:', error);
+      } catch (e) {
         messageApi.error('Failed to fetch products.');
-        // fallback to cache
         const cached = readJSON<ProductDB[]>(CKEY_PRODUCTS, []);
         if (cached.length) setProducts(cached);
       } finally {
@@ -400,6 +359,7 @@ export default function POSScreen() {
     let itemToAdd: CartItem | null = null;
     let finalProduct: ProductDB | null = null;
 
+    // ----- CUSTOM PRODUCT / SERVICE BRANCH -----
     if (showCustomProductForm) {
       customProductForm.validateFields().then(async (values) => {
         const customProductName = values.customProductName.trim();
@@ -407,13 +367,14 @@ export default function POSScreen() {
         const customProductDescription = values.customProductDescription || null;
         const customProductTaxRate = parseFloat(values.customProductTaxRate);
         const isService = !!values.isService;
+        const qty = Math.max(1, Number(values.customProductQty || 1)); // NEW: quantity from form
 
         setIsAddingCustomProduct(true);
         try {
           if (!isOnline) {
-            // --- OFFLINE: NO server create; create a local, temporary item ---
+            // OFFLINE: create local custom item
             finalProduct = {
-              id: `custom-${Date.now()}`, // string id so backend treats it as custom (product_id = null)
+              id: `custom-${Date.now()}`,
               name: customProductName,
               description: customProductDescription,
               unit_price: customProductUnitPrice,
@@ -429,7 +390,7 @@ export default function POSScreen() {
               tax_rate_value: customProductTaxRate,
             };
           } else {
-            // ONLINE: Prefer existing, else create on server
+            // ONLINE: reuse if exists, else create
             const existingProduct = products.find(p => (p.name || '').toLowerCase() === customProductName.toLowerCase());
             if (existingProduct) {
               finalProduct = existingProduct;
@@ -475,9 +436,9 @@ export default function POSScreen() {
 
           itemToAdd = {
             ...finalProduct!,
-            quantity: productQty,
+            quantity: qty, // NEW: use form quantity
             subtotal:
-              productQty *
+              qty *
               finalProduct!.unit_price *
               (1 + (finalProduct!.tax_rate_value ?? 0)),
           };
@@ -502,12 +463,16 @@ export default function POSScreen() {
             } else {
               setCart([...cart, itemToAdd]);
             }
-            setSelectedProduct(null);
-            setProductQty(1);
-            setProductModal(false);
-            setShowCustomProductForm(false);
+
+            // IMPORTANT: keep modal open so user can add more custom items
+            // Reset the form for the next new item, but DO NOT close modal or leave custom form
             customProductForm.resetFields();
-            messageApi.success(`"${itemToAdd.name}" added to cart.`);
+            customProductForm.setFieldsValue({
+              isService: false,
+              customProductTaxRate: '0',
+              customProductQty: 1,
+            });
+            messageApi.success(`"${itemToAdd.name}" (x${qty}) added to cart.`);
           }
         } catch (err: any) {
           console.error('Error handling custom product:', err);
@@ -519,103 +484,104 @@ export default function POSScreen() {
         messageApi.error('Please fill in all required custom product fields.');
       });
       return;
+    }
+
+    // ----- EXISTING PRODUCT BRANCH -----
+    if (!selectedProduct || productQty < 1) return;
+
+    if (selectedProduct.is_service) {
+      itemToAdd = {
+        ...selectedProduct,
+        quantity: productQty,
+        subtotal: productQty * selectedProduct.unit_price * (1 + (selectedProduct.tax_rate_value ?? 0)),
+      };
     } else {
-      if (!selectedProduct || productQty < 1) return;
+      const availableQty = selectedProduct.stock_quantity ?? 0;
+      const alreadyInCart = cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
+      const totalRequested = productQty + alreadyInCart;
 
-      if (selectedProduct.is_service) {
-        itemToAdd = {
-          ...selectedProduct,
-          quantity: productQty,
-          subtotal: productQty * selectedProduct.unit_price * (1 + (selectedProduct.tax_rate_value ?? 0)),
-        };
+      if (availableQty < 1) {
+        Modal.confirm({
+          title: 'Item Out of Stock',
+          content: `"${selectedProduct.name}" is out of stock (only ${availableQty} units available). Do you want to add it to the cart anyway?`,
+          okText: 'Yes, Add Anyway',
+          cancelText: 'No, Cancel',
+          onOk: () => {
+            const item = {
+              ...selectedProduct,
+              quantity: productQty,
+              subtotal:
+                productQty *
+                selectedProduct.unit_price *
+                (1 + (selectedProduct.tax_rate_value ?? 0)),
+            };
+            const existingCartItem = cart.find((i) => i.id === item.id);
+            if (existingCartItem) {
+              setCart(
+                cart.map((i) =>
+                  i.id === item.id
+                    ? {
+                        ...i,
+                        quantity: i.quantity + item.quantity,
+                        subtotal:
+                          (i.quantity + item.quantity) *
+                          i.unit_price *
+                          (1 + (i.tax_rate_value ?? 0)),
+                      }
+                    : i,
+                ),
+              );
+            } else {
+              setCart([...cart, item]);
+            }
+            setSelectedProduct(null);
+            setProductQty(1);
+            setProductModal(false);
+            setShowCustomProductForm(false);
+            messageApi.success(`"${selectedProduct.name}" added to cart.`);
+          },
+          onCancel: () => {
+            messageApi.info('Adding item to cart cancelled.');
+          },
+        });
+        return;
+      }
+
+      itemToAdd = {
+        ...selectedProduct,
+        quantity: productQty,
+        subtotal:
+          productQty *
+          selectedProduct.unit_price *
+          (1 + (selectedProduct.tax_rate_value ?? 0)),
+      };
+    }
+
+    if (itemToAdd) {
+      const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
+      if (existingCartItem) {
+        setCart(
+          cart.map((i) =>
+            i.id === itemToAdd!.id
+              ? {
+                  ...i,
+                  quantity: i.quantity + itemToAdd!.quantity,
+                  subtotal:
+                    (i.quantity + itemToAdd!.quantity) *
+                    i.unit_price *
+                    (1 + (i.tax_rate_value ?? 0)),
+                }
+              : i,
+          ),
+        );
       } else {
-        const availableQty = selectedProduct.stock_quantity ?? 0;
-        const alreadyInCart = cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
-        const totalRequested = productQty + alreadyInCart;
-
-        if (availableQty < 1) {
-          Modal.confirm({
-            title: 'Item Out of Stock',
-            content: `"${selectedProduct.name}" is out of stock (only ${availableQty} units available). Do you want to add it to the cart anyway?`,
-            okText: 'Yes, Add Anyway',
-            cancelText: 'No, Cancel',
-            onOk: () => {
-              const item = {
-                ...selectedProduct,
-                quantity: productQty,
-                subtotal:
-                  productQty *
-                  selectedProduct.unit_price *
-                  (1 + (selectedProduct.tax_rate_value ?? 0)),
-              };
-              const existingCartItem = cart.find((i) => i.id === item.id);
-              if (existingCartItem) {
-                setCart(
-                  cart.map((i) =>
-                    i.id === item.id
-                      ? {
-                          ...i,
-                          quantity: i.quantity + item.quantity,
-                          subtotal:
-                            (i.quantity + item.quantity) *
-                            i.unit_price *
-                            (1 + (i.tax_rate_value ?? 0)),
-                        }
-                      : i,
-                  ),
-                );
-              } else {
-                setCart([...cart, item]);
-              }
-              setSelectedProduct(null);
-              setProductQty(1);
-              setProductModal(false);
-              setShowCustomProductForm(false);
-              messageApi.success(`"${selectedProduct.name}" added to cart.`);
-            },
-            onCancel: () => {
-              messageApi.info('Adding item to cart cancelled.');
-            },
-          });
-          return;
-        }
-
-        itemToAdd = {
-          ...selectedProduct,
-          quantity: productQty,
-          subtotal:
-            productQty *
-            selectedProduct.unit_price *
-            (1 + (selectedProduct.tax_rate_value ?? 0)),
-        };
+        setCart([...cart, itemToAdd]);
       }
-
-      if (itemToAdd) {
-        const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
-        if (existingCartItem) {
-          setCart(
-            cart.map((i) =>
-              i.id === itemToAdd!.id
-                ? {
-                    ...i,
-                    quantity: i.quantity + itemToAdd!.quantity,
-                    subtotal:
-                      (i.quantity + itemToAdd!.quantity) *
-                      i.unit_price *
-                      (1 + (i.tax_rate_value ?? 0)),
-                  }
-                : i,
-            ),
-          );
-        } else {
-          setCart([...cart, itemToAdd]);
-        }
-        setSelectedProduct(null);
-        setProductQty(1);
-        setProductModal(false);
-        setShowCustomProductForm(false);
-        messageApi.success(`"${itemToAdd.name}" added to cart.`);
-      }
+      setSelectedProduct(null);
+      setProductQty(1);
+      setProductModal(false);
+      setShowCustomProductForm(false);
+      messageApi.success(`"${itemToAdd.name}" added to cart.`);
     }
   };
 
@@ -644,9 +610,7 @@ export default function POSScreen() {
     try {
       const existingCustomerResponse = await fetch(
         `${API_BASE_URL}/api/customers?search=${values.phone}`,
-        {
-          headers: getAuthHeaders(),
-        },
+        { headers: getAuthHeaders() },
       );
       const existingCustomers: CustomerFrontend[] =
         await existingCustomerResponse.json();
@@ -655,9 +619,7 @@ export default function POSScreen() {
       );
       if (existing) {
         setSelectedCustomer(existing);
-        messageApi.info(
-          'Customer with that phone number already exists. Selected existing record.',
-        );
+        messageApi.info('Customer with that phone number already exists. Selected existing record.');
       } else {
         const response = await fetch(`${API_BASE_URL}/api/customers`, {
           method: 'POST',
@@ -675,9 +637,7 @@ export default function POSScreen() {
         });
         if (!response.ok) {
           const errorData = await response.json();
-          throw new Error(
-            errorData.detail || errorData.error || 'Failed to add new customer.',
-          );
+          throw new Error(errorData.detail || errorData.error || 'Failed to add new customer.');
         }
         const newCustomer: CustomerFrontend = await response.json();
         setCustomers((prev) => {
@@ -716,7 +676,6 @@ export default function POSScreen() {
         messageApi.error('Customer not selected for credit sale.');
         return;
       }
-      // Credit limit check (block if exceeded)
       const currentBalance = selectedCustomer.balanceDue || 0;
       const customerCreditLimit = selectedCustomer.creditLimit || Infinity;
       if (
@@ -734,7 +693,6 @@ export default function POSScreen() {
         );
         return;
       }
-      // Flag low score (DO NOT block)
       try {
         if (selectedCustomer?.id && !creditScoreCache[selectedCustomer.id] && isOnline) {
           await fetchAndCacheCustomerScore(selectedCustomer.id);
@@ -747,31 +705,25 @@ export default function POSScreen() {
             `Customer credit score is ${info.score} (${info.label}). Proceeding anyway — please ensure policy is followed.`,
           );
         }
-      } catch {
-        // ignore failures — never block on score
-      }
+      } catch {}
     }
 
-    // --- Validation for Bank Name (Optional but good practice) ---
     if (paymentType === 'Bank' && !bankName?.trim()) {
-      // messageApi.warning('Please enter the bank name for bank transfers.');
-      // return; // Uncomment if you want to make bank name mandatory
+      // optionally enforce
     }
 
     const tellerName = getUserNameFromLocalStorage();
 
     const salePayload = {
-      cart: cart.map((item) => {
-        return {
-          id: item.id, // number or custom string
-          name: item.name,
-          quantity: item.quantity,
-          unit_price: item.unit_price,
-          subtotal: item.subtotal,
-          is_service: item.is_service || false,
-          tax_rate_value: item.tax_rate_value ?? 0,
-        };
-      }),
+      cart: cart.map((item) => ({
+        id: item.id,
+        name: item.name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        subtotal: item.subtotal,
+        is_service: item.is_service || false,
+        tax_rate_value: item.tax_rate_value ?? 0,
+      })),
       paymentType,
       total,
       customer: selectedCustomer
@@ -781,18 +733,17 @@ export default function POSScreen() {
       change: paymentType === 'Cash' ? change : 0,
       dueDate: paymentType === 'Credit' ? dueDate : null,
       bankName: paymentType === 'Bank' ? bankName : null,
-      tellerName: tellerName,
+      tellerName,
       branch: '',
       companyName: '',
     };
 
-    // If offline, queue and exit optimistically
+    // Offline: queue
     if (!isOnline) {
       const queue = readJSON<any[]>(OKEY_SALES, []);
       queue.push({ localId: `sale-${Date.now()}`, payload: salePayload });
       writeJSON(OKEY_SALES, queue);
 
-      // optimistic UI reset
       setCart([]);
       setAmountPaid(0);
       setDueDate(null);
@@ -807,14 +758,10 @@ export default function POSScreen() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/sales`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(),
-        },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(salePayload),
       });
 
-      // If online but network hiccup, queue it
       if (!response.ok) {
         const isNetwork = response.status === 0;
         if (isNetwork) {
@@ -828,7 +775,7 @@ export default function POSScreen() {
         }
       }
 
-      // === (Optional) Create a journal entry for the sale ===
+      // Optional: create a journal entry
       try {
         const debitCandidates =
           paymentType === 'Cash'
@@ -836,9 +783,7 @@ export default function POSScreen() {
             : paymentType === 'Bank'
             ? ['Bank Account']
             : ['Accounts Receivable'];
-
         const creditCandidates = ['Sales Revenue'];
-
         const [debitId, creditId] = await Promise.all([
           findAccountIdByNames(debitCandidates),
           findAccountIdByNames(creditCandidates),
@@ -850,7 +795,6 @@ export default function POSScreen() {
           if (selectedCustomer?.name) memoParts.push(`to ${selectedCustomer.name}`);
           if (paymentType === 'Bank' && bankName) memoParts.push(`(${bankName})`);
           const memo = memoParts.join(' ');
-
           const journalPayload = {
             entryDate,
             memo,
@@ -859,13 +803,11 @@ export default function POSScreen() {
               { accountId: creditId, debit: 0, credit: total },
             ],
           };
-
           const jr = await fetch(`${API_BASE_URL}/journal-entries`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify(journalPayload),
           });
-
           if (!jr.ok) {
             const err = await jr.json().catch(() => null);
             console.warn('Journal create failed:', err?.error || jr.status);
@@ -878,7 +820,7 @@ export default function POSScreen() {
         console.warn('Journal error:', jeErr);
       }
 
-      // Re-fetch products (online only)
+      // Re-fetch products
       try {
         const productsResponse = await fetch(`${API_BASE_URL}/products-services`, {
           headers: getAuthHeaders(),
@@ -901,14 +843,12 @@ export default function POSScreen() {
       messageApi.success('Sale submitted and recorded successfully!');
     } catch (err: any) {
       console.error('Error during sale submission:', err);
-      // As a safety, queue on unexpected network-type errors
       const queue = readJSON<any[]>(OKEY_SALES, []);
       queue.push({ localId: `sale-${Date.now()}`, payload: salePayload });
       writeJSON(OKEY_SALES, queue);
       messageApi.info('Could not reach the server. Sale saved locally and will sync automatically.');
     } finally {
       setIsLoading(false);
-      // try to flush if we’re online
       flushOutbox();
     }
   };
@@ -955,7 +895,6 @@ export default function POSScreen() {
                   Credit Limit: R{(selectedCustomer.creditLimit || 0).toFixed(2)}
                 </div>
               )}
-            {/* Credit Score Tag (if cached/loaded) */}
             {selectedCustomer?.id && creditScoreCache[selectedCustomer.id] && (
               <div style={{ marginTop: 6 }}>
                 <Tag color={creditScoreCache[selectedCustomer.id].color}>
@@ -1002,7 +941,7 @@ export default function POSScreen() {
           <ShoppingCartOutlined />
         </Card>
 
-        {/* Quantity & Add to Cart */}
+        {/* Quantity & Add to Cart (existing products) */}
         <Row gutter={6} align="middle" style={{ marginBottom: 10 }}>
           <Col>
             <Button
@@ -1147,10 +1086,9 @@ export default function POSScreen() {
           )}
         </Card>
 
-        {/* Payment and Submit - IMPROVED ALIGNMENT */}
+        {/* Payment and Submit */}
         <Card>
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            {/* Payment Method Field Group */}
             <div style={{ flex: 1, minWidth: 150 }}>
               <div style={{ marginBottom: 4 }}>
                 <Text strong>Payment Method</Text>
@@ -1172,7 +1110,6 @@ export default function POSScreen() {
               </Select>
             </div>
 
-            {/* Amount Paid (Cash) */}
             {paymentType === 'Cash' && (
               <div style={{ flex: 1, minWidth: 150 }}>
                 <div style={{ marginBottom: 4 }}>
@@ -1196,7 +1133,6 @@ export default function POSScreen() {
               </div>
             )}
 
-            {/* Bank Name (Bank) */}
             {paymentType === 'Bank' && (
               <div style={{ flex: 1, minWidth: 150 }}>
                 <div style={{ marginBottom: 4 }}>
@@ -1212,7 +1148,6 @@ export default function POSScreen() {
               </div>
             )}
 
-            {/* Due Date (Credit) */}
             {paymentType === 'Credit' && (
               <div style={{ flex: 1, minWidth: 150 }}>
                 <div style={{ marginBottom: 4 }}>
@@ -1314,7 +1249,6 @@ export default function POSScreen() {
                     <Text strong>{c.name}</Text>
                     <div style={{ fontSize: 13, color: '#888' }}>{c.phone}</div>
                     <div style={{ fontSize: 13, color: '#888' }}>{c.email}</div>
-                    {/* Show cached score if present */}
                     {creditScoreCache[c.id] && (
                       <div style={{ marginTop: 6 }}>
                         <Tag color={creditScoreCache[c.id].color}>
@@ -1443,7 +1377,11 @@ export default function POSScreen() {
                 icon={<PlusOutlined />}
                 onClick={() => {
                   setShowCustomProductForm(true);
-                  customProductForm.setFieldsValue({ isService: false });
+                  customProductForm.setFieldsValue({
+                    isService: false,
+                    customProductTaxRate: '0',
+                    customProductQty: 1, // NEW default qty
+                  });
                 }}
                 disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
               >
@@ -1462,10 +1400,28 @@ export default function POSScreen() {
                   disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 />
               </Form.Item>
+
+              {/* NEW: Quantity inside custom form */}
+              <Form.Item
+                name="customProductQty"
+                label="Quantity"
+                rules={[{ required: true, message: 'Please enter quantity!' }]}
+                initialValue={1}
+              >
+                <InputNumber
+                  min={1}
+                  style={{ width: '100%' }}
+                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
+                />
+              </Form.Item>
+
               <Form.Item
                 name="customProductUnitPrice"
                 label="Unit Price"
-                rules={[{ required: true, message: 'Please enter unit price!' }, { type: 'number', min: 0.01, message: 'Price must be positive!' }]}
+                rules={[
+                  { required: true, message: 'Please enter unit price!' },
+                  { type: 'number', min: 0.01, message: 'Price must be positive!' },
+                ]}
               >
                 <InputNumber
                   min={0.01}
@@ -1476,16 +1432,15 @@ export default function POSScreen() {
                   disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 />
               </Form.Item>
-              <Form.Item
-                name="customProductDescription"
-                label="Description (Optional)"
-              >
+
+              <Form.Item name="customProductDescription" label="Description (Optional)">
                 <Input.TextArea
                   rows={2}
                   placeholder="Brief description of the custom item"
                   disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
                 />
               </Form.Item>
+
               <Form.Item
                 name="isService"
                 label="Type"
@@ -1501,6 +1456,7 @@ export default function POSScreen() {
                   <Option value={true}>Service</Option>
                 </Select>
               </Form.Item>
+
               <Form.Item
                 name="customProductTaxRate"
                 label="Tax Rate"
@@ -1515,6 +1471,7 @@ export default function POSScreen() {
                   <Option value="0.15">15%</Option>
                 </Select>
               </Form.Item>
+
               <Button
                 type="primary"
                 block
@@ -1522,11 +1479,10 @@ export default function POSScreen() {
                 disabled={
                   !isAuthenticated ||
                   isLoading ||
-                  isAddingCustomProduct ||
-                  productQty <= 0
+                  isAddingCustomProduct
                 }
               >
-                Add Custom Item to Cart
+                Add to Cart (Keep Open)
               </Button>
               <Button
                 block

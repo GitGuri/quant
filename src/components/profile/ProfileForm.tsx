@@ -304,16 +304,8 @@ export function ProfileForm() {
         <CardHeader><CardTitle>Personal Information</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center space-x-4">
-            <Avatar className="h-20 w-20">
-              <AvatarImage src="/placeholder.svg?height=80&width=80" alt="Profile" />
-              <AvatarFallback>
-                {(formData.firstName?.charAt(0) || '?')}
-                {(formData.lastName?.charAt(0) || '?')}
-              </AvatarFallback>
-            </Avatar>
-            <Button variant="outline" size="sm" disabled>
-              <Camera className="h-4 w-4 mr-2" /> Change Photo
-            </Button>
+
+
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
