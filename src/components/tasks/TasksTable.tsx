@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useState, useCallback, useRef, memo } from '
 import { Card } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { Loader2, Edit, Archive, Save, ListChecks, Gauge, RefreshCw, Edit3 } from 'lucide-react';
+import { Loader2, Edit3, Archive, Save, ListChecks, Gauge, RefreshCw } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { TaskForm, type TaskFormData, type TaskStepFormData } from './TaskForm';
@@ -511,8 +511,6 @@ function ProgressOptionsDialog({
     }
   };
 
-  
-
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-md">
@@ -812,6 +810,7 @@ export function TasksTable({
     progress_current: t.progress_current ?? 0,
     steps: Array.isArray(t.steps) ? t.steps : [],
     assignees: Array.isArray(t.assignees) ? t.assignees : [], // NEW
+    priority: (t.priority ?? 'Medium') as FullTask['priority'],
   });
 
   const fetchTasks = useCallback(async () => {
@@ -870,6 +869,36 @@ export function TasksTable({
     fetchTasks();
     return () => inFlight.current?.abort();
   }, [fetchTasks]);
+
+  /** ---------- NEW: Handle demo imports (e.g., Read.ai) ---------- */
+  useEffect(() => {
+    type ImportDetail = { source?: string; tasks?: any[] };
+
+    const onImport = (e: Event) => {
+      const detail = (e as CustomEvent<ImportDetail>).detail || {};
+      if (!detail?.tasks?.length) return;
+
+      // Only handle readai for now (guard if you add other sources later)
+      if (detail.source && detail.source !== 'readai') return;
+
+      const incoming = (detail.tasks || []).map(normalize);
+
+      setTasks((prev) => {
+        // de-dupe by id while preserving current rows
+        const map = new Map<string, FullTask>();
+        [...prev, ...incoming].forEach((t) => {
+          const enriched =
+            isOverdue(t) && t.status !== 'Overdue' ? ({ ...t, status: 'Overdue' as const }) : t;
+          map.set(enriched.id, enriched);
+        });
+        return Array.from(map.values());
+      });
+    };
+
+    window.addEventListener('tasks:import', onImport as EventListener);
+    return () => window.removeEventListener('tasks:import', onImport as EventListener);
+  }, []);
+  /** ------------------------------------------------------------- */
 
   /* ---------- helpers ---------- */
   const patchTask = useCallback((id: string, patch: Partial<FullTask>) => {
@@ -991,111 +1020,110 @@ export function TasksTable({
   );
 
   // inside TasksTable.tsx
-const submitTask = useCallback(
-  async (data: TaskFormData, initialSteps?: TaskStepFormData[]) => {
-    try {
-      if (taskToEdit) {
-        // UPDATE
-        const r = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify(buildUpdatePayload(data)),
-        });
-
-        if (r.status === 403) {
-          toast({
-            title: 'Not allowed',
-            description: 'Only the creator or company owner can edit this task.',
-            variant: 'destructive',
-          });
-          return;
-        }
-
-        if (!r.ok) throw new Error('Failed to update task');
-
-        // If switched to steps on edit and we have steps to seed, push them now
-        if (data.progress_mode === 'steps' && initialSteps?.length) {
-          const stepsToSend = initialSteps.map(s => ({
-            ...s,
-            id: undefined, // ensure insert
-          }));
-          const r2 = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}/progress`, {
+  const submitTask = useCallback(
+    async (data: TaskFormData, initialSteps?: TaskStepFormData[]) => {
+      try {
+        if (taskToEdit) {
+          // UPDATE
+          const r = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({
-              progress_mode: 'steps',
-              steps: stepsToSend,
-            }),
+            body: JSON.stringify(buildUpdatePayload(data)),
           });
 
-          if (r2.status === 403) {
+          if (r.status === 403) {
             toast({
               title: 'Not allowed',
-              description: 'You cannot update steps for a task you are not assigned to.',
+              description: 'Only the creator or company owner can edit this task.',
               variant: 'destructive',
             });
             return;
           }
 
-          if (!r2.ok) throw new Error('Failed to seed steps');
-        }
-      } else {
-        // CREATE
-        const createRes = await fetch(`${API_BASE}/api/tasks`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify(buildCreatePayload(data)),
-        });
-        if (!createRes.ok) throw new Error('Failed to create task');
+          if (!r.ok) throw new Error('Failed to update task');
 
-        const created = await createRes.json(); // contains created id
-
-        // Seed steps immediately if step-based
-        if (data.progress_mode === 'steps' && initialSteps?.length) {
-          const stepsToSend = initialSteps.map(s => ({
-            ...s,
-            id: undefined, // let server insert
-            task_id: created.id, // safe to include or omit; server uses URL id
-          }));
-
-          const r2 = await fetch(`${API_BASE}/api/tasks/${created.id}/progress`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({
-              progress_mode: 'steps',
-              steps: stepsToSend,
-              // progress_percentage can be omitted; server recomputes
-            }),
-          });
-
-          if (r2.status === 403) {
-            toast({
-              title: 'Not allowed',
-              description: 'You cannot update steps for a task you are not assigned to.',
-              variant: 'destructive',
+          // If switched to steps on edit and we have steps to seed, push them now
+          if (data.progress_mode === 'steps' && initialSteps?.length) {
+            const stepsToSend = initialSteps.map(s => ({
+              ...s,
+              id: undefined, // ensure insert
+            }));
+            const r2 = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}/progress`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', ...authHeaders() },
+              body: JSON.stringify({
+                progress_mode: 'steps',
+                steps: stepsToSend,
+              }),
             });
-            return;
-          }
 
-          if (!r2.ok) throw new Error('Failed to seed steps for new task');
+            if (r2.status === 403) {
+              toast({
+                title: 'Not allowed',
+                description: 'You cannot update steps for a task you are not assigned to.',
+                variant: 'destructive',
+              });
+              return;
+            }
+
+            if (!r2.ok) throw new Error('Failed to seed steps');
+          }
+        } else {
+          // CREATE
+          const createRes = await fetch(`${API_BASE}/api/tasks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify(buildCreatePayload(data)),
+          });
+          if (!createRes.ok) throw new Error('Failed to create task');
+
+          const created = await createRes.json(); // contains created id
+
+          // Seed steps immediately if step-based
+          if (data.progress_mode === 'steps' && initialSteps?.length) {
+            const stepsToSend = initialSteps.map(s => ({
+              ...s,
+              id: undefined, // let server insert
+              task_id: created.id, // safe to include or omit; server uses URL id
+            }));
+
+            const r2 = await fetch(`${API_BASE}/api/tasks/${created.id}/progress`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', ...authHeaders() },
+              body: JSON.stringify({
+                progress_mode: 'steps',
+                steps: stepsToSend,
+                // progress_percentage can be omitted; server recomputes
+              }),
+            });
+
+            if (r2.status === 403) {
+              toast({
+                title: 'Not allowed',
+                description: 'You cannot update steps for a task you are not assigned to.',
+                variant: 'destructive',
+              });
+              return;
+            }
+
+            if (!r2.ok) throw new Error('Failed to seed steps for new task');
+          }
         }
+
+        setShowTaskForm(false);
+        setTaskToEdit(null);
+        await fetchTasks();
+        onChanged?.();
+      } catch (e: any) {
+        toast({
+          title: 'Error',
+          description: e.message || 'Failed to save task',
+          variant: 'destructive',
+        });
       }
-
-      setShowTaskForm(false);
-      setTaskToEdit(null);
-      await fetchTasks();
-      onChanged?.();
-    } catch (e: any) {
-      toast({
-        title: 'Error',
-        description: e.message || 'Failed to save task',
-        variant: 'destructive',
-      });
-    }
-  },
-  [taskToEdit, fetchTasks, onChanged, toast]
-);
-
+    },
+    [taskToEdit, fetchTasks, onChanged, toast]
+  );
 
   /* ---------- fetch full task (with steps) before opening progress ---------- */
   const fetchTaskById = useCallback(async (id: string): Promise<FullTask | null> => {

@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Card } from '@/components/ui/card';
+import { Loader2 } from 'lucide-react';
 
 export type TaskStepFormData = {
   id?: string; // Optional for new steps being created
@@ -39,7 +40,7 @@ type Props = {
   task?: Partial<TaskFormData> | null;
   projects: { id: string; name: string }[];
   users: { id: string; name: string; email?: string | null }[];
-  onSave: (data: TaskFormData, initialSteps?: TaskStepFormData[]) => void;
+  onSave: (data: TaskFormData, initialSteps?: TaskStepFormData[]) => void | Promise<void>;
   onCancel: () => void;
 };
 
@@ -48,7 +49,7 @@ const PRIORITIES: Array<TaskFormData['priority']> = ['High', 'Medium', 'Low'];
 const toYYYYMMDD = (d?: string | null) => {
   if (!d) return '';
   const dt = new Date(d);
-  if (Number.isNaN(dt.getTime())) return d; // assume already yyyy-mm-dd
+  if (Number.isNaN(dt.getTime())) return d as string; // assume already yyyy-mm-dd
   const yyyy = dt.getFullYear();
   const mm = String(dt.getMonth() + 1).padStart(2, '0');
   const dd = String(dt.getDate()).padStart(2, '0');
@@ -75,12 +76,17 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
   const [goal, setGoal] = useState<number | ''>(task?.progress_goal ?? '');
   const [current, setCurrent] = useState<number>(Number(task?.progress_current ?? 0));
 
-  // step seeding (only used when creating or switching to steps)
+  // step seeding
   const [newStepTitle, setNewStepTitle] = useState('');
   const [seedSteps, setSeedSteps] = useState<TaskStepFormData[]>([]);
 
+  // UI: search + saving + scroll
+  const [projectSearch, setProjectSearch] = useState('');
+  const [assigneeSearch, setAssigneeSearch] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
   // Define a unique value to represent "No project"
-  const NO_PROJECT_VALUE = "__no_project__";
+  const NO_PROJECT_VALUE = '__no_project__';
 
   useEffect(() => {
     if (!assigneeIds?.length && assigneeId) {
@@ -103,7 +109,9 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
 
   const canSave = title.trim().length > 0;
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (!canSave || isSaving) return;
+
     const payload: TaskFormData = {
       id: task?.id as string | undefined,
       title: title.trim(),
@@ -126,8 +134,16 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
       payload.progress_current = Number(current || 0);
     }
 
-    // note: if mode === 'steps' we just pass seedSteps back; server will insert on create/update (your table code already does this)
-    onSave(payload, mode === 'steps' ? seedSteps : undefined);
+    try {
+      setIsSaving(true);
+      const maybePromise = onSave(payload, mode === 'steps' ? seedSteps : undefined);
+      if (maybePromise && typeof (maybePromise as Promise<void>).then === 'function') {
+        await maybePromise;
+      }
+    } finally {
+      // Keep a tiny delay so the animation feels intentional
+      setTimeout(() => setIsSaving(false), 350);
+    }
   };
 
   const toggleMultiAssignee = (id: string) => {
@@ -142,14 +158,28 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
     });
   };
 
-  const usersSorted = useMemo(
-    () => [...users].sort((a, b) => a.name.localeCompare(b.name)),
-    [users]
-  );
+  const usersSorted = useMemo(() => [...users].sort((a, b) => a.name.localeCompare(b.name)), [users]);
+
+  const filteredProjects = useMemo(() => {
+    const q = projectSearch.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) => p.name.toLowerCase().includes(q));
+  }, [projects, projectSearch]);
+
+  const filteredUsers = useMemo(() => {
+    const q = assigneeSearch.trim().toLowerCase();
+    if (!q) return usersSorted;
+    return usersSorted.filter(
+      (u) =>
+        u.name.toLowerCase().includes(q) ||
+        (u.email ? u.email.toLowerCase().includes(q) : false)
+    );
+  }, [usersSorted, assigneeSearch]);
 
   return (
-    <div className="space-y-6">
-      {/* Top section: Title + Project (moved up) */}
+    // Scrollable container (works nicely inside a Dialog/Drawer)
+    <div className="max-h-[74vh] overflow-y-auto pr-1 space-y-6">
+      {/* Top section: Title + Project + Priority + Due + Description */}
       <Card className="p-4">
         <div className="grid gap-4">
           <div className="grid grid-cols-4 items-center gap-4">
@@ -162,25 +192,36 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
             />
           </div>
 
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label className="text-right">Project</Label>
+          <div className="grid grid-cols-4 items-start gap-4">
+            <Label className="text-right mt-2">Project</Label>
             <div className="col-span-3">
-              {/* Updated Select for Project */}
+              {/* Searchable Project Select: simple inline filter on the dropdown */}
               <Select
-                value={projectId ?? NO_PROJECT_VALUE} // Use the unique value when projectId is null
-                onValueChange={(v) => setProjectId(v === NO_PROJECT_VALUE ? null : v)} // Map the unique value back to null
+                value={projectId ?? NO_PROJECT_VALUE}
+                onValueChange={(v) => setProjectId(v === NO_PROJECT_VALUE ? null : v)}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select a project" />
                 </SelectTrigger>
-                <SelectContent>
-                  {/* Changed the value prop here */}
+                <SelectContent className="max-h-64">
+                  <div className="p-2 sticky top-0 bg-white">
+                    <Input
+                      placeholder="Search projects…"
+                      value={projectSearch}
+                      onChange={(e) => setProjectSearch(e.target.value)}
+                      className="h-8"
+                    />
+                  </div>
                   <SelectItem value={NO_PROJECT_VALUE}>No project</SelectItem>
-                  {projects.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
+                  {filteredProjects.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">No matches</div>
+                  ) : (
+                    filteredProjects.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -189,10 +230,7 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
           <div className="grid grid-cols-4 items-center gap-4">
             <Label className="text-right">Priority</Label>
             <div className="col-span-3">
-              <Select
-                value={priority ?? 'Medium'}
-                onValueChange={(v) => setPriority(v as any)}
-              >
+              <Select value={priority ?? 'Medium'} onValueChange={(v) => setPriority(v as any)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Priority" />
                 </SelectTrigger>
@@ -230,25 +268,37 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
         </div>
       </Card>
 
-      {/* Assignees */}
+      {/* Assignees (searchable) */}
       <Card className="p-4">
         <div className="grid gap-4">
           <div className="grid grid-cols-4 items-start gap-4">
             <Label className="text-right mt-1">Assignees</Label>
             <div className="col-span-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
-                {usersSorted.map((u) => (
-                  <label key={u.id} className="flex items-center gap-2 rounded-md border p-2">
-                    <Checkbox
-                      checked={assigneeIds.includes(u.id)}
-                      onCheckedChange={() => toggleMultiAssignee(u.id)}
-                    />
-                    <span className="text-sm">
-                      {u.name}
-                      {u.email ? <span className="text-xs text-gray-500"> — {u.email}</span> : null}
-                    </span>
-                  </label>
-                ))}
+              <div className="mb-2">
+                <Input
+                  value={assigneeSearch}
+                  onChange={(e) => setAssigneeSearch(e.target.value)}
+                  placeholder="Search people by name or email…"
+                  className="h-9"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                {filteredUsers.length === 0 ? (
+                  <div className="text-xs text-muted-foreground px-1 py-2">No matches</div>
+                ) : (
+                  filteredUsers.map((u) => (
+                    <label key={u.id} className="flex items-center gap-2 rounded-md border p-2">
+                      <Checkbox
+                        checked={assigneeIds.includes(u.id)}
+                        onCheckedChange={() => toggleMultiAssignee(u.id)}
+                      />
+                      <span className="text-sm">
+                        {u.name}
+                        {u.email ? <span className="text-xs text-gray-500"> — {u.email}</span> : null}
+                      </span>
+                    </label>
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -266,7 +316,7 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
                   <SelectValue placeholder="Select mode" />
                 </SelectTrigger>
                 <SelectContent>
-                  
+                  <SelectItem value="manual">Manual %</SelectItem>
                   <SelectItem value="target">Target (goal/current)</SelectItem>
                   <SelectItem value="steps">Steps</SelectItem>
                 </SelectContent>
@@ -274,6 +324,19 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
             </div>
           </div>
 
+          {mode === 'manual' && (
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">Percent complete</Label>
+              <Input
+                className="col-span-3"
+                type="number"
+                min={0}
+                max={100}
+                value={manualPct}
+                onChange={(e) => setManualPct(Math.max(0, Math.min(100, Number(e.target.value || 0))))}
+              />
+            </div>
+          )}
 
           {mode === 'target' && (
             <>
@@ -309,14 +372,18 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
                     placeholder="Add a step and press +"
                     onKeyDown={(e) => e.key === 'Enter' && addSeedStep()}
                   />
-                  <Button onClick={addSeedStep}>+</Button>
+                  <Button onClick={addSeedStep} variant="secondary" className="active:scale-95 transition">
+                    +
+                  </Button>
                 </div>
                 {seedSteps.length ? (
-                  <ul className="space-y-2">
+                  <ul className="space-y-2 max-h-44 overflow-y-auto pr-1">
                     {seedSteps.map((s, i) => (
                       <li key={s.id} className="flex items-center justify-between rounded bg-gray-50 p-2">
-                        <span className="text-sm">{i + 1}. {s.title}</span>
-                        <Button variant="ghost" size="sm" onClick={() => removeSeedStep(i)}>
+                        <span className="text-sm">
+                          {i + 1}. {s.title}
+                        </span>
+                        <Button variant="ghost" size="sm" onClick={() => removeSeedStep(i)} className="active:scale-95">
                           Remove
                         </Button>
                       </li>
@@ -332,10 +399,23 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
       </Card>
 
       {/* Actions */}
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="outline" onClick={onCancel}>Cancel</Button>
-        <Button onClick={handleSave} disabled={!canSave}>
-          {task?.id ? 'Save changes' : 'Create task'}
+      <div className="flex items-center justify-end gap-2 sticky bottom-0 bg-white/80 py-2 backdrop-blur supports-[backdrop-filter]:bg-white/60">
+        <Button variant="outline" onClick={onCancel} className="active:scale-95 transition">
+          Cancel
+        </Button>
+        <Button
+          onClick={handleSave}
+          disabled={!canSave || isSaving}
+          className={`transition active:scale-95 ${isSaving ? 'animate-pulse' : ''}`}
+        >
+          {isSaving ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              {task?.id ? 'Saving…' : 'Creating…'}
+            </>
+          ) : (
+            <>{task?.id ? 'Save changes' : 'Create task'}</>
+          )}
         </Button>
       </div>
     </div>

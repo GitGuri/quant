@@ -4,7 +4,19 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Plus, BarChart3, CheckCircle2, Clock3, AlertTriangle, FolderPlus, Filter, Mic, StopCircle } from 'lucide-react';
+import {
+  Plus,
+  BarChart3,
+  CheckCircle2,
+  Clock3,
+  AlertTriangle,
+  FolderPlus,
+  Filter,
+  Mic,
+  StopCircle,
+  DownloadCloud,
+  RefreshCw,
+} from 'lucide-react';
 import { KpiCard } from './KpiCard';
 import { TasksTable } from './TasksTable';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -12,7 +24,6 @@ import { ProjectForm, type ProjectFormData } from './ProjectForm';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
 
-// Declare global types for SpeechRecognition if not already available
 declare global {
   interface Window {
     webkitSpeechRecognition: any;
@@ -63,6 +74,12 @@ export default function TasksDashboard() {
   const [transcribedText, setTranscribedText] = useState('');
   const recognitionRef = useRef<any>(null);
 
+  // Demo “Read.ai” import loading
+  const [importingReadAi, setImportingReadAi] = useState(false);
+
+  // Refresh state
+  const [refreshing, setRefreshing] = useState(false);
+
   const authHeaders = () => {
     const token = localStorage.getItem('token');
     return token ? { Authorization: `Bearer ${token}` } : {};
@@ -106,6 +123,19 @@ export default function TasksDashboard() {
     fetchProjects();
     fetchUsers();
   }, [fetchTasks, fetchProjects, fetchUsers]);
+
+  // REFRESH handler
+  const handleRefresh = useCallback(async () => {
+    try {
+      setRefreshing(true);
+      await Promise.all([fetchTasks(), fetchProjects(), fetchUsers()]);
+      toast({ title: 'Data refreshed' });
+    } catch (e: any) {
+      toast({ title: 'Refresh failed', description: e?.message || 'Please try again.', variant: 'destructive' });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchTasks, fetchProjects, fetchUsers, toast]);
 
   // Voice Recording
   const startRecording = () => {
@@ -164,23 +194,18 @@ export default function TasksDashboard() {
     }
   };
 
-  // helpers to mirror TasksTable/Kanban logic
+  // Helpers
   type TaskStatus = Task['status'];
-
   const pctNum = (v: unknown) => Math.max(0, Math.min(100, Math.round(Number(v ?? 0))));
   const statusFromPct = (pct: number): TaskStatus => (pct >= 100 ? 'Done' : pct >= 1 ? 'In Progress' : 'To Do');
-
   const isOverdue = (t: { due_date?: string | null; status: Task['status']; progress_percentage: number | string }) => {
     if (!t.due_date) return false;
     if (t.status === 'Done' || t.status === 'Archived') return false;
     if (pctNum(t.progress_percentage) >= 100) return false;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const due = new Date(t.due_date as string);
-    due.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const due = new Date(t.due_date as string); due.setHours(0, 0, 0, 0);
     return due.getTime() < today.getTime();
   };
-
   const deriveUiStatus = (t: Task): TaskStatus => {
     if (t.status === 'Archived') return 'Archived';
     const pctStatus = statusFromPct(Math.round(t.progress_percentage || 0));
@@ -193,23 +218,18 @@ export default function TasksDashboard() {
   // KPIs
   const kpis = useMemo(() => {
     const total = tasks.length;
-
     const completed = tasks.filter((t) => t.status !== 'Archived' && pctNum(t.progress_percentage) >= 100).length;
-
     const inProgress = tasks.filter((t) => {
       const p = pctNum(t.progress_percentage);
       return t.status !== 'Archived' && p >= 1 && p < 100;
     }).length;
-
     const overdue = tasks.filter((t) => isOverdue(t)).length;
-
     return { total, completed, inProgress, overdue };
   }, [tasks]);
 
   // Per-project progress
   const projectsWithProgress = useMemo<Project[]>(() => {
     if (!projects.length) return projects;
-
     const sums = new Map<string, { total: number; count: number }>();
     tasks.forEach((t) => {
       const pid = t.project_id || '';
@@ -219,7 +239,6 @@ export default function TasksDashboard() {
       entry.count += 1;
       sums.set(pid, entry);
     });
-
     return projects.map((p) => {
       const agg = sums.get(p.id);
       const progress = agg && agg.count > 0 ? Math.round(agg.total / agg.count) : 0;
@@ -267,6 +286,85 @@ export default function TasksDashboard() {
   };
 
   const currentFilters = { search, projectId: projectFilter === 'all' ? undefined : projectFilter, tab: activeTab };
+
+  /** -------- DEMO: Import from Read.ai -------- */
+  const handleImportFromReadAi = async () => {
+    try {
+      setImportingReadAi(true);
+
+      // simulate a short fetch delay so the button shows loading feels real
+      await new Promise((r) => setTimeout(r, 650));
+
+      const today = new Date();
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+      const t1 = new Date(today); t1.setDate(t1.getDate() + 2);
+      const t2 = new Date(today); t2.setDate(t2.getDate() - 1); // overdue
+      const t3 = new Date(today); t3.setDate(t3.getDate() + 7);
+      const t4 = new Date(today); t4.setDate(t4.getDate() + 1);
+
+      // If we have users/projects, sprinkle them in so it looks legit
+      const someUser = users[0];
+      const someProject = projects[0];
+
+      const mockTasks = [
+        {
+          id: 'demo-readai-1',
+          title: 'Follow-ups from Read.ai: Tshepiso Branding sync',
+          status: 'To Do' as const,
+          progress_percentage: 0,
+          due_date: iso(t1),
+          assignee_name: someUser?.name || 'Auto-import',
+          project_id: someProject?.id ?? null,
+          project_name: someProject?.name ?? 'Read.ai Imports',
+          priority: 'High' as const,
+        },
+        {
+          id: 'demo-readai-2',
+          title: 'Compile actions: Supplier onboarding notes',
+          status: 'To Do' as const,
+          progress_percentage: 10,
+          due_date: iso(t2), // yesterday → will show Overdue
+          assignee_name: someUser?.name || 'Auto-import',
+          project_id: someProject?.id ?? null,
+          project_name: someProject?.name ?? 'Read.ai Imports',
+          priority: 'Medium' as const,
+        },
+        {
+          id: 'demo-readai-3',
+          title: 'Prepare summary deck for Monday review',
+          status: 'In Progress' as const,
+          progress_percentage: 45,
+          due_date: iso(t3),
+          assignee_name: someUser?.name || 'Auto-import',
+          project_id: someProject?.id ?? null,
+          project_name: someProject?.name ?? 'Read.ai Imports',
+          priority: 'High' as const,
+        },
+        {
+          id: 'demo-readai-4',
+          title: 'Email minutes to stakeholders',
+          status: 'To Do' as const,
+          progress_percentage: 0,
+          due_date: iso(t4),
+          assignee_name: someUser?.name || 'Auto-import',
+          project_id: someProject?.id ?? null,
+          project_name: someProject?.name ?? 'Read.ai Imports',
+          priority: 'Low' as const,
+        },
+      ];
+
+      // Broadcast to whichever view/table is currently mounted.
+      window.dispatchEvent(new CustomEvent('tasks:import', {
+        detail: { source: 'readai', tasks: mockTasks }
+      }));
+
+      toast({ title: 'Imported from Read.ai', description: 'Added 4 tasks from the latest transcript.' });
+    } finally {
+      setImportingReadAi(false);
+    }
+  };
+  /** ------------------------------------------ */
 
   return (
     <div className="space-y-6">
@@ -347,17 +445,23 @@ export default function TasksDashboard() {
             <Button onClick={() => window.dispatchEvent(new CustomEvent('tasks:add'))}>
               <Plus className="h-4 w-4 mr-2" /> Add Task
             </Button>
-            {isRecording ? (
-              <Button onClick={stopRecording} variant="outline" className="text-red-500 hover:bg-red-100">
-                <StopCircle className="h-4 w-4 mr-2" /> Stop Recording
-              </Button>
-            ) : (
-              <Button onClick={startRecording} variant="outline" className="text-purple-600 hover:bg-purple-100">
-                <Mic className="h-4 w-4 mr-2" /> Record Task
-              </Button>
-            )}
+
+
+
             <Button variant="outline" onClick={() => setProjectDialogOpen(true)}>
               <FolderPlus className="h-4 w-4 mr-2" /> Add Project
+            </Button>
+
+            {/* Demo Read.ai import */}
+            <Button onClick={handleImportFromReadAi} disabled={importingReadAi}>
+              <DownloadCloud className="h-4 w-4 mr-2" />
+              {importingReadAi ? 'Importing…' : 'Import from Ai Notetaker'}
+            </Button>
+
+            {/* NEW: Refresh */}
+            <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+              {refreshing ? 'Refreshing…' : 'Refresh'}
             </Button>
           </div>
 
@@ -471,7 +575,6 @@ export default function TasksDashboard() {
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle>New Project</DialogTitle>
-            {/* Fix: add description (can be screen-reader only) */}
             <DialogDescription className="sr-only">Create a new project</DialogDescription>
           </DialogHeader>
           <ProjectForm users={users} onSave={onProjectSaved} onCancel={() => setProjectDialogOpen(false)} />
