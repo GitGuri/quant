@@ -19,7 +19,7 @@ import { useAuth } from '../../AuthPage';
 HighchartsSunburst(Highcharts);
 HighchartsPareto(Highcharts);
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'http://localhost:3000';
 
 interface RevenueDataPoint {
   month: string;

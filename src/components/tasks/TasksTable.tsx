@@ -53,6 +53,34 @@ type Filters = {
   tab?: 'all' | 'inprogress' | 'completed' | 'overdue' | 'archived';
 };
 
+/* ---------- NEW: Sorting types & helpers ---------- */
+type SortKey =
+  | 'due' | 'priority' | 'progress' | 'status' | 'project' | 'assignee' | 'title';
+
+type SortDir = 'asc' | 'desc';
+
+const PRIORITY_ORDER: Record<FullTask['priority'], number> = { High: 0, Medium: 1, Low: 2 };
+
+const STATUS_ORDER: Record<FullTask['status'], number> = {
+  Overdue: 0, 'In Progress': 1, Review: 2, 'To Do': 3, Done: 4, Archived: 5,
+};
+
+function safeDateMs(d?: string | null) {
+  return d ? new Date(d).getTime() : Number.POSITIVE_INFINITY; // nulls last
+}
+
+function assigneeStr(t: FullTask) {
+  return Array.isArray(t.assignees) && t.assignees.length
+    ? t.assignees.map(a => a.name?.toLowerCase() || '').join(' ')
+    : (t.assignee_name || '').toLowerCase();
+}
+
+function cmp(a: number | string, b: number | string) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 /* ---------- Helpers & API ---------- */
 const authHeaders = () => {
   const token = localStorage.getItem('token');
@@ -1165,6 +1193,67 @@ export function TasksTable({
     [onChanged]
   );
 
+  /* ---------- NEW: Sort state + persistence ---------- */
+  const [sortKey, setSortKey] = useState<SortKey>(() => {
+    return (localStorage.getItem('tasks.sortKey') as SortKey) || 'due';
+  });
+  const [sortDir, setSortDir] = useState<SortDir>(() => {
+    return (localStorage.getItem('tasks.sortDir') as SortDir) || 'asc';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('tasks.sortKey', sortKey);
+    localStorage.setItem('tasks.sortDir', sortDir);
+  }, [sortKey, sortDir]);
+
+  const makeComparator = useCallback((key: SortKey, dir: SortDir) => {
+    const sign = dir === 'asc' ? 1 : -1;
+
+    return (a: FullTask, b: FullTask) => {
+      let base = 0;
+      switch (key) {
+        case 'due': {
+          base = cmp(safeDateMs(a.due_date), safeDateMs(b.due_date));
+          break;
+        }
+        case 'priority': {
+          base = cmp(PRIORITY_ORDER[a.priority], PRIORITY_ORDER[b.priority]);
+          break;
+        }
+        case 'progress': {
+          base = cmp(Number(a.progress_percentage ?? 0), Number(b.progress_percentage ?? 0));
+          break;
+        }
+        case 'status': {
+          base = cmp(STATUS_ORDER[a.status], STATUS_ORDER[b.status]);
+          break;
+        }
+        case 'project': {
+          base = cmp((a.project_name || '').toLowerCase(), (b.project_name || '').toLowerCase());
+          break;
+        }
+        case 'assignee': {
+          base = cmp(assigneeStr(a), assigneeStr(b));
+          break;
+        }
+        case 'title': {
+          base = cmp(a.title.toLowerCase(), b.title.toLowerCase());
+          break;
+        }
+        default:
+          base = 0;
+      }
+      if (base !== 0) return base * sign;
+
+      // Tie-breakers for deterministic order
+      const tiebreak =
+        cmp(safeDateMs(a.due_date), safeDateMs(b.due_date)) ||
+        cmp(PRIORITY_ORDER[a.priority], PRIORITY_ORDER[b.priority]) ||
+        cmp(a.title.toLowerCase(), b.title.toLowerCase());
+      return tiebreak;
+    };
+  }, []);
+
   const filtered = useMemo(() => {
     let rows = tasks;
 
@@ -1197,15 +1286,10 @@ export function TasksTable({
         );
       });
     }
-    rows = [...rows].sort((a, b) => {
-      const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
-      const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
-      if (ad !== bd) return ad - bd;
-      const pOrder: Record<FullTask['priority'], number> = { High: 0, Medium: 1, Low: 2 };
-      return pOrder[a.priority] - pOrder[b.priority];
-    });
-    return rows;
-  }, [tasks, mode, filters?.projectId, filters?.search]);
+
+    const comparator = makeComparator(sortKey, sortDir);
+    return [...rows].sort(comparator);
+  }, [tasks, mode, filters?.projectId, filters?.search, makeComparator, sortKey, sortDir]);
 
   return (
     <Card className="p-0 overflow-hidden">
@@ -1216,6 +1300,39 @@ export function TasksTable({
         </div>
       ) : (
         <div className="overflow-x-auto">
+          {/* NEW: Sort toolbar */}
+          <div className="flex items-center justify-between px-4 pt-4">
+            <div className="text-xs text-muted-foreground">
+              {filtered.length} task{filtered.length === 1 ? '' : 's'}
+            </div>
+            <div className="flex items-center gap-2">
+              <Select value={sortKey} onValueChange={(v) => setSortKey(v as SortKey)}>
+                <SelectTrigger className="w-[180px] h-8">
+                  <SelectValue placeholder="Sort by" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="due">Due date</SelectItem>
+                  <SelectItem value="priority">Priority</SelectItem>
+                  <SelectItem value="progress">Progress</SelectItem>
+                  <SelectItem value="status">Status</SelectItem>
+                  <SelectItem value="project">Project</SelectItem>
+                  <SelectItem value="assignee">Assignee</SelectItem>
+                  <SelectItem value="title">Title</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+                title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+              >
+                {sortDir === 'asc' ? 'Asc' : 'Desc'}
+              </Button>
+            </div>
+          </div>
+
           <Table>
             <TableHeader>
               <TableRow>

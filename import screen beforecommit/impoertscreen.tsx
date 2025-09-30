@@ -615,7 +615,7 @@ const EditableTransactionTable = ({ transactions: initialTransactions, accounts,
 // ------------ Main ------------
 const ChatInterface = () => {
   const RAIRO_API_BASE_URL = 'https://rairo-stmt-api.hf.space';
-  const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+  const API_BASE_URL = 'http://localhost:3000';
 
   const [messages, setMessages] = useState<Array<{ id: string; sender: string; content: string | JSX.Element }>>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -1388,7 +1388,7 @@ const ChatInterface = () => {
     );
 
     try {
-      const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+      const API_BASE_URL = 'http://localhost:3000';
       const downloadUrl = `${API_BASE_URL}/generate-financial-document?documentType=${selectedDocumentType}&startDate=${documentStartDate}&endDate=${documentEndDate}`;
       const response = await fetch(downloadUrl, { method: 'GET', headers: getAuthHeaders() });
 
@@ -2244,7 +2244,7 @@ const EditableTransactionTable = ({ transactions: initialTransactions, accounts,
 // ------------ Main ------------
 const ChatInterface = () => {
   const RAIRO_API_BASE_URL = 'https://rairo-stmt-api.hf.space';
-  const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+  const API_BASE_URL = 'http://localhost:3000';
 
   const [messages, setMessages] = useState<Array<{ id: string; sender: string; content: string | JSX.Element }>>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -2950,7 +2950,7 @@ useEffect(() => {
   // -------------- Save Selected --------------
 // PIPELINE: stage -> preview -> (optional account PATCH) -> commit
 const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
-  const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+  const API_BASE_URL = 'http://localhost:3000';
   const authHeaders = getAuthHeaders();
 
   // take only selected rows (exclude anything you flagged not to import)
@@ -3029,7 +3029,7 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
     );
 
     try {
-      const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+      const API_BASE_URL = 'http://localhost:3000';
       const downloadUrl = `${API_BASE_URL}/generate-financial-document?documentType=${selectedDocumentType}&startDate=${documentStartDate}&endDate=${documentEndDate}`;
       const response = await fetch(downloadUrl, { method: 'GET', headers: getAuthHeaders() });
 
