@@ -21,6 +21,10 @@ import {
 import { useToast } from '@/components/ui/use-toast';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
 
+// ✅ Dynamic base URL (uses Vite env if set, else your Render backend)
+const API_BASE =
+  (import.meta as any)?.env?.VITE_API_BASE ?? 'https://quantnow-sa1e.onrender.com';
+
 interface AuthContextType {
   isAuthenticated: boolean;
   login: () => void;
@@ -154,6 +158,7 @@ export function AuthPage() {
   // --- End Registration State ---
 
   const [isLoading, setIsLoading] = useState(false);
+  const [needsVerify, setNeedsVerify] = useState<{ email: string } | null>(null);
 
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -163,18 +168,63 @@ export function AuthPage() {
     setMode(mode === 'login' ? 'register' : 'login');
   };
 
+  // ✅ helpers
+  const normalizeEmail = (e: string) => e.trim().toLowerCase();
+
+  // ✅ minimal disposable domains (expand server-side too)
+  const DISPOSABLE = new Set<string>([
+    'mailinator.com', 'yopmail.com', 'tempmail.com', 'tempmail.dev', 'guerrillamail.com',
+    '10minutemail.com', 'getnada.com', 'sharklasers.com', 'trashmail.com', 'maildrop.cc'
+  ]);
+  const isDisposable = (email: string) => {
+    const domain = email.split('@')[1]?.toLowerCase() || '';
+    return DISPOSABLE.has(domain);
+  };
+
+  // ✅ resend verification email
+  const resendVerification = async (email: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/resend-verification`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalizeEmail(email) }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast({ title: '✅ Verification email sent', description: `Check your inbox: ${email}` });
+      } else {
+        toast({
+          title: '❌ Could not send verification',
+          description: data.error || 'Try again later.',
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: '🚨 Network error',
+        description: 'Could not send verification email.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   // --- Handle Login Submit ---
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setNeedsVerify(null);
 
     try {
-      const endpoint = 'http://localhost:3000/login';
+      const endpoint = `${API_BASE}/login`;
+      const payload = {
+        email: normalizeEmail(loginEmail),
+        password: loginPassword,
+      };
 
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
@@ -203,11 +253,27 @@ export function AuthPage() {
 
         navigate('/');
       } else {
-        toast({
-          title: '❌ Login Failed',
-          description: data.error || 'Invalid email or password.',
-          variant: 'destructive',
-        });
+        // Special backend codes:
+        if (res.status === 403 && data?.code === 'email_not_verified') {
+          setNeedsVerify({ email: normalizeEmail(loginEmail) });
+          toast({
+            title: 'Please verify your email',
+            description: 'We can resend the verification.',
+            variant: 'destructive',
+          });
+        } else if (res.status === 400 && data?.code === 'oauth_only_account') {
+          toast({
+            title: 'Use Google sign-in',
+            description: 'This account is social login only.',
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: '❌ Login Failed',
+            description: data.error || 'Invalid email or password.',
+            variant: 'destructive',
+          });
+        }
       }
     } catch (error) {
       console.error('Login error:', error);
@@ -226,6 +292,7 @@ export function AuthPage() {
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setNeedsVerify(null);
 
     // Client-side validation for required fields
     if (
@@ -253,6 +320,19 @@ export function AuthPage() {
       return;
     }
 
+    const email = normalizeEmail(regEmail);
+
+    // Block disposable (but allow real/personal domains like gmail/outlook/custom)
+    if (isDisposable(email)) {
+      toast({
+        title: '🚫 Disposable email detected',
+        description: 'Please use a real email address.',
+        variant: 'destructive',
+      });
+      setIsLoading(false);
+      return;
+    }
+
     // Passwords must match
     if (regPassword !== regConfirmPassword) {
       toast({
@@ -265,11 +345,11 @@ export function AuthPage() {
     }
 
     try {
-      const endpoint = 'http://localhost:3000/register';
+      const endpoint = `${API_BASE}/register`;
 
       const payload = {
         name: `${regName} ${regSurname}`.trim(),
-        email: regEmail,
+        email,
         password: regPassword,
         company: regCompanyName,
         position: regTitle,
@@ -295,13 +375,14 @@ export function AuthPage() {
       const data = await res.json();
 
       if (res.ok) {
+        // Assume backend requires email verification: show banner + flip to login
+        setNeedsVerify({ email });
         toast({
           title: '✅ Registration Successful',
-          description: 'You can now log in with your new account.',
+          description: 'Check your inbox to verify your email before logging in.',
         });
         setMode('login');
-        // Prefill login
-        setLoginEmail(regEmail);
+        setLoginEmail(email);
 
         // Reset registration form
         setRegName('');
@@ -366,12 +447,11 @@ export function AuthPage() {
               forecasts, and AI-powered insights.
             </p>
 
-            {/* Robot / hero image (optional). Replace src with your asset path if needed */}
+            {/* Robot / hero image */}
             <div className="mt-8">
               <img
                 src="/src/quantlogin.jpg"
                 onError={(e) => {
-                  // graceful fallback if the image path isn't present in the app
                   (e.currentTarget as HTMLImageElement).style.display = 'none';
                 }}
                 alt="QxAnalytix robot"
@@ -479,7 +559,12 @@ export function AuthPage() {
                     </div>
                   </div>
 
-                  <Button type="submit" className="h-11 w-full bg-gradient-to-r from-fuchsia-600 to-indigo-600 text-white hover:from-fuchsia-700 hover:to-indigo-700" disabled={isLoading}>
+                  {/* Submit (email/password) */}
+                  <Button
+                    type="submit"
+                    className="h-11 w-full bg-gradient-to-r from-fuchsia-600 to-indigo-600 text-white hover:from-fuchsia-700 hover:to-indigo-700"
+                    disabled={isLoading}
+                  >
                     {isLoading ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -488,6 +573,33 @@ export function AuthPage() {
                     ) : (
                       'Login'
                     )}
+                  </Button>
+
+                  {/* Divider */}
+                  <div className="relative my-2">
+                    <div className="absolute inset-0 flex items-center">
+                      <span className="w-full border-t" />
+                    </div>
+                    <div className="relative flex justify-center text-xs uppercase">
+                      <span className="bg-white/90 dark:bg-gray-900/70 px-2 text-gray-500">Or</span>
+                    </div>
+                  </div>
+
+                  {/* Google OAuth button */}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 w-full"
+                    onClick={() => {
+                      window.location.href = `${API_BASE}/auth/google`;
+                    }}
+                  >
+                    <img
+                      src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg"
+                      alt=""
+                      className="mr-2 h-5 w-5"
+                    />
+                    Continue with Google
                   </Button>
 
                   <div className="text-center text-sm text-gray-600 dark:text-gray-300">
@@ -756,7 +868,6 @@ export function AuthPage() {
                       type="text"
                       value={regCountry}
                       onChange={(e) => setRegCountry(e.target.value)}
-                      
                       className="h-11 bg-gray-100/80 text-gray-600 dark:bg-gray-800/50 dark:text-gray-300"
                     />
                   </div>
@@ -789,6 +900,27 @@ export function AuthPage() {
                 </form>
               )}
               {/* --- END REGISTRATION FORM --- */}
+
+              {/* ✅ Verify banner (shown after register or when login blocked by verification) */}
+              {needsVerify && (
+                <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm">
+                      We’ve sent a verification link to{' '}
+                      <span className="font-medium">{needsVerify.email}</span>. Please verify to
+                      continue. Didn’t get it?
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8"
+                      onClick={() => resendVerification(needsVerify.email)}
+                    >
+                      Resend email
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 

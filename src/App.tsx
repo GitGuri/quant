@@ -34,7 +34,8 @@ import POSScreen from './pages/POS';
 import ProductsPage from './pages/pos/ProductsPage';
 import CreditPaymentsScreen from './pages/pos/CreditPaymentsScreen';
 import CashInScreen from './pages/pos/CashInScreen';
-
+import OAuthCallback from './pages/OAuthCallback';
+import VerifyEmail from './pages/VerifyEmail';
 
 // ✅ PrivateRoute wrapper
 const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -127,6 +128,8 @@ const Unauthorized = () => (
             <Route path="/profile-setup" element={<PrivateRoute><ProfileSetup /></PrivateRoute>} />
             <Route path="/agent-signup" element={<PrivateRoute><AgentSignup /></PrivateRoute>} />
             <Route path="/agent-dashboard" element={<PrivateRoute><AgentDashboard /></PrivateRoute>} />
+            <Route path="/oauth-callback" element={<OAuthCallback />} />
+            <Route path="/verify-email" element={<VerifyEmail />} />
             <Route path="/super-agent-dashboard" element={<PrivateRoute><SuperAgentDashboard /></PrivateRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
