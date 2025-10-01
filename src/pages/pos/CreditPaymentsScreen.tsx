@@ -33,7 +33,7 @@ const debounce = (func: (...args: any[]) => void, delay: number) => {
 };
 
 // IMPORTANT: Replace with your actual backend API URL
-const API_BASE_URL = 'http://localhost:3000';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 // --- Updated Interfaces to match Backend (public.customers, public.sales) ---
 interface CustomerBackend {

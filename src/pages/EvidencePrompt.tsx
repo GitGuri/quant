@@ -9,7 +9,7 @@ import { Loader2, Upload } from "lucide-react";
 export function EvidencePrompt({
   open,
   onClose,
-  apiBaseUrl = "http://localhost:3000",
+  apiBaseUrl = "https://quantnow-sa1e.onrender.com",
   token,
   defaultNotes,
   onUploaded,

@@ -158,7 +158,7 @@ interface PurchaseSale {
 }
 
 // ---------- API base ----------
-const API = 'http://localhost:3000';
+const API = 'https://quantnow-sa1e.onrender.com';
 
 export default function AnalyticsDashboard() {
   const { dashKey } = useParams<{ dashKey: DashboardKey }>();

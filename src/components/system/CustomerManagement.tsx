@@ -153,7 +153,7 @@ export function CustomerManagement() {
       const headers = getAuthHeaders();
 
       // --- CALL THE NEW BACKEND ENDPOINT ---
-      const response = await fetch(`http://localhost:3000/api/customers/cluster-data`, {
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/cluster-data`, {
         headers: {
           'Content-Type': 'application/json',
           ...headers,
@@ -195,7 +195,7 @@ export function CustomerManagement() {
       const headers = getAuthHeaders();
       const request: RecommendationRequest = { cluster };
 
-      const response = await fetch(`http://localhost:3000/api/customers/recommendations`, {
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/recommendations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -268,7 +268,7 @@ export function CustomerManagement() {
   const handleCreateCustomer = async (customerData: CustomerSaveData) => {
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:3000/api/customers', {
+      const response = await fetch('https://quantnow-sa1e.onrender.com/api/customers', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -304,7 +304,7 @@ export function CustomerManagement() {
   const handleUpdateCustomer = async (id: string, customerData: CustomerSaveData) => {
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:3000/api/customers/${id}`, {
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -340,7 +340,7 @@ export function CustomerManagement() {
   const handleDeleteCustomer = async (id: string) => {
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:3000/api/customers/${id}`, {
+      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/${id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });

@@ -31,7 +31,7 @@ declare global {
   }
 }
 
-const API_BASE = 'http://localhost:3000';
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 type Project = {
   id: string;

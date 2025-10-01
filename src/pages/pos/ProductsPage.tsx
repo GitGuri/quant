@@ -54,7 +54,7 @@ function useProductSalesStats(products: Product[], isAuthenticated: boolean, mes
     }
     // Simulate fetching sales stats from a backend if you had an endpoint for it.
     // Example:
-    // fetch('http://localhost:3000/sales/bestsellers', { /* headers */ })
+    // fetch('https://quantnow-sa1e.onrender.com/sales/bestsellers', { /* headers */ })
     //     .then(res => res.json())
     //     .then(data => setBestsellers(data))
     //     .catch(err => messageApi.error('Failed to fetch sales stats'));
@@ -96,7 +96,7 @@ const ProductsPage = () => {
     }
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:3000/products-services', {
+      const res = await fetch('https://quantnow-sa1e.onrender.com/products-services', {
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
         },
@@ -186,8 +186,8 @@ const ProductsPage = () => {
     setLoading(true);
     const isNew = !editingProduct;
     const endpoint = isNew
-      ? 'http://localhost:3000/products-services'
-      : `http://localhost:3000/products-services/${editingProduct!.id}`;
+      ? 'https://quantnow-sa1e.onrender.com/products-services'
+      : `https://quantnow-sa1e.onrender.com/products-services/${editingProduct!.id}`;
 
     const method = isNew ? 'POST' : 'PUT';
 
@@ -239,7 +239,7 @@ const ProductsPage = () => {
     }
     try {
       setLoading(true);
-      const res = await fetch(`http://localhost:3000/products-services/${id}`, {
+      const res = await fetch(`https://quantnow-sa1e.onrender.com/products-services/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
@@ -275,7 +275,7 @@ const ProductsPage = () => {
     try {
       setLoading(true);
       const res = await fetch(
-        `http://localhost:3000/products-services/${restockProduct.id}/stock`,
+        `https://quantnow-sa1e.onrender.com/products-services/${restockProduct.id}/stock`,
         {
           method: 'PUT',
           headers: {

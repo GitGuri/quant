@@ -1,6 +1,6 @@
 // src/utils/apiClient.ts
 
-const BASE_URL = 'http://localhost:3000'; // or your deployed backend
+const BASE_URL = 'https://quantnow-sa1e.onrender.com'; // or your deployed backend
 
 export const apiClient = {
   get: async (endpoint: string) => {

@@ -12,7 +12,7 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-const API_BASE = 'http://localhost:3000';
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 /* ---------- Types ---------- */
 type BaseTask = {
