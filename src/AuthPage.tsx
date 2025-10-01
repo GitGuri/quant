@@ -186,16 +186,27 @@ export function AuthPage() {
     try {
       const res = await fetch(`${API_BASE}/auth/resend-verification`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: JSON.stringify({ email: normalizeEmail(email) }),
       });
-      const data = await res.json();
+
+      const ct = res.headers.get('content-type') || '';
+      let data: any = null;
+      if (ct.includes('application/json')) {
+        data = await res.json().catch(() => null);
+      } else {
+        data = { error: await res.text().catch(() => '') };
+      }
+
       if (res.ok) {
         toast({ title: '✅ Verification email sent', description: `Check your inbox: ${email}` });
       } else {
         toast({
           title: '❌ Could not send verification',
-          description: data.error || 'Try again later.',
+          description: data?.error || 'Try again later.',
           variant: 'destructive',
         });
       }
@@ -223,11 +234,22 @@ export function AuthPage() {
 
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      // Be tolerant of non-JSON bodies in prod
+      const ct = res.headers.get('content-type') || '';
+      let data: any = null;
+      if (ct.includes('application/json')) {
+        data = await res.json().catch(() => null);
+      } else {
+        const text = await res.text().catch(() => '');
+        data = { error: text };
+      }
 
       if (res.ok) {
         const user = data.user;
@@ -253,8 +275,13 @@ export function AuthPage() {
 
         navigate('/');
       } else {
-        // Special backend codes:
-        if (res.status === 403 && data?.code === 'email_not_verified') {
+        // Detect unverified by code OR message text, not just JSON code
+        const isUnverified =
+          res.status === 403 &&
+          (data?.code === 'email_not_verified' ||
+            /verify|not\s*verified|unverified/i.test(data?.error || ''));
+
+        if (isUnverified) {
           setNeedsVerify({ email: normalizeEmail(loginEmail) });
           toast({
             title: 'Please verify your email',
@@ -270,7 +297,7 @@ export function AuthPage() {
         } else {
           toast({
             title: '❌ Login Failed',
-            description: data.error || 'Invalid email or password.',
+            description: data?.error || `Invalid email or password. (HTTP ${res.status})`,
             variant: 'destructive',
           });
         }
@@ -368,11 +395,20 @@ export function AuthPage() {
 
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      const ct = res.headers.get('content-type') || '';
+      let data: any = null;
+      if (ct.includes('application/json')) {
+        data = await res.json().catch(() => null);
+      } else {
+        data = { error: await res.text().catch(() => '') };
+      }
 
       if (res.ok) {
         // Assume backend requires email verification: show banner + flip to login
@@ -404,7 +440,7 @@ export function AuthPage() {
       } else {
         toast({
           title: '❌ Registration Failed',
-          description: data.error || 'An error occurred during registration.',
+          description: data?.error || 'An error occurred during registration.',
           variant: 'destructive',
         });
       }
