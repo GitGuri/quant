@@ -8,7 +8,7 @@ import { Loader2, CheckCircle2, XCircle } from 'lucide-react';
 
 // same dynamic base you used in AuthPage
 const API_BASE =
-  (import.meta as any)?.env?.VITE_API_BASE ?? 'https://quantnow-sa1e.onrender.com';
+  (import.meta as any)?.env?.VITE_API_BASE ?? 'http://localhost:3000';
 
 export default function VerifyEmail() {
   const [status, setStatus] = useState<'checking' | 'success' | 'error'>('checking');

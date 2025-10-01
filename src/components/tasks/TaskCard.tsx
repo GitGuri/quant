@@ -44,7 +44,7 @@ import { CSS } from '@dnd-kit/utilities';
 import type { TaskFormData } from './TaskForm';
 
 // ---------- Config ----------
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const API_BASE = 'http://localhost:3000';
 
 // ---------- Types ----------
 interface TaskStep {

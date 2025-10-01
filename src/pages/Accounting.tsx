@@ -21,7 +21,7 @@ import { Plus, Edit, Trash2, Building, CreditCard, Calculator,Download , Play, L
 import { useAuth } from '../AuthPage';
 import axios from 'axios';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const API_BASE = 'http://localhost:3000';
 
 // ---- Types
 interface Asset {

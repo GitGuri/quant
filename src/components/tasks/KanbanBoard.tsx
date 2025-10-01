@@ -227,7 +227,7 @@ export function KanbanBoard() {
 
   // ---- Fetch users ----
   const fetchUsers = useCallback(async () => {
-    const resp = await fetch('https://quantnow-sa1e.onrender.com/api/users', {
+    const resp = await fetch('http://localhost:3000/api/users', {
       headers: getAuthHeaders(),
     });
     if (!resp.ok) throw new Error(`Users fetch failed: ${resp.status}`);
@@ -253,7 +253,7 @@ export function KanbanBoard() {
     try {
       await fetchUsers();
 
-      const projectsResponse = await fetch('https://quantnow-sa1e.onrender.com/api/projects', {
+      const projectsResponse = await fetch('http://localhost:3000/api/projects', {
         headers: getAuthHeaders(),
       });
       if (!projectsResponse.ok) throw new Error(`HTTP error! status: ${projectsResponse.status}`);
@@ -261,7 +261,7 @@ export function KanbanBoard() {
       const projectsData: Project[] = normalizeProjectsFromApi(rawProjects);
       setProjects(projectsData);
 
-      const tasksResponse = await fetch('https://quantnow-sa1e.onrender.com/api/tasks', {
+      const tasksResponse = await fetch('http://localhost:3000/api/tasks', {
         headers: getAuthHeaders(),
       });
       if (!tasksResponse.ok) throw new Error(`HTTP error! status: ${tasksResponse.status}`);
@@ -363,7 +363,7 @@ export function KanbanBoard() {
     );
 
     try {
-      const res = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${activeTask.id}`, {
+      const res = await fetch(`http://localhost:3000/api/tasks/${activeTask.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -414,7 +414,7 @@ export function KanbanBoard() {
     let createdTaskId: string | null = null;
 
     try {
-      const response = await fetch('https://quantnow-sa1e.onrender.com/api/tasks', {
+      const response = await fetch('http://localhost:3000/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -439,7 +439,7 @@ export function KanbanBoard() {
         const addStepPromises = initialStepsToAdd.map((step, index) =>
           (async () => {
             try {
-              const stepResponse = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${createdTaskId}/steps`, {
+              const stepResponse = await fetch(`http://localhost:3000/api/tasks/${createdTaskId}/steps`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify({
@@ -501,7 +501,7 @@ export function KanbanBoard() {
     }
     const statusFromProgress = getStatusFromProgress(taskData.progress_percentage);
     try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${taskToEdit.id}`, {
+      const response = await fetch(`http://localhost:3000/api/tasks/${taskToEdit.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -530,7 +530,7 @@ export function KanbanBoard() {
       return;
     }
     try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/tasks/${taskId}`, {
+      const response = await fetch(`http://localhost:3000/api/tasks/${taskId}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
@@ -549,7 +549,7 @@ export function KanbanBoard() {
       return;
     }
     try {
-      const response = await fetch('https://quantnow-sa1e.onrender.com/api/projects', {
+      const response = await fetch('http://localhost:3000/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(buildProjectPayload(projectData)), // exact payload
@@ -571,7 +571,7 @@ export function KanbanBoard() {
       return;
     }
     try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/projects/${activeProject.id}`, {
+      const response = await fetch(`http://localhost:3000/api/projects/${activeProject.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(buildProjectPayload(projectData)), // exact payload
@@ -593,7 +593,7 @@ export function KanbanBoard() {
       return;
     }
     try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/projects/${projectToDelete.id}`, {
+      const response = await fetch(`http://localhost:3000/api/projects/${projectToDelete.id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });

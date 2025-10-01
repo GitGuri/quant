@@ -80,7 +80,7 @@ export function SupplierManagement() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('https://quantnow-sa1e.onrender.com/api/suppliers', {
+      const response = await fetch('http://localhost:3000/api/suppliers', {
         headers: {
           'Content-Type': 'application/json',
           ...getAuthHeaders(), // Add authorization header
@@ -113,7 +113,7 @@ export function SupplierManagement() {
   const handleCreateSupplier = async (supplierData: SupplierSaveData) => {
     setLoading(true); // Indicate loading for the specific action
     try {
-      const response = await fetch('https://quantnow-sa1e.onrender.com/api/suppliers', {
+      const response = await fetch('http://localhost:3000/api/suppliers', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -148,7 +148,7 @@ export function SupplierManagement() {
   const handleUpdateSupplier = async (id: string, supplierData: SupplierSaveData) => {
     setLoading(true); // Indicate loading for the specific action
     try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/suppliers/${id}`, {
+      const response = await fetch(`http://localhost:3000/api/suppliers/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -184,7 +184,7 @@ export function SupplierManagement() {
   const handleDeleteSupplier = async (id: string) => {
     setLoading(true); // Indicate loading for the specific action
     try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/suppliers/${id}`, {
+      const response = await fetch(`http://localhost:3000/api/suppliers/${id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(), // Add authorization header
       });

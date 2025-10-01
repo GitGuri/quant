@@ -1,5 +1,5 @@
 // src/pages/DocumentManagement.tsx
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,7 +16,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import {
-  Plus, Search, Edit, Trash2, Loader2, Download, Upload, Eye, File as FileIcon,
+  Plus, Search, Edit, Trash2, Loader2, Download, Upload, Eye, File as FileIcon, ShieldAlert
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Header } from '@/components/layout/Header';
@@ -25,6 +25,7 @@ import { format } from 'date-fns';
 
 // ====== Types ======
 type DocKind = 'financial' | 'transaction' | 'general';
+type Plan = 'free' | 'basic' | 'pro' | 'business';
 
 interface Document {
   id: string;
@@ -32,7 +33,7 @@ interface Document {
   file_path: string;
   upload_date: string;
   type: DocKind;
-  expiry_date?: string | null; // YYYY-MM-DD
+  expiry_date?: string | null;
   items?: Array<{ label: string; qty?: number; amount?: number }>;
   remind_before_days?: number | null;
 }
@@ -45,8 +46,17 @@ interface DocumentFormData {
   remind_before_days?: number | null;
 }
 
+interface MeResponse {
+  id: string;
+  email: string;
+  plan: Plan;
+  plan_status?: string;
+  plan_renews_at?: string | null;
+  ai_parse_used_month?: number;
+}
+
 // ====== Config ======
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
 
 // ====== Form Component ======
 function DocumentForm({
@@ -152,7 +162,6 @@ function DocumentForm({
         </div>
       </div>
 
-      
       <div>
         <Label htmlFor="remind_before_days">Reminder (days before expiry)</Label>
         <Input
@@ -183,7 +192,7 @@ function DocumentForm({
   );
 }
 
-// ====== Row Actions (isolates per-row dialog open state) ======
+// ====== Row Actions ======
 function RowActions({
   doc,
   onDownload,
@@ -199,12 +208,10 @@ function RowActions({
 
   return (
     <div className="flex items-center gap-2">
-      {/* Download */}
       <Button variant="ghost" size="sm" onClick={() => onDownload(doc.id)}>
         <Download className="h-4 w-4" />
       </Button>
 
-      {/* Edit */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogTrigger asChild>
           <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
@@ -226,7 +233,6 @@ function RowActions({
         </DialogContent>
       </Dialog>
 
-      {/* Delete */}
       <AlertDialog>
         <AlertDialogTrigger asChild>
           <Button variant="ghost" size="sm">
@@ -270,7 +276,34 @@ export function DocumentManagement() {
 
   const [quickType, setQuickType] = useState<DocKind>('general');
 
+  // Plan / limit state
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const docLimit = useMemo<number | null>(() => {
+    if (plan === 'free') return 10;       // matches server limits
+    if (plan === 'basic') return 200;     // matches server limits
+    return null;                          // pro/business = unlimited
+  }, [plan]);
+
+  const atLimit = useMemo(
+    () => docLimit !== null && documents.length >= docLimit,
+    [docLimit, documents.length]
+  );
+
   // ====== Data helpers ======
+  const fetchMe = useCallback(async () => {
+    if (!token) return;
+    try {
+      const r = await fetch(`${API_BASE_URL}/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) return;
+      const me: MeResponse = await r.json();
+      setPlan(me.plan);
+    } catch {
+      // ignore
+    }
+  }, [token]);
+
   const fetchDocuments = useCallback(async () => {
     if (!token) return;
     setIsLoading(true);
@@ -284,7 +317,7 @@ export function DocumentManagement() {
       setDocuments(
         data.map((d) => ({
           ...d,
-          items: Array.isArray(d.items) ? d.items : (d.items ? [d.items as any] : []), // normalize
+          items: Array.isArray(d.items) ? d.items : (d.items ? [d.items as any] : []),
         }))
       );
     } catch (err: any) {
@@ -294,6 +327,10 @@ export function DocumentManagement() {
       setIsLoading(false);
     }
   }, [token]);
+
+  useEffect(() => {
+    fetchMe();
+  }, [fetchMe]);
 
   useEffect(() => {
     fetchDocuments();
@@ -314,6 +351,20 @@ export function DocumentManagement() {
       }
 
       const isEditing = !!editingDocument;
+
+      // Client-side precheck against plan limit
+      if (!isEditing && docLimit !== null && documents.length >= docLimit) {
+        toast({
+          title: 'Document limit reached',
+          description:
+            plan === 'free'
+              ? 'You’ve reached the 10-document limit on Free. Upgrade to Basic or Pro for more storage.'
+              : 'You’ve reached your document limit. Upgrade your plan for more storage.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
       setIsLoading(true);
       setError(null);
 
@@ -356,10 +407,27 @@ export function DocumentManagement() {
             headers: { Authorization: `Bearer ${token}` },
             body: fd,
           });
+
           if (!response.ok) {
-            const t = await response.text().catch(() => '');
-            throw new Error(t || 'Failed to upload document');
+            // try to parse server-side gating
+            let detail = 'Failed to upload document';
+            try {
+              const j = await response.json();
+              if (j?.error === 'upgrade_required' && j?.reason === 'docs_limit_reached') {
+                const limit = j?.limit ?? docLimit ?? 'your plan limit';
+                detail =
+                  plan === 'free'
+                    ? `You’ve reached the ${limit}-document limit on Free. Upgrade to store more documents.`
+                    : `You’ve reached your document limit (${limit}). Upgrade for more storage.`;
+              } else if (j?.error) {
+                detail = j.error;
+              }
+            } catch {
+              // response not JSON, ignore
+            }
+            throw new Error(detail);
           }
+
           toast({ title: 'Document uploaded successfully' });
         }
 
@@ -369,16 +437,21 @@ export function DocumentManagement() {
         if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
         setFilePreviewUrl(null);
         if (fileInputRef.current) fileInputRef.current.value = '';
-        fetchDocuments();
+        await fetchDocuments();
+        await fetchMe(); // refresh plan/UI just in case
       } catch (err: any) {
         console.error('Error saving document:', err);
         setError(err.message || 'Failed to save document.');
-        toast({ title: 'Failed to save document', description: err.message, variant: 'destructive' });
+        toast({
+          title: 'Action failed',
+          description: err.message || 'There was a problem. Please try again.',
+          variant: 'destructive',
+        });
       } finally {
         setIsLoading(false);
       }
     },
-    [editingDocument, fetchDocuments, toast, token, filePreviewUrl]
+    [editingDocument, fetchDocuments, fetchMe, toast, token, filePreviewUrl, plan, documents.length, docLimit]
   );
 
   const handleDeleteDocument = useCallback(
@@ -393,7 +466,8 @@ export function DocumentManagement() {
         });
         if (!response.ok) throw new Error('Failed to delete document');
         toast({ title: 'Document deleted successfully' });
-        fetchDocuments();
+        await fetchDocuments();
+        await fetchMe();
       } catch (err: any) {
         console.error('Error deleting document:', err);
         setError(err.message || 'Failed to delete document.');
@@ -402,7 +476,7 @@ export function DocumentManagement() {
         setIsLoading(false);
       }
     },
-    [fetchDocuments, toast, token]
+    [fetchDocuments, fetchMe, toast, token]
   );
 
   const handleDownloadDocument = useCallback(
@@ -417,6 +491,7 @@ export function DocumentManagement() {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!response.ok) throw new Error('Failed to get download link.');
+        // response.url should be the final signed URL after redirect; open it
         window.open(response.url, '_blank');
       } catch (err: any) {
         console.error('Error during download:', err);
@@ -491,13 +566,16 @@ export function DocumentManagement() {
     .filter((doc) => doc.original_name.toLowerCase().includes(searchTerm.toLowerCase()))
     .filter((doc) => (typeFilter === 'all' ? true : doc.type === typeFilter));
 
-  // ====== Render ======
   return (
     <div className="flex-1 bg-white p-4 md:p-6 lg:p-8">
       <Header title="Document Management">
         <Dialog open={showForm} onOpenChange={setShowForm}>
           <DialogTrigger asChild>
-            <Button onClick={() => { setEditingDocument(undefined); setShowForm(true); }}>
+            <Button
+              onClick={() => { setEditingDocument(undefined); setShowForm(true); }}
+              disabled={atLimit}
+              title={atLimit ? 'Document limit reached on your current plan' : undefined}
+            >
               <Plus className="h-4 w-4 mr-2" />
               Add Document
             </Button>
@@ -514,6 +592,34 @@ export function DocumentManagement() {
           </DialogContent>
         </Dialog>
       </Header>
+
+      {/* Plan/limit banner */}
+      <div className="mt-2 mb-2">
+        <Card>
+          <CardContent className="py-3 px-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4 text-slate-500" />
+              <span className="text-sm text-slate-700">
+                Plan: <strong>{plan ?? '...'}</strong>
+                {docLimit !== null ? (
+                  <> • Documents used: <strong>{documents.length}</strong> / <strong>{docLimit}</strong></>
+                ) : (
+                  <> • Documents: <strong>Unlimited</strong></>
+                )}
+              </span>
+            </div>
+            {atLimit && (
+              <Button
+                onClick={() => (window.location.href = '/pricing')}
+                size="sm"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                Upgrade plan
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} className="space-y-4 mt-4">
         <Card className="flex flex-col">
@@ -545,19 +651,39 @@ export function DocumentManagement() {
 
             {/* Drag & Drop */}
             <div
-              className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center bg-gray-50 hover:bg-gray-100 transition duration-300 ease-in-out transform hover:scale-[1.01] cursor-pointer relative"
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onClick={() => fileInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-lg p-6 text-center transition duration-300 ease-in-out transform hover:scale-[1.01] cursor-pointer relative ${
+                atLimit ? 'border-red-300 bg-red-50' : 'border-gray-300 bg-gray-50 hover:bg-gray-100'
+              }`}
+              onDrop={atLimit ? undefined : handleDrop}
+              onDragOver={atLimit ? undefined : handleDragOver}
+              onDragLeave={atLimit ? undefined : handleDragLeave}
+              onClick={() => !atLimit && fileInputRef.current?.click()}
+              title={atLimit ? 'Document limit reached on your current plan' : undefined}
             >
               <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
-              <Upload className="mx-auto h-12 w-12 text-gray-400" />
-              <p className="mt-2 text-sm text-gray-600">
-                Drag and drop files here, or <span className="text-blue-600 font-medium">click to browse</span>
-              </p>
-              <p className="mt-1 text-xs text-gray-500">PDF, Images (JPG, PNG)</p>
-              {selectedFile && (
+              <Upload className={`mx-auto h-12 w-12 ${atLimit ? 'text-red-400' : 'text-gray-400'}`} />
+              {atLimit ? (
+                <>
+                  <p className="mt-2 text-sm text-red-600 font-medium">
+                    You’ve reached your document limit for the <span className="capitalize">{plan}</span> plan.
+                  </p>
+                  <Button
+                    size="sm"
+                    className="mt-3 bg-indigo-600 hover:bg-indigo-700 text-white"
+                    onClick={() => (window.location.href = '/pricing')}
+                  >
+                    Upgrade to add more
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="mt-2 text-sm text-gray-600">
+                    Drag and drop files here, or <span className="text-blue-600 font-medium">click to browse</span>
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500">PDF, Images (JPG, PNG)</p>
+                </>
+              )}
+              {!atLimit && selectedFile && (
                 <p className="mt-2 text-sm text-gray-700 flex items-center justify-center">
                   <FileIcon className="h-4 w-4 mr-2" /> Selected file:{' '}
                   <span className="font-semibold ml-1">{selectedFile.name}</span>
@@ -578,6 +704,7 @@ export function DocumentManagement() {
                   className="border rounded-md h-9 px-2 flex-1"
                   value={quickType}
                   onChange={(e) => setQuickType(e.target.value as DocKind)}
+                  disabled={atLimit}
                 >
                   <option value="financial">Financial</option>
                   <option value="transaction">Transaction</option>
@@ -602,7 +729,8 @@ export function DocumentManagement() {
                   );
                 }}
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white"
-                disabled={!selectedFile}
+                disabled={!selectedFile || atLimit}
+                title={atLimit ? 'Document limit reached on your current plan' : undefined}
               >
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
                 Quick Add Document
@@ -618,7 +746,7 @@ export function DocumentManagement() {
             ) : error ? (
               <div className="text-center text-red-500 p-4 border border-red-300 rounded-md flex-1 flex flex-col justify-center items-center">
                 <p>Error: {error}</p>
-                <Button onClick={fetchDocuments} className="mt-2">
+                <Button onClick={() => { fetchDocuments(); fetchMe(); }} className="mt-2">
                   Retry
                 </Button>
               </div>
@@ -631,7 +759,6 @@ export function DocumentManagement() {
                       <TableHead>Type</TableHead>
                       <TableHead>Upload Date</TableHead>
                       <TableHead>Expiry</TableHead>
-                      
                       <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -676,7 +803,6 @@ export function DocumentManagement() {
                               onDownload={handleDownloadDocument}
                               onDelete={handleDeleteDocument}
                               onSave={async (data) => {
-                                // wire into same save; set current editing doc for PATCH
                                 setEditingDocument(doc);
                                 await handleSaveDocument(data);
                               }}

@@ -18,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '../../AuthPage';
 
 // --- Define API Base URL ---
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'http://localhost:3000';
 // --- End Define API Base URL ---
 
 export function ProfileForm() {

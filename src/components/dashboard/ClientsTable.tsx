@@ -6,7 +6,7 @@ import { MoreHorizontal, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../AuthPage'; // Import useAuth
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'; // Changed to localhost:3000 based on previous context
+const API_BASE_URL = 'http://localhost:3000'; // Changed to localhost:3000 based on previous context
 
 interface Client {
   id: string;

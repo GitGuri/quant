@@ -16,7 +16,7 @@ interface Message {
 }
 
 const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || 'http//localhost:3000'
+  import.meta.env.VITE_API_BASE_URL || 'https://quantnow-sa1e.onrender.com'
 
 // Helper: auth header (same token you already store on login)
 function authHeaders() {

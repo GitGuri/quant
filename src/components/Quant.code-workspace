@@ -11,6 +11,9 @@
 		},
 		{
 			"path": "../../../../Quant2-BuzyHelper-main"
+		},
+		{
+			"path": "../../../../Downloads/quantilytix-pricing"
 		}
 	],
 	"settings": {}

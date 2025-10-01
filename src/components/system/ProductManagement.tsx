@@ -84,7 +84,7 @@ export function ProductManagement() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('https://quantnow-sa1e.onrender.com/api/products', {
+      const response = await fetch('http://localhost:3000/api/products', {
         headers: {
           'Content-Type': 'application/json',
           ...getAuthHeaders(), // Add authorization header
@@ -116,7 +116,7 @@ export function ProductManagement() {
   const handleCreateProduct = async (productData: ProductSaveData) => {
     setLoading(true); // Indicate loading for the specific action
     try {
-      const response = await fetch('https://quantnow-sa1e.onrender.com/api/products', {
+      const response = await fetch('http://localhost:3000/api/products', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -151,7 +151,7 @@ export function ProductManagement() {
   const handleUpdateProduct = async (id: string, productData: ProductSaveData) => {
     setLoading(true); // Indicate loading for the specific action
     try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/products/${id}`, {
+      const response = await fetch(`http://localhost:3000/api/products/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -187,7 +187,7 @@ export function ProductManagement() {
   const handleDeleteProduct = async (id: string) => {
     setLoading(true); // Indicate loading for the specific action
     try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/products/${id}`, {
+      const response = await fetch(`http://localhost:3000/api/products/${id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(), // Add authorization header
       });
