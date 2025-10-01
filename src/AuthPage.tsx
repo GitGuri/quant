@@ -21,7 +21,9 @@ import {
 import { useToast } from '@/components/ui/use-toast';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+// ✅ Dynamic base URL (uses Vite env if set, else your Render backend)
+const API_BASE =
+  (import.meta as any)?.env?.VITE_API_BASE ?? 'https://quantnow-sa1e.onrender.com';
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -156,6 +158,7 @@ export function AuthPage() {
   // --- End Registration State ---
 
   const [isLoading, setIsLoading] = useState(false);
+  const [needsVerify, setNeedsVerify] = useState<{ email: string } | null>(null);
 
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -165,18 +168,63 @@ export function AuthPage() {
     setMode(mode === 'login' ? 'register' : 'login');
   };
 
+  // ✅ helpers
+  const normalizeEmail = (e: string) => e.trim().toLowerCase();
+
+  // ✅ minimal disposable domains (expand server-side too)
+  const DISPOSABLE = new Set<string>([
+    'mailinator.com', 'yopmail.com', 'tempmail.com', 'tempmail.dev', 'guerrillamail.com',
+    '10minutemail.com', 'getnada.com', 'sharklasers.com', 'trashmail.com', 'maildrop.cc'
+  ]);
+  const isDisposable = (email: string) => {
+    const domain = email.split('@')[1]?.toLowerCase() || '';
+    return DISPOSABLE.has(domain);
+  };
+
+  // ✅ resend verification email
+  const resendVerification = async (email: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/resend-verification`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalizeEmail(email) }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast({ title: '✅ Verification email sent', description: `Check your inbox: ${email}` });
+      } else {
+        toast({
+          title: '❌ Could not send verification',
+          description: data.error || 'Try again later.',
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: '🚨 Network error',
+        description: 'Could not send verification email.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   // --- Handle Login Submit ---
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setNeedsVerify(null);
 
     try {
       const endpoint = `${API_BASE}/login`;
+      const payload = {
+        email: normalizeEmail(loginEmail),
+        password: loginPassword,
+      };
 
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
@@ -205,11 +253,27 @@ export function AuthPage() {
 
         navigate('/');
       } else {
-        toast({
-          title: '❌ Login Failed',
-          description: data.error || 'Invalid email or password.',
-          variant: 'destructive',
-        });
+        // Special backend codes:
+        if (res.status === 403 && data?.code === 'email_not_verified') {
+          setNeedsVerify({ email: normalizeEmail(loginEmail) });
+          toast({
+            title: 'Please verify your email',
+            description: 'We can resend the verification.',
+            variant: 'destructive',
+          });
+        } else if (res.status === 400 && data?.code === 'oauth_only_account') {
+          toast({
+            title: 'Use Google sign-in',
+            description: 'This account is social login only.',
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: '❌ Login Failed',
+            description: data.error || 'Invalid email or password.',
+            variant: 'destructive',
+          });
+        }
       }
     } catch (error) {
       console.error('Login error:', error);
@@ -228,6 +292,7 @@ export function AuthPage() {
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setNeedsVerify(null);
 
     // Client-side validation for required fields
     if (
@@ -255,6 +320,19 @@ export function AuthPage() {
       return;
     }
 
+    const email = normalizeEmail(regEmail);
+
+    // Block disposable (but allow real/personal domains like gmail/outlook/custom)
+    if (isDisposable(email)) {
+      toast({
+        title: '🚫 Disposable email detected',
+        description: 'Please use a real email address.',
+        variant: 'destructive',
+      });
+      setIsLoading(false);
+      return;
+    }
+
     // Passwords must match
     if (regPassword !== regConfirmPassword) {
       toast({
@@ -271,7 +349,7 @@ export function AuthPage() {
 
       const payload = {
         name: `${regName} ${regSurname}`.trim(),
-        email: regEmail,
+        email,
         password: regPassword,
         company: regCompanyName,
         position: regTitle,
@@ -297,13 +375,14 @@ export function AuthPage() {
       const data = await res.json();
 
       if (res.ok) {
+        // Assume backend requires email verification: show banner + flip to login
+        setNeedsVerify({ email });
         toast({
           title: '✅ Registration Successful',
-          description: 'You can now log in with your new account.',
+          description: 'Check your inbox to verify your email before logging in.',
         });
         setMode('login');
-        // Prefill login
-        setLoginEmail(regEmail);
+        setLoginEmail(email);
 
         // Reset registration form
         setRegName('');
@@ -376,7 +455,7 @@ export function AuthPage() {
                   (e.currentTarget as HTMLImageElement).style.display = 'none';
                 }}
                 alt="QxAnalytix robot"
-                className="mx-auto w/full max-w-md drop-shadow-2xl"
+                className="mx-auto w-full max-w-md drop-shadow-2xl"
               />
             </div>
 
@@ -821,6 +900,27 @@ export function AuthPage() {
                 </form>
               )}
               {/* --- END REGISTRATION FORM --- */}
+
+              {/* ✅ Verify banner (shown after register or when login blocked by verification) */}
+              {needsVerify && (
+                <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm">
+                      We’ve sent a verification link to{' '}
+                      <span className="font-medium">{needsVerify.email}</span>. Please verify to
+                      continue. Didn’t get it?
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8"
+                      onClick={() => resendVerification(needsVerify.email)}
+                    >
+                      Resend email
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 

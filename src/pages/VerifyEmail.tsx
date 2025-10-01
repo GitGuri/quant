@@ -6,9 +6,10 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
 import { Loader2, CheckCircle2, XCircle } from 'lucide-react';
 
-// same dynamic base you used in AuthPage
 const API_BASE =
-  (import.meta as any)?.env?.VITE_API_BASE ?? 'https://quantnow-sa1e.onrender.com';
+  (import.meta as any)?.env?.VITE_API_BASE_URL ||
+  (import.meta as any)?.env?.VITE_API_BASE ||
+  'https://quantnow-sa1e.onrender.com';
 
 export default function VerifyEmail() {
   const [status, setStatus] = useState<'checking' | 'success' | 'error'>('checking');
@@ -27,26 +28,43 @@ export default function VerifyEmail() {
 
     (async () => {
       try {
-        // Call your backend verifier
-        const res = await fetch(
-          `${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`
-        );
-        const data = await res.json();
+        const url = `${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`;
+        const res = await fetch(url, { headers: { Accept: 'application/json' } });
 
+        // Try JSON first
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const data = await res.json();
+          if (res.ok) {
+            setStatus('success');
+            setMessage(data.message || 'Your email was verified successfully.');
+            toast({ title: '✅ Email verified', description: 'You can log in now.' });
+            // optional: auto jump
+            setTimeout(() => nav('/login?verified=1', { replace: true }), 800);
+          } else {
+            setStatus('error');
+            setMessage(data.error || 'Verification failed. The link may be invalid or expired.');
+          }
+          return;
+        }
+
+        // Not JSON — treat as text/HTML
+        const text = await res.text().catch(() => '');
         if (res.ok) {
           setStatus('success');
-          setMessage(data.message || 'Your email was verified successfully.');
+          setMessage('Your email was verified successfully.');
           toast({ title: '✅ Email verified', description: 'You can log in now.' });
+          setTimeout(() => nav('/login?verified=1', { replace: true }), 800);
         } else {
           setStatus('error');
-          setMessage(data.error || 'Verification failed. The link may be invalid or expired.');
+          setMessage(text || 'Verification failed. The link may be invalid or expired.');
         }
-      } catch (err) {
+      } catch {
         setStatus('error');
         setMessage('Network error while verifying your email.');
       }
     })();
-  }, [toast]);
+  }, [nav, toast]);
 
   return (
     <div className="min-h-screen grid place-items-center p-6">
