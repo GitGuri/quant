@@ -1,4 +1,3 @@
-// src/pages/VerifyEmail.tsx
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,13 +12,14 @@ const API_BASE =
 
 export default function VerifyEmail() {
   const [status, setStatus] = useState<'checking' | 'success' | 'error'>('checking');
-  const [message, setMessage] = useState<string>('Verifying your email…');
+  const [message, setMessage] = useState('Verifying your email…');
   const nav = useNavigate();
   const { toast } = useToast();
 
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const token = q.get('token');
+
     if (!token) {
       setStatus('error');
       setMessage('Missing verification token.');
@@ -29,9 +29,12 @@ export default function VerifyEmail() {
     (async () => {
       try {
         const url = `${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`;
-        const res = await fetch(url, { headers: { Accept: 'application/json' } });
+        const res = await fetch(url, {
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+        });
 
-        // Try JSON first
+        // Prefer JSON responses
         const ct = res.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
           const data = await res.json();
@@ -39,7 +42,6 @@ export default function VerifyEmail() {
             setStatus('success');
             setMessage(data.message || 'Your email was verified successfully.');
             toast({ title: '✅ Email verified', description: 'You can log in now.' });
-            // optional: auto jump
             setTimeout(() => nav('/login?verified=1', { replace: true }), 800);
           } else {
             setStatus('error');
@@ -48,20 +50,20 @@ export default function VerifyEmail() {
           return;
         }
 
-        // Not JSON — treat as text/HTML
-        const text = await res.text().catch(() => '');
+        // Non-JSON (shouldn’t happen after the server fix, but keep a fallback)
         if (res.ok) {
           setStatus('success');
           setMessage('Your email was verified successfully.');
           toast({ title: '✅ Email verified', description: 'You can log in now.' });
           setTimeout(() => nav('/login?verified=1', { replace: true }), 800);
         } else {
+          const text = await res.text().catch(() => '');
           setStatus('error');
           setMessage(text || 'Verification failed. The link may be invalid or expired.');
         }
       } catch {
-        setStatus('error');
-        setMessage('Network error while verifying your email.');
+        // Hard fallback in case a service worker or CORS blocks XHR:
+        window.location.href = `${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`;
       }
     })();
   }, [nav, toast]);
