@@ -66,6 +66,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     setIsAuthenticated(false);
     setUserRoles([]);
+);
     setUserName(null);
     localStorage.clear();
   };
@@ -152,7 +153,7 @@ export function AuthPage() {
   const [regAddress, setRegAddress] = useState('');
   const [regCity, setRegCity] = useState('');
   const [regProvince, setRegProvince] = useState('');
-  const [regCountry, setRegCountry] = useState(''); // Default
+  const [regCountry, setRegCountry] = useState('South Africa'); // Default
   const [regPostalCode, setRegPostalCode] = useState('');
   const [regPhone, setRegPhone] = useState(''); // Optional
   // --- End Registration State ---
@@ -181,7 +182,7 @@ export function AuthPage() {
     return DISPOSABLE.has(domain);
   };
 
-  // ✅ resend verification email
+  // ✅ resend verification email (Accepts email as argument)
   const resendVerification = async (email: string) => {
     try {
       const res = await fetch(`${API_BASE}/auth/resend-verification`, {
@@ -190,7 +191,7 @@ export function AuthPage() {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-        body: JSON.stringify({ email: normalizeEmail(email) }),
+        body: JSON.stringify({ email: normalizeEmail(email) }), // Use the passed email
       });
 
       const ct = res.headers.get('content-type') || '';
@@ -204,9 +205,11 @@ export function AuthPage() {
       if (res.ok) {
         toast({ title: '✅ Verification email sent', description: `Check your inbox: ${email}` });
       } else {
+        // Provide more specific error feedback if possible
+        const errorMessage = data?.error || `Failed to send (HTTP ${res.status}).`;
         toast({
           title: '❌ Could not send verification',
-          description: data?.error || 'Try again later.',
+          description: errorMessage,
           variant: 'destructive',
         });
       }
@@ -219,10 +222,11 @@ export function AuthPage() {
     }
   };
 
-  // --- Handle Login Submit ---
+  // --- Handle Login Submit (Corrected) ---
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    // Clear any previous verification banner state on *new* login attempt
     setNeedsVerify(null);
 
     try {
@@ -282,7 +286,11 @@ export function AuthPage() {
             /verify|not\s*verified|unverified/i.test(data?.error || ''));
 
         if (isUnverified) {
-          setNeedsVerify({ email: normalizeEmail(loginEmail) });
+          // CRITICAL FIX: Set needsVerify to the email *that just failed* to log in
+          // This ensures the resend button knows *which* email to resend for,
+          // even if the user changes the email field afterwards before clicking resend.
+          const failedEmail = normalizeEmail(loginEmail);
+          setNeedsVerify({ email: failedEmail });
           toast({
             title: 'Please verify your email',
             description: 'We can resend the verification.',
@@ -313,12 +321,13 @@ export function AuthPage() {
 
     setIsLoading(false);
   };
-  // --- End Handle Login Submit ---
+  // --- End Handle Login Submit (Corrected) ---
 
-  // --- Handle Registration Submit ---
+  // --- Handle Registration Submit (Corrected) ---
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    // Clear any previous verification banner state on *new* registration attempt
     setNeedsVerify(null);
 
     // Client-side validation for required fields
@@ -411,14 +420,14 @@ export function AuthPage() {
       }
 
       if (res.ok) {
-        // Assume backend requires email verification: show banner + flip to login
-        setNeedsVerify({ email });
+        // CRITICAL FIX: Set needsVerify to the email *just registered*
+        setNeedsVerify({ email }); // Use the normalized email from payload
         toast({
           title: '✅ Registration Successful',
           description: 'Check your inbox to verify your email before logging in.',
         });
         setMode('login');
-        setLoginEmail(email);
+        setLoginEmail(email); // Pre-fill login email
 
         // Reset registration form
         setRegName('');
@@ -455,7 +464,7 @@ export function AuthPage() {
 
     setIsLoading(false);
   };
-  // --- End Handle Registration Submit ---
+  // --- End Handle Registration Submit (Corrected) ---
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-[#0f172a] via-[#111827] to-[#1f2937]">
@@ -937,7 +946,7 @@ export function AuthPage() {
               )}
               {/* --- END REGISTRATION FORM --- */}
 
-              {/* ✅ Verify banner (shown after register or when login blocked by verification) */}
+              {/* ✅ Verify banner (Corrected to use the email stored in needsVerify state) */}
               {needsVerify && (
                 <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200">
                   <div className="flex items-center justify-between gap-3">
@@ -950,7 +959,7 @@ export function AuthPage() {
                       type="button"
                       variant="outline"
                       className="h-8"
-                      onClick={() => resendVerification(needsVerify.email)}
+                      onClick={() => resendVerification(needsVerify.email)} // Pass the specific email from state
                     >
                       Resend email
                     </Button>
