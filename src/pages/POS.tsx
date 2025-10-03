@@ -87,6 +87,19 @@ interface CustomerFrontend {
 }
 type CartItem = ProductDB & { quantity: number; subtotal: number };
 type PaymentType = 'Cash' | 'Bank' | 'Credit';
+ 
+// --- Branch membership (for the logged-in user) ---
+interface MyBranch {
+  id: string;
+  code: string;
+  name: string;
+  is_primary: boolean;
+}
+
+// persist the picker between sessions
+const BRANCH_PICK_KEY = 'pos.selected_branch_id';
+
+
 // --- END: MODIFIED TYPES TO MATCH BACKEND API ---
 
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
@@ -179,10 +192,61 @@ export default function POSScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [isAddingCustomProduct, setIsAddingCustomProduct] = useState(false);
   const [creditScoreCache, setCreditScoreCache] = useState<Record<string, CreditScoreInfo>>({});
+  // Branches the current user belongs to
+const [myBranches, setMyBranches] = useState<MyBranch[]>([]);
+const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
 
   const getAuthHeaders = useCallback(() => {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
+
+
+  // pick an initial branch (saved -> primary -> first -> null)
+const loadInitialBranch = (branches: MyBranch[]) => {
+  const saved = localStorage.getItem(BRANCH_PICK_KEY);
+  if (saved && branches.some(b => b.id === saved)) return saved;
+  const primary = branches.find(b => b.is_primary);
+  return primary?.id ?? branches[0]?.id ?? null;
+};
+
+// fetch memberships for the current user
+const fetchMyBranches = useCallback(async () => {
+  if (!token) {
+    console.log('[branches] no token; skipping');
+    setMyBranches([]); setSelectedBranchId(null);
+    return;
+  }
+  try {
+    console.log('[branches] calling /api/me/branches…');
+    const r = await fetch(`${API_BASE_URL}/api/me/branches`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    console.log('[branches] status', r.status);
+    if (!r.ok) throw new Error(String(r.status));
+    const data = await r.json();
+    console.log('[branches] payload', data);
+
+    const items: MyBranch[] = (data?.memberships || []).map((m: any) => ({
+      id: String(m.branch_id),
+      code: m.code,
+      name: m.name,
+      is_primary: !!m.is_primary,
+    }));
+    setMyBranches(items);
+    setSelectedBranchId(loadInitialBranch(items));
+  } catch (e) {
+    console.warn('[branches] fetch failed', e);
+    setMyBranches([]); setSelectedBranchId(null);
+  }
+}, [token]);
+
+useEffect(() => { fetchMyBranches(); }, [fetchMyBranches]);
+
+
+
+useEffect(() => {
+  fetchMyBranches();
+}, [fetchMyBranches]);
 
   // === NEW: Outbox flush ===
   const flushOutbox = useCallback(async () => {
@@ -714,29 +778,26 @@ export default function POSScreen() {
 
     const tellerName = getUserNameFromLocalStorage();
 
-    const salePayload = {
-      cart: cart.map((item) => ({
-        id: item.id,
-        name: item.name,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        subtotal: item.subtotal,
-        is_service: item.is_service || false,
-        tax_rate_value: item.tax_rate_value ?? 0,
-      })),
-      paymentType,
-      total,
-      customer: selectedCustomer
-        ? { id: selectedCustomer.id, name: selectedCustomer.name }
-        : null,
-      amountPaid: paymentType === 'Cash' ? amountPaid : 0,
-      change: paymentType === 'Cash' ? change : 0,
-      dueDate: paymentType === 'Credit' ? dueDate : null,
-      bankName: paymentType === 'Bank' ? bankName : null,
-      tellerName,
-      branch: '',
-      companyName: '',
-    };
+   const salePayload = {
+  cart: cart.map((item) => ({
+    id: item.id,
+    name: item.name,
+    quantity: item.quantity,
+    unit_price: item.unit_price,
+    subtotal: item.subtotal,
+    is_service: item.is_service || false,
+    tax_rate_value: item.tax_rate_value ?? 0,
+  })),
+  paymentType,
+  total,
+  customer: selectedCustomer ? { id: selectedCustomer.id, name: selectedCustomer.name } : null,
+  amountPaid: paymentType === 'Cash' ? amountPaid : 0,
+  change: paymentType === 'Cash' ? change : 0,
+  dueDate: paymentType === 'Credit' ? dueDate : null,
+  bankName: paymentType === 'Bank' ? bankName : null,
+  tellerName,
+  branch_id: selectedBranchId,  // <<--- IMPORTANT
+};
 
     // Offline: queue
     if (!isOnline) {
@@ -854,653 +915,615 @@ export default function POSScreen() {
   };
 
   return (
-    <>
-      {contextHolder}
-      <div style={{ padding: 18, maxWidth: 650, margin: '0 auto' }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 8 }}>
-          <Title level={3} style={{ margin: 0 }}>Point of Sale</Title>
-          <Tag color={isOnline ? 'green' : 'red'}>{isOnline ? 'Online' : 'Offline'}</Tag>
-        </div>
+  <>
+    {contextHolder}
+    <div style={{ padding: 18, maxWidth: 650, margin: '0 auto' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 8,
+        }}
+      >
+        <Title level={3} style={{ margin: 0 }}>
+          Point of Sale
+        </Title>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <Tag color={isOnline ? 'green' : 'red'}>
+            {isOnline ? 'Online' : 'Offline'}
+          </Tag>
 
-        {/* Customer Select */}
-        <Card
-          style={{ marginBottom: 12, cursor: 'pointer' }}
-          onClick={() => setCustomerModal(true)}
-          bodyStyle={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <div>
-            <Text strong>
-              {selectedCustomer ? selectedCustomer.name : 'Select Customer (Optional)'}
-            </Text>
-            <div style={{ fontSize: 12, color: '#888' }}>
-              {selectedCustomer?.phone}
-            </div>
-            {selectedCustomer?.balanceDue !== undefined && (
-              <div
-                style={{
-                  fontSize: 12,
-                  color: selectedCustomer.balanceDue > 0 ? 'red' : '#888',
-                }}
-              >
-                Outstanding Balance: R{(selectedCustomer.balanceDue || 0).toFixed(2)}
-              </div>
-            )}
-            {selectedCustomer?.creditLimit !== undefined &&
-              selectedCustomer.creditLimit > 0 && (
-                <div style={{ fontSize: 12, color: '#888' }}>
-                  Credit Limit: R{(selectedCustomer.creditLimit || 0).toFixed(2)}
-                </div>
-              )}
-            {selectedCustomer?.id && creditScoreCache[selectedCustomer.id] && (
-              <div style={{ marginTop: 6 }}>
-                <Tag color={creditScoreCache[selectedCustomer.id].color}>
-                  {`Score: ${creditScoreCache[selectedCustomer.id].score} (${creditScoreCache[selectedCustomer.id].label})`}
-                </Tag>
-              </div>
-            )}
-          </div>
-          <UserAddOutlined />
-        </Card>
-
-        {/* Product Select */}
-        <Card
-          style={{ marginBottom: 12, cursor: 'pointer' }}
-          onClick={() => {
-            setSelectedProduct(null);
-            setShowCustomProductForm(false);
-            setProductModal(true);
-            customProductForm.resetFields();
-            setProductQty(1);
-            setCustomProductIsService(false);
-          }}
-          bodyStyle={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <div>
-            <Text strong>
-              {selectedProduct ? selectedProduct.name : 'Select Product'}
-            </Text>
-            <div style={{ fontSize: 12, color: '#888' }}>
-              Price: R
-              {(selectedProduct?.unit_price || 0).toFixed(2)}{' '}
-              {selectedProduct?.is_service ? '(Service)' : ''}
-            </div>
-            {selectedProduct && (
-              <div style={{ fontSize: 12, color: '#888' }}>
-                Stock: {selectedProduct.stock_quantity ?? 0} {selectedProduct.unit || ''}
-              </div>
-            )}
-          </div>
-          <ShoppingCartOutlined />
-        </Card>
-
-        {/* Quantity & Add to Cart (existing products) */}
-        <Row gutter={6} align="middle" style={{ marginBottom: 10 }}>
-          <Col>
-            <Button
-              size="small"
-              onClick={() => setProductQty((q) => Math.max(1, q - 1))}
-              disabled={
-                !isAuthenticated ||
-                isLoading ||
-                isAddingCustomProduct ||
-                (!selectedProduct && !showCustomProductForm)
-              }
-            >
-              -
-            </Button>
-          </Col>
-          <Col>
-            <InputNumber
-              min={1}
-              value={productQty}
-              onChange={(value) => setProductQty(value ?? 1)}
-              style={{ width: 60 }}
-              disabled={
-                !isAuthenticated ||
-                isLoading ||
-                isAddingCustomProduct ||
-                (!selectedProduct && !showCustomProductForm)
-              }
-            />
-          </Col>
-          <Col>
-            <Button
-              size="small"
-              onClick={() => {
-                const max = selectedProduct?.stock_quantity ?? Infinity;
-                setProductQty((q) => Math.min(q + 1, max));
-              }}
-              disabled={
-                !isAuthenticated ||
-                isLoading ||
-                isAddingCustomProduct ||
-                (!selectedProduct && !showCustomProductForm)
-              }
-            >
-              +
-            </Button>
-          </Col>
-          <Col>
-            <Button
-              type="primary"
-              onClick={addToCart}
-              disabled={
-                !isAuthenticated ||
-                isLoading ||
-                isAddingCustomProduct ||
-                (!selectedProduct && !showCustomProductForm) ||
-                (showCustomProductForm &&
-                  !customProductForm.getFieldValue('customProductName')?.trim())
-              }
-            >
-              Add to Cart
-            </Button>
-          </Col>
-        </Row>
-
-        {/* Cart */}
-        <Card title="Cart" style={{ marginBottom: 14 }}>
-          {isLoading && (
-            <Spin
-              tip="Loading products and customers..."
-              style={{ display: 'block', margin: '20px auto' }}
-            />
-          )}
-          {!isLoading && screens.md ? (
-            <Table
-              dataSource={cart}
-              rowKey="id"
-              pagination={false}
-              columns={[
-                { title: 'Product', dataIndex: 'name' },
-                { title: 'Qty', dataIndex: 'quantity' },
-                {
-                  title: 'Price',
-                  dataIndex: 'unit_price',
-                  render: (price: number) => `R${price.toFixed(2)}`,
-                },
-                {
-                  title: 'Total',
-                  render: (_: any, r: any) => `R${r.subtotal.toFixed(2)}`,
-                },
-                {
-                  title: 'Action',
-                  render: (_: any, r: any) => (
-                    <Button
-                      danger
-                      size="small"
-                      onClick={() => removeFromCart(r.id)}
-                      disabled={!isAuthenticated}
-                    >
-                      Remove
-                    </Button>
-                  ),
-                },
-              ]}
-              summary={() => (
-                <Table.Summary.Row>
-                  <Table.Summary.Cell colSpan={3}>Total</Table.Summary.Cell>
-                  <Table.Summary.Cell>R{total.toFixed(2)}</Table.Summary.Cell>
-                  <Table.Summary.Cell />
-                </Table.Summary.Row>
-              )}
-            />
-          ) : !isLoading && cart.length === 0 ? (
-            <Text type="secondary">Cart is empty</Text>
-          ) : (
-            !isLoading &&
-            cart.map((item) => (
-              <Card key={item.id} size="small" style={{ marginBottom: 6 }}>
-                <Row justify="space-between" align="middle">
-                  <Col>
-                    <Text strong>{item.name}</Text>{' '}
-                    <Tag>
-                      {item.quantity} x R{item.unit_price.toFixed(2)}{' '}
-                    </Tag>
-                    <div>Total: R{item.subtotal.toFixed(2)}</div>
-                    {String(item.id).startsWith('custom-') && (
-                      <div style={{ fontSize: 12, color: '#999' }}>custom item</div>
-                    )}
-                  </Col>
-                  <Col>
-                    <Button
-                      size="small"
-                      danger
-                      onClick={() => removeFromCart(item.id)}
-                      disabled={!isAuthenticated}
-                    >
-                      Remove
-                    </Button>
-                  </Col>
-                </Row>
-              </Card>
-            ))
-          )}
-        </Card>
-
-        {/* Payment and Submit */}
-        <Card>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: 150 }}>
-              <div style={{ marginBottom: 4 }}>
-                <Text strong>Payment Method</Text>
-              </div>
+          {myBranches.length > 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Text type="secondary">Branch</Text>
               <Select
-                value={paymentType}
-                onChange={(value) => {
-                    setPaymentType(value);
-                    if (value !== 'Cash') setAmountPaid(0);
-                    if (value !== 'Credit') setDueDate(null);
-                    if (value !== 'Bank') setBankName(null);
+                size="small"
+                value={selectedBranchId || undefined}
+                style={{ minWidth: 170 }}
+                onChange={(val) => {
+                  setSelectedBranchId(val);
+                  localStorage.setItem(BRANCH_PICK_KEY, val || '');
                 }}
-                style={{ width: '100%' }}
                 disabled={!isAuthenticated || isLoading}
               >
-                <Option value="Cash">Cash</Option>
-                <Option value="Bank">Bank</Option>
-                <Option value="Credit">Credit</Option>
+                {myBranches.map((b) => (
+                  <Option key={b.id} value={b.id}>
+                    {(b.code || b.name) + (b.is_primary ? ' • primary' : '')}
+                  </Option>
+                ))}
               </Select>
             </div>
+          ) : (
+            <Tag color="default">No Branch</Tag>
+          )}
+        </div>
+      </div>
 
-            {paymentType === 'Cash' && (
-              <div style={{ flex: 1, minWidth: 150 }}>
-                <div style={{ marginBottom: 4 }}>
-                  <Text>Amount Paid</Text>
-                </div>
-                <InputNumber
-                  min={0}
-                  value={amountPaid}
-                  onChange={(value) => setAmountPaid(value ?? 0)}
-                  style={{ width: '100%' }}
-                  disabled={!isAuthenticated || isLoading}
-                />
-                <div style={{ marginTop: 4 }}>
-                  <Text strong>
-                    Change:&nbsp;
-                    <span style={{ color: change < 0 ? 'red' : 'green' }}>
-                      {change < 0 ? 'Insufficient' : `R${change.toFixed(2)}`}
-                    </span>
-                  </Text>
-                </div>
-              </div>
-            )}
+      {/* Customer Select */}
+      <Card
+        style={{ marginBottom: 12, cursor: 'pointer' }}
+        onClick={() => setCustomerModal(true)}
+        bodyStyle={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <div>
+          <Text strong>
+            {selectedCustomer ? selectedCustomer.name : 'Select Customer (Optional)'}
+          </Text>
+          <div style={{ fontSize: 12, color: '#888' }}>{selectedCustomer?.phone}</div>
+          {selectedCustomer?.balanceDue !== undefined && (
+            <div style={{ fontSize: 12, color: selectedCustomer.balanceDue > 0 ? 'red' : '#888' }}>
+              Outstanding Balance: R{(selectedCustomer.balanceDue || 0).toFixed(2)}
+            </div>
+          )}
+          {selectedCustomer?.creditLimit !== undefined && selectedCustomer.creditLimit > 0 && (
+            <div style={{ fontSize: 12, color: '#888' }}>
+              Credit Limit: R{(selectedCustomer.creditLimit || 0).toFixed(2)}
+            </div>
+          )}
+          {selectedCustomer?.id && creditScoreCache[selectedCustomer.id] && (
+            <div style={{ marginTop: 6 }}>
+              <Tag color={creditScoreCache[selectedCustomer.id].color}>
+                {`Score: ${creditScoreCache[selectedCustomer.id].score} (${creditScoreCache[selectedCustomer.id].label})`}
+              </Tag>
+            </div>
+          )}
+        </div>
+        <UserAddOutlined />
+      </Card>
 
-            {paymentType === 'Bank' && (
-              <div style={{ flex: 1, minWidth: 150 }}>
-                <div style={{ marginBottom: 4 }}>
-                  <Text>Bank Name</Text>
-                </div>
-                <Input
-                  placeholder="e.g., FNB, ABSA"
-                  value={bankName || ''}
-                  onChange={(e) => setBankName(e.target.value)}
-                  style={{ width: '100%' }}
-                  disabled={!isAuthenticated || isLoading}
-                />
-              </div>
-            )}
-
-            {paymentType === 'Credit' && (
-              <div style={{ flex: 1, minWidth: 150 }}>
-                <div style={{ marginBottom: 4 }}>
-                  <Text>Due Date</Text>
-                </div>
-                <Input
-                  type="date"
-                  value={dueDate || ''}
-                  onChange={(e) => setDueDate(e.target.value)}
-                  style={{ width: '100%' }}
-                  disabled={!isAuthenticated || isLoading}
-                />
-                {selectedCustomer && (
-                  <div
-                    style={{
-                      marginTop: 6,
-                      display: 'flex',
-                      gap: 8,
-                      alignItems: 'center',
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    {selectedCustomer.id &&
-                      creditScoreCache[selectedCustomer.id] && (
-                        <Tag color={creditScoreCache[selectedCustomer.id].color}>
-                          {`Score: ${creditScoreCache[selectedCustomer.id].score} (${creditScoreCache[selectedCustomer.id].label})`}
-                        </Tag>
-                      )}
-                    <Text type="warning" style={{ color: 'orange' }}>
-                      Credit selected. Please review customer's score and limit.
-                    </Text>
-                  </div>
-                )}
-              </div>
-            )}
+      {/* Product Select */}
+      <Card
+        style={{ marginBottom: 12, cursor: 'pointer' }}
+        onClick={() => {
+          setSelectedProduct(null);
+          setShowCustomProductForm(false);
+          setProductModal(true);
+          customProductForm.resetFields();
+          setProductQty(1);
+          setCustomProductIsService(false);
+        }}
+        bodyStyle={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <div>
+          <Text strong>{selectedProduct ? selectedProduct.name : 'Select Product'}</Text>
+          <div style={{ fontSize: 12, color: '#888' }}>
+            Price: R{(selectedProduct?.unit_price || 0).toFixed(2)}{' '}
+            {selectedProduct?.is_service ? '(Service)' : ''}
           </div>
+          {selectedProduct && (
+            <div style={{ fontSize: 12, color: '#888' }}>
+              Stock: {selectedProduct.stock_quantity ?? 0} {selectedProduct.unit || ''}
+            </div>
+          )}
+        </div>
+        <ShoppingCartOutlined />
+      </Card>
 
-          <Divider style={{ margin: '16px 0' }} />
-          <div style={{ textAlign: 'center', marginBottom: 12 }}>
-            <Text strong>Total: R{total.toFixed(2)}</Text>
-          </div>
+      {/* Quantity & Add to Cart */}
+      <Row gutter={6} align="middle" style={{ marginBottom: 10 }}>
+        <Col>
+          <Button
+            size="small"
+            onClick={() => setProductQty((q) => Math.max(1, q - 1))}
+            disabled={
+              !isAuthenticated || isLoading || isAddingCustomProduct || (!selectedProduct && !showCustomProductForm)
+            }
+          >
+            -
+          </Button>
+        </Col>
+        <Col>
+          <InputNumber
+            min={1}
+            value={productQty}
+            onChange={(value) => setProductQty(value ?? 1)}
+            style={{ width: 60 }}
+            disabled={
+              !isAuthenticated || isLoading || isAddingCustomProduct || (!selectedProduct && !showCustomProductForm)
+            }
+          />
+        </Col>
+        <Col>
+          <Button
+            size="small"
+            onClick={() => {
+              const max = selectedProduct?.stock_quantity ?? Infinity;
+              setProductQty((q) => Math.min(q + 1, max));
+            }}
+            disabled={
+              !isAuthenticated || isLoading || isAddingCustomProduct || (!selectedProduct && !showCustomProductForm)
+            }
+          >
+            +
+          </Button>
+        </Col>
+        <Col>
           <Button
             type="primary"
-            block
-            onClick={handleSubmit}
+            onClick={addToCart}
             disabled={
               !isAuthenticated ||
               isLoading ||
-              cart.length === 0 ||
-              (paymentType === 'Cash' && amountPaid < total) ||
-              (paymentType === 'Credit' && !selectedCustomer)
+              isAddingCustomProduct ||
+              (!selectedProduct && !showCustomProductForm) ||
+              (showCustomProductForm && !customProductForm.getFieldValue('customProductName')?.trim())
             }
           >
-            Submit Sale
+            Add to Cart
           </Button>
-        </Card>
+        </Col>
+      </Row>
 
-        {/* ----------- Modals ----------- */}
-        <Modal
-          open={customerModal}
-          onCancel={() => {
-            setCustomerModal(false);
-            setShowNewCustomer(false);
-          }}
-          footer={null}
-          title="Select Customer"
-        >
-          <Input
-            placeholder="Search"
-            value={customerSearch}
-            onChange={(e) => setCustomerSearch(e.target.value)}
-            style={{ marginBottom: 10 }}
-            disabled={!isAuthenticated || isLoading}
+      {/* Cart */}
+      <Card title="Cart" style={{ marginBottom: 14 }}>
+        {isLoading && (
+          <Spin tip="Loading products and customers..." style={{ display: 'block', margin: '20px auto' }} />
+        )}
+        {!isLoading && screens.md ? (
+          <Table
+            dataSource={cart}
+            rowKey="id"
+            pagination={false}
+            columns={[
+              { title: 'Product', dataIndex: 'name' },
+              { title: 'Qty', dataIndex: 'quantity' },
+              { title: 'Price', dataIndex: 'unit_price', render: (p: number) => `R${p.toFixed(2)}` },
+              { title: 'Total', render: (_: any, r: any) => `R${r.subtotal.toFixed(2)}` },
+              {
+                title: 'Action',
+                render: (_: any, r: any) => (
+                  <Button danger size="small" onClick={() => removeFromCart(r.id)} disabled={!isAuthenticated}>
+                    Remove
+                  </Button>
+                ),
+              },
+            ]}
+            summary={() => (
+              <Table.Summary.Row>
+                <Table.Summary.Cell colSpan={3}>Total</Table.Summary.Cell>
+                <Table.Summary.Cell>R{total.toFixed(2)}</Table.Summary.Cell>
+                <Table.Summary.Cell />
+              </Table.Summary.Row>
+            )}
           />
-          <div style={{ maxHeight: 270, overflowY: 'auto' }}>
-            {customers
-              .filter(
-                (c) =>
-                  c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
-                  c.phone?.includes(customerSearch) ||
-                  c.email?.toLowerCase().includes(customerSearch.toLowerCase()),
-              )
-              .map((c) => (
-                <Card
-                  key={c.id}
-                  style={{ marginBottom: 7, cursor: 'pointer' }}
-                  onClick={() => {
-                    setSelectedCustomer(c);
-                    setCustomerModal(false);
-                  }}
-                  size="small"
-                  bodyStyle={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                  }}
-                >
-                  <div>
-                    <Text strong>{c.name}</Text>
-                    <div style={{ fontSize: 13, color: '#888' }}>{c.phone}</div>
-                    <div style={{ fontSize: 13, color: '#888' }}>{c.email}</div>
-                    {creditScoreCache[c.id] && (
-                      <div style={{ marginTop: 6 }}>
-                        <Tag color={creditScoreCache[c.id].color}>
-                          {`Score: ${creditScoreCache[c.id].score} (${creditScoreCache[c.id].label})`}
-                        </Tag>
-                      </div>
-                    )}
-                  </div>
-                </Card>
-              ))}
+        ) : !isLoading && cart.length === 0 ? (
+          <Text type="secondary">Cart is empty</Text>
+        ) : (
+          !isLoading &&
+          cart.map((item) => (
+            <Card key={item.id} size="small" style={{ marginBottom: 6 }}>
+              <Row justify="space-between" align="middle">
+                <Col>
+                  <Text strong>{item.name}</Text>{' '}
+                  <Tag>
+                    {item.quantity} x R{item.unit_price.toFixed(2)}{' '}
+                  </Tag>
+                  <div>Total: R{item.subtotal.toFixed(2)}</div>
+                  {String(item.id).startsWith('custom-') && (
+                    <div style={{ fontSize: 12, color: '#999' }}>custom item</div>
+                  )}
+                </Col>
+                <Col>
+                  <Button size="small" danger onClick={() => removeFromCart(item.id)} disabled={!isAuthenticated}>
+                    Remove
+                  </Button>
+                </Col>
+              </Row>
+            </Card>
+          ))
+        )}
+      </Card>
+
+      {/* Payment and Submit */}
+      <Card>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 150 }}>
+            <div style={{ marginBottom: 4 }}>
+              <Text strong>Payment Method</Text>
+            </div>
+            <Select
+              value={paymentType}
+              onChange={(value) => {
+                setPaymentType(value);
+                if (value !== 'Cash') setAmountPaid(0);
+                if (value !== 'Credit') setDueDate(null);
+                if (value !== 'Bank') setBankName(null);
+              }}
+              style={{ width: '100%' }}
+              disabled={!isAuthenticated || isLoading}
+            >
+              <Option value="Cash">Cash</Option>
+              <Option value="Bank">Bank</Option>
+              <Option value="Credit">Credit</Option>
+            </Select>
           </div>
-          {!showNewCustomer ? (
+
+          {paymentType === 'Cash' && (
+            <div style={{ flex: 1, minWidth: 150 }}>
+              <div style={{ marginBottom: 4 }}>
+                <Text>Amount Paid</Text>
+              </div>
+              <InputNumber
+                min={0}
+                value={amountPaid}
+                onChange={(value) => setAmountPaid(value ?? 0)}
+                style={{ width: '100%' }}
+                disabled={!isAuthenticated || isLoading}
+              />
+              <div style={{ marginTop: 4 }}>
+                <Text strong>
+                  Change:&nbsp;
+                  <span style={{ color: change < 0 ? 'red' : 'green' }}>
+                    {change < 0 ? 'Insufficient' : `R${change.toFixed(2)}`}
+                  </span>
+                </Text>
+              </div>
+            </div>
+          )}
+
+          {paymentType === 'Bank' && (
+            <div style={{ flex: 1, minWidth: 150 }}>
+              <div style={{ marginBottom: 4 }}>
+                <Text>Bank Name</Text>
+              </div>
+              <Input
+                placeholder="e.g., FNB, ABSA"
+                value={bankName || ''}
+                onChange={(e) => setBankName(e.target.value)}
+                style={{ width: '100%' }}
+                disabled={!isAuthenticated || isLoading}
+              />
+            </div>
+          )}
+
+          {paymentType === 'Credit' && (
+            <div style={{ flex: 1, minWidth: 150 }}>
+              <div style={{ marginBottom: 4 }}>
+                <Text>Due Date</Text>
+              </div>
+              <Input
+                type="date"
+                value={dueDate || ''}
+                onChange={(e) => setDueDate(e.target.value)}
+                style={{ width: '100%' }}
+                disabled={!isAuthenticated || isLoading}
+              />
+              {selectedCustomer && (
+                <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {selectedCustomer.id && creditScoreCache[selectedCustomer.id] && (
+                    <Tag color={creditScoreCache[selectedCustomer.id].color}>
+                      {`Score: ${creditScoreCache[selectedCustomer.id].score} (${creditScoreCache[selectedCustomer.id].label})`}
+                    </Tag>
+                  )}
+                  <Text type="warning" style={{ color: 'orange' }}>
+                    Credit selected. Please review customer's score and limit.
+                  </Text>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <Divider style={{ margin: '16px 0' }} />
+        <div style={{ textAlign: 'center', marginBottom: 12 }}>
+          <Text strong>Total: R{total.toFixed(2)}</Text>
+        </div>
+        <Button
+          type="primary"
+          block
+          onClick={handleSubmit}
+          disabled={
+            !isAuthenticated ||
+            isLoading ||
+            cart.length === 0 ||
+            (paymentType === 'Cash' && amountPaid < total) ||
+            (paymentType === 'Credit' && !selectedCustomer)
+          }
+        >
+          Submit Sale
+        </Button>
+      </Card>
+
+      {/* ----------- Modals ----------- */}
+      <Modal
+        open={customerModal}
+        onCancel={() => {
+          setCustomerModal(false);
+          setShowNewCustomer(false);
+        }}
+        footer={null}
+        title="Select Customer"
+      >
+        <Input
+          placeholder="Search"
+          value={customerSearch}
+          onChange={(e) => setCustomerSearch(e.target.value)}
+          style={{ marginBottom: 10 }}
+          disabled={!isAuthenticated || isLoading}
+        />
+        <div style={{ maxHeight: 270, overflowY: 'auto' }}>
+          {customers
+            .filter(
+              (c) =>
+                c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
+                c.phone?.includes(customerSearch) ||
+                c.email?.toLowerCase().includes(customerSearch.toLowerCase()),
+            )
+            .map((c) => (
+              <Card
+                key={c.id}
+                style={{ marginBottom: 7, cursor: 'pointer' }}
+                onClick={() => {
+                  setSelectedCustomer(c);
+                  setCustomerModal(false);
+                }}
+                size="small"
+                bodyStyle={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+              >
+                <div>
+                  <Text strong>{c.name}</Text>
+                  <div style={{ fontSize: 13, color: '#888' }}>{c.phone}</div>
+                  <div style={{ fontSize: 13, color: '#888' }}>{c.email}</div>
+                  {creditScoreCache[c.id] && (
+                    <div style={{ marginTop: 6 }}>
+                      <Tag color={creditScoreCache[c.id].color}>
+                        {`Score: ${creditScoreCache[c.id].score} (${creditScoreCache[c.id].label})`}
+                      </Tag>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ))}
+        </div>
+        {!showNewCustomer ? (
+          <Button
+            block
+            type="dashed"
+            icon={<PlusOutlined />}
+            onClick={() => setShowNewCustomer(true)}
+            disabled={!isAuthenticated || isLoading}
+          >
+            Add New Customer
+          </Button>
+        ) : (
+          <Form form={newCustomerForm} onFinish={handleAddCustomer} layout="vertical" style={{ marginTop: 12 }}>
+            <Form.Item name="name" label="Full Name" rules={[{ required: true }]}>
+              <Input disabled={!isAuthenticated || isLoading} />
+            </Form.Item>
+            <Form.Item name="phone" label="Phone Number" rules={[{ required: true }]}>
+              <Input disabled={!isAuthenticated || isLoading} />
+            </Form.Item>
+            <Form.Item name="email" label="Email (Optional)" rules={[{ type: 'email', message: 'Please enter a valid email!' }]}>
+              <Input disabled={!isAuthenticated || isLoading} />
+            </Form.Item>
+            <Form.Item name="address" label="Address (Optional)">
+              <Input.TextArea rows={2} disabled={!isAuthenticated || isLoading} />
+            </Form.Item>
+            <Form.Item name="taxId" label="Tax ID / VAT Number (Optional)">
+              <Input disabled={!isAuthenticated || isLoading} />
+            </Form.Item>
+            <Button htmlType="submit" type="primary" block disabled={!isAuthenticated || isLoading}>
+              Save & Select
+            </Button>
+          </Form>
+        )}
+      </Modal>
+
+      <Modal
+        open={productModal}
+        onCancel={() => {
+          setProductModal(false);
+          setShowCustomProductForm(false);
+          setSelectedProduct(null);
+          setProductQty(1);
+          customProductForm.resetFields();
+          setCustomProductIsService(false);
+        }}
+        footer={null}
+        title="Select Product"
+      >
+        {!showCustomProductForm ? (
+          <>
+            <Input
+              placeholder="Search existing products"
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+              style={{ marginBottom: 10 }}
+              disabled={!isAuthenticated || isLoading}
+            />
+            <div style={{ maxHeight: 270, overflowY: 'auto', marginBottom: 10 }}>
+              {products.length === 0 ? (
+                <Text type="secondary">
+                  No products found. {isOnline ? 'Check your API endpoint.' : 'You are offline and have no cached products.'}
+                </Text>
+              ) : (
+                products
+                  .filter(
+                    (p) =>
+                      p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
+                      p.sku?.toLowerCase().includes(productSearch.toLowerCase()),
+                  )
+                  .map((p) => (
+                    <Card
+                      key={p.id}
+                      style={{ marginBottom: 7, cursor: 'pointer' }}
+                      onClick={() => {
+                        setSelectedProduct(p);
+                        setProductQty(1);
+                        setProductModal(false);
+                      }}
+                      size="small"
+                      bodyStyle={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <div>
+                        <Text strong>{p.name}</Text>
+                        <div style={{ fontSize: 13, color: '#888' }}>
+                          Price: R
+                          {typeof p.unit_price === 'number'
+                            ? p.unit_price.toFixed(2)
+                            : parseFloat(p.unit_price as any).toFixed(2)}{' '}
+                          {p.is_service ? '(Service)' : ''}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#888' }}>
+                          Stock: {p.stock_quantity ?? 0} {p.unit || ''}
+                        </div>
+                        {String(p.id).startsWith('custom-') && (
+                          <div style={{ fontSize: 12, color: '#999' }}>custom item (local)</div>
+                        )}
+                      </div>
+                    </Card>
+                  ))
+              )}
+            </div>
             <Button
               block
               type="dashed"
               icon={<PlusOutlined />}
-              onClick={() => setShowNewCustomer(true)}
-              disabled={!isAuthenticated || isLoading}
+              onClick={() => {
+                setShowCustomProductForm(true);
+                customProductForm.setFieldsValue({
+                  isService: false,
+                  customProductTaxRate: '0',
+                  customProductQty: 1,
+                });
+              }}
+              disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
             >
-              Add New Customer
+              Add Custom Product/Service
             </Button>
-          ) : (
-            <Form
-              form={newCustomerForm}
-              onFinish={handleAddCustomer}
-              layout="vertical"
-              style={{ marginTop: 12 }}
+          </>
+        ) : (
+          <Form form={customProductForm} layout="vertical">
+            <Form.Item
+              name="customProductName"
+              label="Custom Product/Service Name"
+              rules={[{ required: true, message: 'Please enter product name!' }]}
             >
-              <Form.Item name="name" label="Full Name" rules={[{ required: true }]}>
-                <Input disabled={!isAuthenticated || isLoading} />
-              </Form.Item>
-              <Form.Item name="phone" label="Phone Number" rules={[{ required: true }]}>
-                <Input disabled={!isAuthenticated || isLoading} />
-              </Form.Item>
-              <Form.Item
-                name="email"
-                label="Email (Optional)"
-                rules={[{ type: 'email', message: 'Please enter a valid email!' }]}
-              >
-                <Input disabled={!isAuthenticated || isLoading} />
-              </Form.Item>
-              <Form.Item name="address" label="Address (Optional)">
-                <Input.TextArea rows={2} disabled={!isAuthenticated || isLoading} />
-              </Form.Item>
-              <Form.Item name="taxId" label="Tax ID / VAT Number (Optional)">
-                <Input disabled={!isAuthenticated || isLoading} />
-              </Form.Item>
-              <Button htmlType="submit" type="primary" block disabled={!isAuthenticated || isLoading}>
-                Save & Select
-              </Button>
-            </Form>
-          )}
-        </Modal>
-
-        <Modal
-          open={productModal}
-          onCancel={() => {
-            setProductModal(false);
-            setShowCustomProductForm(false);
-            setSelectedProduct(null);
-            setProductQty(1);
-            customProductForm.resetFields();
-            setCustomProductIsService(false);
-          }}
-          footer={null}
-          title="Select Product"
-        >
-          {!showCustomProductForm ? (
-            <>
               <Input
-                placeholder="Search existing products"
-                value={productSearch}
-                onChange={(e) => setProductSearch(e.target.value)}
-                style={{ marginBottom: 10 }}
-                disabled={!isAuthenticated || isLoading}
+                placeholder="E.g., Custom Repair, Consultation Fee"
+                disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
               />
-              <div style={{ maxHeight: 270, overflowY: 'auto', marginBottom: 10 }}>
-                {products.length === 0 ? (
-                  <Text type="secondary">No products found. {isOnline ? 'Check your API endpoint.' : 'You are offline and have no cached products.'}</Text>
-                ) : (
-                  products
-                    .filter(
-                      (p) =>
-                        p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
-                        p.sku?.toLowerCase().includes(productSearch.toLowerCase()),
-                    )
-                    .map((p) => (
-                      <Card
-                        key={p.id}
-                        style={{ marginBottom: 7, cursor: 'pointer' }}
-                        onClick={() => {
-                          setSelectedProduct(p);
-                          setProductQty(1);
-                          setProductModal(false);
-                        }}
-                        size="small"
-                        bodyStyle={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                        }}
-                      >
-                        <div>
-                          <Text strong>{p.name}</Text>
-                          <div style={{ fontSize: 13, color: '#888' }}>
-                            Price: R
-                            {typeof p.unit_price === 'number'
-                              ? p.unit_price.toFixed(2)
-                              : parseFloat(p.unit_price as any).toFixed(2)}{' '}
-                            {p.is_service ? '(Service)' : ''}
-                          </div>
-                          <div style={{ fontSize: 13, color: '#888' }}>
-                            Stock: {p.stock_quantity ?? 0} {p.unit || ''}
-                          </div>
-                          {String(p.id).startsWith('custom-') && (
-                            <div style={{ fontSize: 12, color: '#999' }}>custom item (local)</div>
-                          )}
-                        </div>
-                      </Card>
-                    ))
-                )}
-              </div>
-              <Button
-                block
-                type="dashed"
-                icon={<PlusOutlined />}
-                onClick={() => {
-                  setShowCustomProductForm(true);
-                  customProductForm.setFieldsValue({
-                    isService: false,
-                    customProductTaxRate: '0',
-                    customProductQty: 1, // NEW default qty
-                  });
-                }}
+            </Form.Item>
+
+            <Form.Item
+              name="customProductQty"
+              label="Quantity"
+              rules={[{ required: true, message: 'Please enter quantity!' }]}
+              initialValue={1}
+            >
+              <InputNumber
+                min={1}
+                style={{ width: '100%' }}
                 disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-              >
-                Add Custom Product/Service
-              </Button>
-            </>
-          ) : (
-            <Form form={customProductForm} layout="vertical">
-              <Form.Item
-                name="customProductName"
-                label="Custom Product/Service Name"
-                rules={[{ required: true, message: 'Please enter product name!' }]}
-              >
-                <Input
-                  placeholder="E.g., Custom Repair, Consultation Fee"
-                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-                />
-              </Form.Item>
+              />
+            </Form.Item>
 
-              {/* NEW: Quantity inside custom form */}
-              <Form.Item
-                name="customProductQty"
-                label="Quantity"
-                rules={[{ required: true, message: 'Please enter quantity!' }]}
-                initialValue={1}
-              >
-                <InputNumber
-                  min={1}
-                  style={{ width: '100%' }}
-                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-                />
-              </Form.Item>
-
-              <Form.Item
-                name="customProductUnitPrice"
-                label="Unit Price"
-                rules={[
-                  { required: true, message: 'Please enter unit price!' },
-                  { type: 'number', min: 0.01, message: 'Price must be positive!' },
-                ]}
-              >
-                <InputNumber
-                  min={0.01}
-                  step={0.01}
-                  style={{ width: '100%' }}
-                  formatter={(value) => `R ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                  parser={(value) => (value || '').replace(/R\s?|(,*)/g, '') as unknown as number}
-                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-                />
-              </Form.Item>
-
-              <Form.Item name="customProductDescription" label="Description (Optional)">
-                <Input.TextArea
-                  rows={2}
-                  placeholder="Brief description of the custom item"
-                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-                />
-              </Form.Item>
-
-              <Form.Item
-                name="isService"
-                label="Type"
-                rules={[{ required: true, message: 'Please select item type!' }]}
-                initialValue={false}
-              >
-                <Select
-                  style={{ width: '100%' }}
-                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-                  onChange={(value: boolean) => setCustomProductIsService(value)}
-                >
-                  <Option value={false}>Product</Option>
-                  <Option value={true}>Service</Option>
-                </Select>
-              </Form.Item>
-
-              <Form.Item
-                name="customProductTaxRate"
-                label="Tax Rate"
-                required
-                initialValue="0"
-              >
-                <Select
-                  style={{ width: '100%' }}
-                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-                >
-                  <Option value="0">0%</Option>
-                  <Option value="0.15">15%</Option>
-                </Select>
-              </Form.Item>
-
-              <Button
-                type="primary"
-                block
-                onClick={addToCart}
-                disabled={
-                  !isAuthenticated ||
-                  isLoading ||
-                  isAddingCustomProduct
-                }
-              >
-                Add to Cart (Keep Open)
-              </Button>
-              <Button
-                block
-                type="default"
-                style={{ marginTop: 8 }}
-                onClick={() => {
-                  setShowCustomProductForm(false);
-                  customProductForm.resetFields();
-                  setCustomProductIsService(false);
-                }}
+            <Form.Item
+              name="customProductUnitPrice"
+              label="Unit Price"
+              rules={[
+                { required: true, message: 'Please enter unit price!' },
+                { type: 'number', min: 0.01, message: 'Price must be positive!' },
+              ]}
+            >
+              <InputNumber
+                min={0.01}
+                step={0.01}
+                style={{ width: '100%' }}
+                formatter={(value) => `R ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                parser={(value) => (value || '').replace(/R\s?|(,*)/g, '') as unknown as number}
                 disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
+              />
+            </Form.Item>
+
+            <Form.Item name="customProductDescription" label="Description (Optional)">
+              <Input.TextArea
+                rows={2}
+                placeholder="Brief description of the custom item"
+                disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
+              />
+            </Form.Item>
+
+            <Form.Item
+              name="isService"
+              label="Type"
+              rules={[{ required: true, message: 'Please select item type!' }]}
+              initialValue={false}
+            >
+              <Select
+                style={{ width: '100%' }}
+                disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
+                onChange={(value: boolean) => setCustomProductIsService(value)}
               >
-                Back to Existing Products
-              </Button>
-            </Form>
-          )}
-        </Modal>
-      </div>
-    </>
-  );
+                <Option value={false}>Product</Option>
+                <Option value={true}>Service</Option>
+              </Select>
+            </Form.Item>
+
+            <Form.Item name="customProductTaxRate" label="Tax Rate" required initialValue="0">
+              <Select style={{ width: '100%' }} disabled={!isAuthenticated || isLoading || isAddingCustomProduct}>
+                <Option value="0">0%</Option>
+                <Option value="0.15">15%</Option>
+              </Select>
+            </Form.Item>
+
+            <Button type="primary" block onClick={addToCart} disabled={!isAuthenticated || isLoading || isAddingCustomProduct}>
+              Add to Cart (Keep Open)
+            </Button>
+            <Button
+              block
+              type="default"
+              style={{ marginTop: 8 }}
+              onClick={() => {
+                setShowCustomProductForm(false);
+                customProductForm.resetFields();
+                setCustomProductIsService(false);
+              }}
+              disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
+            >
+              Back to Existing Products
+            </Button>
+          </Form>
+        )}
+      </Modal>
+    </div>
+  </>
+);
 }

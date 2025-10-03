@@ -1,5 +1,4 @@
-// src/components/profile/ProfileForm.tsx
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -13,13 +12,75 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Camera, Save, Upload, Trash2, Loader2, Image as ImageIcon, Shield } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
+import {
+  Plus,
+  Upload,
+  Trash2,
+  Loader2,
+  Image as ImageIcon,
+  Shield,
+  Edit3,
+  Building2,
+  ToggleLeft,
+  ToggleRight,
+  X,
+} from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '../../AuthPage';
 
 // --- Define API Base URL ---
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 // --- End Define API Base URL ---
+
+type Branch = {
+  id: string;
+  company_user_id: string;
+  code: string;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  province?: string | null;
+  postal_code?: string | null;
+  country?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type BranchForm = {
+  code: string;
+  name: string;
+  phone?: string;
+  email?: string;
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  province?: string;
+  postal_code?: string;
+  country?: string;
+};
 
 export function ProfileForm() {
   const { isAuthenticated } = useAuth();
@@ -58,6 +119,28 @@ export function ProfileForm() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [logoBusy, setLogoBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // ===== Branches state =====
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [branchModalOpen, setBranchModalOpen] = useState(false);
+  const [branchBusy, setBranchBusy] = useState(false);
+  const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
+  const [branchForm, setBranchForm] = useState<BranchForm>({
+    code: '',
+    name: '',
+    phone: '',
+    email: '',
+    address_line1: '',
+    address_line2: '',
+    city: '',
+    province: '',
+    postal_code: '',
+    country: '',
+  });
+  const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; id?: string }>({
+    open: false,
+  });
 
   // ---- helpers ----
   const alertErr = (msg: string) =>
@@ -121,6 +204,34 @@ export function ProfileForm() {
       }
     };
     fetchProfile();
+  }, [isAuthenticated, token]);
+
+  // Fetch branches for this company
+  const loadBranches = async () => {
+    if (!isAuthenticated || !token) return;
+    setBranchesLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/branches`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || 'Failed to load branches');
+      }
+      const data: Branch[] = await res.json();
+      setBranches(data || []);
+    } catch (e: any) {
+      console.error('[branches] load error:', e);
+      alertErr(e?.message || 'Failed to load branches');
+    } finally {
+      setBranchesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAuthenticated && token) {
+      loadBranches();
+    }
   }, [isAuthenticated, token]);
 
   const handleChange = (field: string, value: string) => {
@@ -231,7 +342,6 @@ export function ProfileForm() {
       }
 
       alert('Role changed to user. For safety, please log in again.');
-      // Optional: force re-login so permissions refresh immediately.
       localStorage.removeItem('token');
       window.location.href = '/login';
     } catch (e: any) {
@@ -242,7 +352,7 @@ export function ProfileForm() {
     }
   };
 
-  // ===== Logo handlers (mirror documents flow) =====
+  // ===== Logo handlers =====
   const uploadLogo = async (file: File) => {
     if (!isAuthenticated || !token) {
       alert('You are not authenticated.');
@@ -295,6 +405,117 @@ export function ProfileForm() {
     }
   };
 
+  // ===== Branch CRUD handlers =====
+  const resetBranchForm = () => {
+    setBranchForm({
+      code: '',
+      name: '',
+      phone: '',
+      email: '',
+      address_line1: '',
+      address_line2: '',
+      city: '',
+      province: '',
+      postal_code: '',
+      country: '',
+    });
+  };
+
+  const openCreateBranch = () => {
+    setEditingBranch(null);
+    resetBranchForm();
+    setBranchModalOpen(true);
+  };
+
+  const openEditBranch = (b: Branch) => {
+    setEditingBranch(b);
+    setBranchForm({
+      code: b.code || '',
+      name: b.name || '',
+      phone: b.phone || '',
+      email: b.email || '',
+      address_line1: b.address_line1 || '',
+      address_line2: b.address_line2 || '',
+      city: b.city || '',
+      province: b.province || '',
+      postal_code: b.postal_code || '',
+      country: b.country || '',
+    });
+    setBranchModalOpen(true);
+  };
+
+  const saveBranch = async () => {
+    if (!isAuthenticated || !token) return;
+    if (!branchForm.code?.trim() || !branchForm.name?.trim()) {
+      alert('Code and Name are required.');
+      return;
+    }
+    setBranchBusy(true);
+    try {
+      const method = editingBranch ? 'PUT' : 'POST';
+      const url = editingBranch
+        ? `${API_BASE_URL}/api/branches/${editingBranch.id}`
+        : `${API_BASE_URL}/api/branches`;
+      const res = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(branchForm),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || 'Failed to save branch');
+      }
+      setBranchModalOpen(false);
+      await loadBranches();
+    } catch (e: any) {
+      alertErr(e?.message || 'Failed to save branch');
+    } finally {
+      setBranchBusy(false);
+    }
+  };
+
+  const toggleActive = async (b: Branch) => {
+    if (!isAuthenticated || !token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/branches/${b.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ is_active: !b.is_active }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || 'Failed to update branch');
+      }
+      await loadBranches();
+    } catch (e: any) {
+      alertErr(e?.message || 'Failed to update branch');
+    }
+  };
+
+  const deleteBranch = async (id?: string) => {
+    if (!id || !isAuthenticated || !token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/branches/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || 'Failed to delete branch');
+      }
+      setConfirmDelete({ open: false, id: undefined });
+      await loadBranches();
+    } catch (e: any) {
+      alertErr(e?.message || 'Failed to delete branch');
+    }
+  };
+
   if (loading) return <Skeleton className="h-[400px] w-full max-w-4xl mx-auto" />;
 
   return (
@@ -303,10 +524,6 @@ export function ProfileForm() {
       <Card>
         <CardHeader><CardTitle>Personal Information</CardTitle></CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex items-center space-x-4">
-
-
-          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="firstName">First Name</Label>
@@ -355,7 +572,7 @@ export function ProfileForm() {
         </CardContent>
       </Card>
 
-      {/* Company Logo (simple, like documents) */}
+      {/* Company Logo */}
       <Card>
         <CardHeader><CardTitle>Company Logo</CardTitle></CardHeader>
         <CardContent className="space-y-4">
@@ -396,6 +613,82 @@ export function ProfileForm() {
           <p className="text-xs text-muted-foreground">
             Supported: PNG, JPG, WEBP, SVG. Max 5 MB.
           </p>
+        </CardContent>
+      </Card>
+
+      {/* Branches Manager */}
+      <Card>
+        <CardHeader className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Building2 className="h-5 w-5" /> Branches
+          </CardTitle>
+          <Button onClick={openCreateBranch}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Branch
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {branchesLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : branches.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No branches yet. Click “Add Branch” to create your first branch.</div>
+          ) : (
+            <div className="grid gap-3">
+              {branches.map((b) => (
+                <div
+                  key={b.id}
+                  className="border rounded-lg p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{b.name}</span>
+                      <Badge variant={b.is_active ? 'default' : 'secondary'}>
+                        {b.is_active ? 'Active' : 'Inactive'}
+                      </Badge>
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      Code: {b.code}
+                      {b.city ? ` • ${b.city}` : ''}{b.province ? `, ${b.province}` : ''}
+                    </div>
+                    {b.address_line1 ? (
+                      <div className="text-xs text-muted-foreground">
+                        {b.address_line1}{b.address_line2 ? `, ${b.address_line2}` : ''}{b.postal_code ? `, ${b.postal_code}` : ''}
+                      </div>
+                    ) : null}
+                    <div className="text-xs text-muted-foreground">
+                      {b.phone ? `Tel: ${b.phone}` : ''}{b.phone && b.email ? ' • ' : ''}{b.email ? `Email: ${b.email}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="secondary" onClick={() => openEditBranch(b)}>
+                      <Edit3 className="h-4 w-4 mr-2" />
+                      Edit
+                    </Button>
+                    <Button variant="outline" onClick={() => toggleActive(b)}>
+                      {b.is_active ? (
+                        <>
+                          <ToggleLeft className="h-4 w-4 mr-2" />
+                          Deactivate
+                        </>
+                      ) : (
+                        <>
+                          <ToggleRight className="h-4 w-4 mr-2" />
+                          Activate
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={() => setConfirmDelete({ open: true, id: b.id })}
+                    >
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -441,8 +734,8 @@ export function ProfileForm() {
         <CardHeader><CardTitle>Role & Access</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            If you currently have <strong>admin</strong> access and want to switch to  <strong>user</strong> for this company,
-            you can upgrade yourself below. You’ll be asked for the QxAnalytix password.To get this password you need to contact the QxAnalytix team.
+            If you currently have <strong>admin</strong> access and want to switch to <strong>user</strong> for this company,
+            you can upgrade yourself below. You will be asked for the QxAnalytix password. To get this password you need to contact the QxAnalytix team.
           </p>
           <div className="flex flex-wrap gap-2">
             <Button
@@ -505,9 +798,142 @@ export function ProfileForm() {
       {/* Save Button */}
       <div className="flex justify-end">
         <Button onClick={handleSave} disabled={!isAuthenticated}>
-          <Save className="h-4 w-4 mr-2" /> Save Profile
+          <Loader2 className="h-4 w-4 mr-2 hidden group-aria-[busy=true]:inline-block animate-spin" />
+          Save Profile
         </Button>
       </div>
+
+      {/* Create/Edit Branch Modal */}
+      <Dialog open={branchModalOpen} onOpenChange={setBranchModalOpen}>
+        <DialogContent className="sm:max-w-[640px]">
+          <DialogHeader>
+            <DialogTitle>{editingBranch ? 'Edit Branch' : 'Add Branch'}</DialogTitle>
+            <DialogDescription>
+              {editingBranch ? 'Update this branch details.' : 'Create a new branch for your company.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="b-code">Code</Label>
+              <Input
+                id="b-code"
+                value={branchForm.code}
+                onChange={(e) => setBranchForm((p) => ({ ...p, code: e.target.value }))}
+                placeholder="JHB-01"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="b-name">Name</Label>
+              <Input
+                id="b-name"
+                value={branchForm.name}
+                onChange={(e) => setBranchForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder="Johannesburg Branch"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="b-phone">Phone</Label>
+              <Input
+                id="b-phone"
+                value={branchForm.phone}
+                onChange={(e) => setBranchForm((p) => ({ ...p, phone: e.target.value }))}
+                placeholder="+27 11 000 0000"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="b-email">Email</Label>
+              <Input
+                id="b-email"
+                type="email"
+                value={branchForm.email}
+                onChange={(e) => setBranchForm((p) => ({ ...p, email: e.target.value }))}
+                placeholder="branch@example.com"
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="b-addr1">Address line 1</Label>
+              <Input
+                id="b-addr1"
+                value={branchForm.address_line1}
+                onChange={(e) => setBranchForm((p) => ({ ...p, address_line1: e.target.value }))}
+                placeholder="Street address"
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="b-addr2">Address line 2</Label>
+              <Input
+                id="b-addr2"
+                value={branchForm.address_line2}
+                onChange={(e) => setBranchForm((p) => ({ ...p, address_line2: e.target.value }))}
+                placeholder="Suite, Building, etc."
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="b-city">City</Label>
+              <Input
+                id="b-city"
+                value={branchForm.city}
+                onChange={(e) => setBranchForm((p) => ({ ...p, city: e.target.value }))}
+                placeholder="City"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="b-province">Province</Label>
+              <Input
+                id="b-province"
+                value={branchForm.province}
+                onChange={(e) => setBranchForm((p) => ({ ...p, province: e.target.value }))}
+                placeholder="Province"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="b-postal">Postal Code</Label>
+              <Input
+                id="b-postal"
+                value={branchForm.postal_code}
+                onChange={(e) => setBranchForm((p) => ({ ...p, postal_code: e.target.value }))}
+                placeholder="Postal Code"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="b-country">Country</Label>
+              <Input
+                id="b-country"
+                value={branchForm.country}
+                onChange={(e) => setBranchForm((p) => ({ ...p, country: e.target.value }))}
+                placeholder="Country"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setBranchModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={saveBranch} disabled={branchBusy}>
+              {branchBusy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation */}
+      <AlertDialog open={confirmDelete.open} onOpenChange={(open) => setConfirmDelete({ open, id: open ? confirmDelete.id : undefined })}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete branch</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the branch. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => deleteBranch(confirmDelete.id)}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

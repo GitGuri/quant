@@ -14,7 +14,9 @@ import {
 } from 'antd';
 import { UserOutlined, SearchOutlined } from '@ant-design/icons';
 import { useAuth } from '../../AuthPage';
-import axios from 'axios';
+
+// 🧰 offline utilities
+import { fetchWithCache, enqueueRequest, flushQueue } from '../../offline';
 
 const { Title, Text } = Typography;
 
@@ -23,12 +25,8 @@ const debounce = (func: (...args: any[]) => void, delay: number) => {
   let timeout: NodeJS.Timeout | null;
   return function (...args: any[]) {
     const context = this;
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-    timeout = setTimeout(() => {
-      func.apply(context, args);
-    }, delay);
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(context, args), delay);
   };
 };
 
@@ -67,7 +65,6 @@ interface CreditScoreInfo {
 }
 
 const scoreFromRatio = (ratio: number): CreditScoreInfo => {
-  // Clamp ratio 0..1 and map to score
   const r = Math.max(0, Math.min(1, ratio));
   const score = Math.round(r * 100);
   if (score > 90) return { score, label: 'Excellent', color: 'green' };
@@ -80,33 +77,30 @@ const scoreFromRatio = (ratio: number): CreditScoreInfo => {
 const computeCreditScoreFromHistory = (history: SaleBackend[] | undefined | null): CreditScoreInfo => {
   if (!history || history.length === 0) return { score: 50, label: 'Unknown', color: 'default' };
 
-  let onTimePaid = 0;   // fully paid before or on the due date
-  let onTrack = 0;      // not fully paid yet but due date still in future/today
-  let lateOrOverdue = 0; // overdue or likely late
+  let onTimePaid = 0;
+  let onTrack = 0;
+  let lateOrOverdue = 0;
 
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const today = new Date().toISOString().slice(0, 10);
 
   history.forEach(sale => {
     const due = sale.due_date ? sale.due_date.slice(0, 10) : null;
     const fullyPaid = sale.remaining_credit_amount <= 0;
     if (!due) {
-      // no due date → treat fully paid as on-time unknown, unpaid as neutral
       if (fullyPaid) onTimePaid++;
       return;
     }
     if (fullyPaid) {
-      // If it's fully paid and we can't tell pay date, assume on-time if due is not in the past
       if (due >= today) onTimePaid++;
-      else lateOrOverdue++; // conservative penalty if due already past
+      else lateOrOverdue++;
     } else {
-      // Not fully paid yet
-      if (due < today) lateOrOverdue++; // overdue
-      else onTrack++; // still on track
+      if (due < today) lateOrOverdue++;
+      else onTrack++;
     }
   });
 
   const total = onTimePaid + onTrack + lateOrOverdue;
-  const ratio = total > 0 ? (onTimePaid * 1.0 + onTrack * 0.6) / total : 0.5; // weight onTrack as partial credit
+  const ratio = total > 0 ? (onTimePaid * 1.0 + onTrack * 0.6) / total : 0.5;
   return scoreFromRatio(ratio);
 };
 
@@ -125,17 +119,34 @@ const CreditPaymentsScreen: React.FC = () => {
   const [searchText, setSearchText] = useState('');
   const [customersList, setCustomersList] = useState<CustomerBackend[]>([]);
 
-  // Cache of computed scores by customer id (so we can show on Payments tab without changing backend)
+  // Cache of computed scores by customer id
   const [scoreCache, setScoreCache] = useState<Record<number, CreditScoreInfo>>({});
 
   const { isAuthenticated, user } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
 
   const getAuthHeaders = useCallback(() => {
-    return token ? { 'Authorization': `Bearer ${token}` } : {};
+    return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
 
-  // --- API Fetching Functions ---
+  // flush queued requests when connection returns
+  useEffect(() => {
+    const onOnline = () => {
+      flushQueue().then(() => {
+        if (tab === 'payments') {
+          fetchCreditSales();
+        } else {
+          if (selectedCustomer) fetchCustomerCreditHistory();
+          fetchCustomers();
+        }
+      });
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, selectedCustomer]);
+
+  // --- API Fetching (with offline cache) ---
   const fetchCustomers = useCallback(async () => {
     setLoading(true);
     try {
@@ -144,11 +155,14 @@ const CreditPaymentsScreen: React.FC = () => {
         setCustomersList([]);
         return;
       }
-      const response = await axios.get<CustomerBackend[]>(
+      const { data, fromCache } = await fetchWithCache<CustomerBackend[]>(
+        'credit:customers',
         `${API_BASE_URL}/api/customers`,
         { headers: getAuthHeaders() }
       );
-      setCustomersList(response.data.sort((a, b) => a.name.localeCompare(b.name)));
+      const list = (data || []).sort((a, b) => a.name.localeCompare(b.name));
+      setCustomersList(list);
+      if (fromCache) messageApi.info('Showing cached customers (offline).');
     } catch (error) {
       console.error('Failed to fetch customers:', error);
       messageApi.error('Failed to load customers.');
@@ -167,20 +181,17 @@ const CreditPaymentsScreen: React.FC = () => {
         setLoading(false);
         return;
       }
-      const response = await axios.get<SaleBackend[]>(
+      const { data, fromCache } = await fetchWithCache<SaleBackend[]>(
+        'credit:outstanding',
         `${API_BASE_URL}/api/credit-sales`,
         { headers: getAuthHeaders() }
       );
-
-      if (response.data.length === 0) {
-        console.warn('API returned an empty array for credit sales.');
-      }
-
-      setOutstandingCredits(response.data);
-      messageApi.success('Credit sales loaded successfully.');
+      setOutstandingCredits(data || []);
+      if (fromCache) messageApi.info('Showing cached credit sales (offline).');
+      else messageApi.success('Credit sales loaded.');
     } catch (error) {
       console.error('Failed to fetch credit sales:', error);
-      messageApi.error('Failed to load credit sales. Please check your backend API.');
+      messageApi.error('Failed to load credit sales.');
       setOutstandingCredits([]);
     } finally {
       setLoading(false);
@@ -194,22 +205,22 @@ const CreditPaymentsScreen: React.FC = () => {
     }
     setLoading(true);
     try {
-      const response = await axios.get<SaleBackend[]>(
-        `${API_BASE_URL}/api/sales/customer/${selectedCustomer.id}/credit-history`,
-        { headers: getAuthHeaders() }
-      );
+      const key = `credit:history:${selectedCustomer.id}`;
+      const url = `${API_BASE_URL}/api/sales/customer/${selectedCustomer.id}/credit-history`;
+      const { data, fromCache } = await fetchWithCache<SaleBackend[]>(key, url, { headers: getAuthHeaders() });
 
-      // The backend should now return numbers, but we'll do an extra check to be safe
-      const sanitizedData = response.data.map(item => ({
+      const sanitized = (data || []).map(item => ({
         ...item,
         total_amount: parseFloat(item.total_amount as any),
         remaining_credit_amount: parseFloat(item.remaining_credit_amount as any),
       }));
 
       setHistoryCredits(
-        sanitizedData.sort((a, b) => new Date(b.sale_date).getTime() - new Date(a.sale_date).getTime())
+        sanitized.sort((a, b) => new Date(b.sale_date).getTime() - new Date(a.sale_date).getTime())
       );
-      messageApi.success(`Credit history for ${selectedCustomer.name} loaded.`);
+
+      if (fromCache) messageApi.info('Showing cached credit history (offline).');
+      else messageApi.success(`Credit history for ${selectedCustomer.name} loaded.`);
     } catch (error) {
       console.error('Failed to fetch customer credit history:', error);
       messageApi.error(`Failed to load credit history for ${selectedCustomer.name}.`);
@@ -219,11 +230,9 @@ const CreditPaymentsScreen: React.FC = () => {
     }
   }, [selectedCustomer, isAuthenticated, token, getAuthHeaders, messageApi]);
 
-  // Use debounce to prevent excessive API calls while typing
+  // Use debounce to prevent excessive updates while typing
   const debouncedSetSearchText = useCallback(
-    debounce((text: string) => {
-      setSearchText(text);
-    }, 300),
+    debounce((text: string) => setSearchText(text), 300),
     []
   );
 
@@ -270,31 +279,55 @@ const CreditPaymentsScreen: React.FC = () => {
 
     setLoading(true);
     try {
-      // --- FIX: Corrected API endpoint to credit-payments ---
-      await axios.post(
-        `${API_BASE_URL}/api/credit-payments`,
-        {
-          customerId: selectedCredit.customer_id,
-          saleId: selectedCredit.id,
-          amountPaid: payAmount,
-          paymentMethod: 'Cash', // This could be a dynamic user selection
-          description: `Payment for Sale ID ${selectedCredit.id}`,
-          recordedBy: user?.name,
-        },
-        { headers: getAuthHeaders() }
-      );
+      const payload = {
+        customerId: selectedCredit.customer_id,
+        saleId: selectedCredit.id,
+        amountPaid: payAmount,
+        paymentMethod: 'Cash', // could be made user-selectable
+        description: `Payment for Sale ID ${selectedCredit.id}`,
+        recordedBy: user?.name,
+      };
+      const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
 
-      messageApi.success('Payment recorded successfully!');
+      // offline-first: if offline, enqueue; if online but error, also enqueue
+      if (!navigator.onLine) {
+        await enqueueRequest(`${API_BASE_URL}/api/credit-payments`, 'POST', payload, headers);
+        messageApi.info('Offline: payment queued and will sync automatically.');
+      } else {
+        const res = await fetch(`${API_BASE_URL}/api/credit-payments`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          // if server/network issue, queue it
+          await enqueueRequest(`${API_BASE_URL}/api/credit-payments`, 'POST', payload, headers);
+          messageApi.info('Network/server issue: payment queued to sync later.');
+        } else {
+          messageApi.success('Payment recorded successfully!');
+        }
+      }
+
       setModalVisible(false);
       setSelectedCredit(null);
-      // Refresh the data after a successful payment
+
+      // try to flush & refresh views
+      await flushQueue();
       fetchCreditSales();
       if (tab === 'history' && selectedCustomer) {
         fetchCustomerCreditHistory();
       }
     } catch (error) {
       console.error('Error making payment:', error);
-      messageApi.error('Failed to record payment.');
+      await enqueueRequest(`${API_BASE_URL}/api/credit-payments`, 'POST', {
+        customerId: selectedCredit.customer_id,
+        saleId: selectedCredit.id,
+        amountPaid: parseFloat(paymentAmount),
+        paymentMethod: 'Cash',
+        description: `Payment for Sale ID ${selectedCredit.id}`,
+        recordedBy: user?.name,
+      }, { 'Content-Type': 'application/json', ...getAuthHeaders() });
+      messageApi.info('Network error: payment queued to sync later.');
     } finally {
       setLoading(false);
     }
@@ -318,7 +351,7 @@ const CreditPaymentsScreen: React.FC = () => {
     cursor: 'pointer',
   };
 
-  // ===== Lazy score tag (Payments tab): fetches history per customer once and caches it =====
+  // ===== Lazy score tag (Payments tab): fetches history per customer once and caches it (with offline cache) =====
   const CreditScoreTagLazy: React.FC<{ customerId: number }> = ({ customerId }) => {
     const cached = scoreCache[customerId];
 
@@ -327,15 +360,12 @@ const CreditPaymentsScreen: React.FC = () => {
       const load = async () => {
         if (cached || !isAuthenticated || !token) return;
         try {
-          const resp = await axios.get<SaleBackend[]>(
-            `${API_BASE_URL}/api/sales/customer/${customerId}/credit-history`,
-            { headers: getAuthHeaders() }
-          );
-          const info = computeCreditScoreFromHistory(resp.data);
-          if (!ignore) {
-            setScoreCache(prev => ({ ...prev, [customerId]: info }));
-          }
-        } catch (e) {
+          const key = `credit:score:hist:${customerId}`;
+          const url = `${API_BASE_URL}/api/sales/customer/${customerId}/credit-history`;
+          const { data } = await fetchWithCache<SaleBackend[]>(key, url, { headers: getAuthHeaders() });
+          const info = computeCreditScoreFromHistory(data || []);
+          if (!ignore) setScoreCache(prev => ({ ...prev, [customerId]: info }));
+        } catch {
           if (!ignore) {
             setScoreCache(prev => ({
               ...prev,
@@ -345,14 +375,12 @@ const CreditPaymentsScreen: React.FC = () => {
         }
       };
       load();
-      return () => {
-        ignore = true;
-      };
+      return () => { ignore = true; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [customerId, isAuthenticated, token]);
 
     const display = cached ?? { score: 0, label: 'Unknown', color: 'default' };
-    return <Tag color={display.color}>{`Score: ${display.score || '—'}${display.score ? ` (${display.label})` : ''}`}</Tag>;
+    return <Tag color={(display.color as any) || 'default'}>{`Score: ${display.score || '—'}${display.score ? ` (${display.label})` : ''}`}</Tag>;
   };
 
   // ===== Derived score (History tab): uses already fetched history =====
@@ -422,7 +450,6 @@ const CreditPaymentsScreen: React.FC = () => {
                       </Col>
                       <Col style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
                         <Tag color={color}>{status}</Tag>
-                        {/* Lazy score tag per customer (cached) */}
                         <CreditScoreTagLazy customerId={credit.customer_id} />
                       </Col>
                     </Row>
@@ -441,11 +468,8 @@ const CreditPaymentsScreen: React.FC = () => {
                   marginBottom: 16,
                 }}
                 onClick={() => {
-                  if (isAuthenticated) {
-                    setCustomerModal(true);
-                  } else {
-                    messageApi.error('Authentication required to select customers.');
-                  }
+                  if (isAuthenticated) setCustomerModal(true);
+                  else messageApi.error('Authentication required to select customers.');
                 }}
               >
                 <Row align="middle">
@@ -466,7 +490,6 @@ const CreditPaymentsScreen: React.FC = () => {
                 </div>
               ) : selectedCustomer && historyCredits.length > 0 ? (
                 <>
-                  {/* Show score for the selected customer */}
                   <div style={{ marginBottom: 8, textAlign: 'right' }}>
                     <Tag color={selectedCustomerScore.color}>
                       {`Score: ${selectedCustomerScore.score} (${selectedCustomerScore.label})`}
@@ -503,7 +526,6 @@ const CreditPaymentsScreen: React.FC = () => {
                           </Col>
                           <Col style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
                             <Tag color={color}>{status}</Tag>
-                            {/* Also show score on each card for consistency */}
                             <Tag color={selectedCustomerScore.color}>
                               {`Score: ${selectedCustomerScore.score} (${selectedCustomerScore.label})`}
                             </Tag>
@@ -612,7 +634,6 @@ const CreditPaymentsScreen: React.FC = () => {
                       (Due: R{item.balance_due.toFixed(2)})
                     </Text>
                   )}
-                  {/* Optional: if you want a quick cached score in the picker too */}
                   {scoreCache[item.id] && (
                     <div style={{ marginTop: 6 }}>
                       <Tag color={scoreCache[item.id].color}>
@@ -648,16 +669,16 @@ export async function canCustomerTakeNewCredit(
   minScore: number = 60,
 ): Promise<boolean> {
   try {
-    if (!token) return true; // if not authenticated context here, don't hard-block
+    if (!token) return true;
     const headers = { Authorization: `Bearer ${token}` };
-    const resp = await axios.get<SaleBackend[]>(
-      `${API_BASE_URL}/api/sales/customer/${customerId}/credit-history`,
-      { headers }
-    );
-    const info = computeCreditScoreFromHistory(resp.data);
+    // use fetchWithCache so this also works offline (best-effort)
+    const key = `credit:guard:${customerId}`;
+    const url = `${API_BASE_URL}/api/sales/customer/${customerId}/credit-history`;
+    const { data } = await fetchWithCache<SaleBackend[]>(key, url, { headers });
+    const info = computeCreditScoreFromHistory(data || []);
     return info.score >= minScore;
   } catch {
-    // If we cannot compute the score, allow but you can flip to false if you prefer strict
+    // If we cannot compute the score, allow (flip to false for strict mode)
     return true;
   }
 }

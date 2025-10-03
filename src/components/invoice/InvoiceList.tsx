@@ -26,6 +26,8 @@ import {
   MoreVertical,
   HandCoins,
   History,
+  RefreshCcw,
+  FileText as FileTextIcon,
 } from 'lucide-react';
 import {
   Dialog,
@@ -118,6 +120,13 @@ type PaymentRow = {
   created_at?: string;
 };
 
+type PaymentsSummary = {
+  invoice_total: number;
+  total_paid: number;
+  balance_due: number;
+  status: string;
+};
+
 // raw account from your /accounts endpoint
 type RawAccount = {
   id: number;
@@ -143,6 +152,7 @@ export function InvoiceList() {
   const [showInvoiceForm, setShowInvoiceForm] = useState(false);
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+  const [selectedInvoiceSummary, setSelectedInvoiceSummary] = useState<PaymentsSummary | null>(null);
   const [invoiceToDelete, setInvoiceToDelete] = useState<string | null>(null);
   const [isLoadingList, setIsLoadingList] = useState(true);
   const [isFormLoading, setIsFormLoading] = useState(false);
@@ -158,16 +168,12 @@ export function InvoiceList() {
   const [emailSubject, setEmailSubject] = useState('');
   const [emailBody, setEmailBody] = useState('');
   const [invoiceToSendEmail, setInvoiceToSendEmail] = useState<Invoice | null>(null);
+  const [includePaymentsInEmail, setIncludePaymentsInEmail] = useState<boolean>(true);
 
   // -------- Payments state --------
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
   const [payingInvoice, setPayingInvoice] = useState<Invoice | null>(null);
-  const [paySummary, setPaySummary] = useState<{
-    invoice_total: number;
-    total_paid: number;
-    balance_due: number;
-    status: string;
-  } | null>(null);
+  const [paySummary, setPaySummary] = useState<PaymentsSummary | null>(null);
   const [payAmount, setPayAmount] = useState<number>(0);
   const [payDate, setPayDate] = useState<string>(new Date().toISOString().slice(0, 10));
   const [payNotes, setPayNotes] = useState<string>('');
@@ -179,12 +185,7 @@ export function InvoiceList() {
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [historyInvoice, setHistoryInvoice] = useState<Invoice | null>(null);
   const [historyRows, setHistoryRows] = useState<PaymentRow[]>([]);
-  const [historySummary, setHistorySummary] = useState<{
-    invoice_total: number;
-    total_paid: number;
-    balance_due: number;
-    status: string;
-  } | null>(null);
+  const [historySummary, setHistorySummary] = useState<PaymentsSummary | null>(null);
   const [reversingId, setReversingId] = useState<string | null>(null);
   const [reverseAccountId, setReverseAccountId] = useState<number | null>(null);
 
@@ -339,11 +340,16 @@ export function InvoiceList() {
       return;
     }
     try {
-      const response = await fetch(`${API_BASE_URL}/api/invoices/${invoice.id}`, {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error((await response.json()).error || 'Failed to fetch invoice details');
-      const detailedInvoice: Invoice = await response.json();
+      const [invResp, sumResp] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/invoices/${invoice.id}`, {
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        }),
+        fetch(`${API_BASE_URL}/api/invoices/${invoice.id}/payments-summary`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ]);
+      if (!invResp.ok) throw new Error((await invResp.json()).error || 'Failed to fetch invoice details');
+      const detailedInvoice: Invoice = await invResp.json();
       detailedInvoice.total_amount = parseFloat(detailedInvoice.total_amount as any) || 0;
       detailedInvoice.line_items =
         detailedInvoice.line_items?.map((item) => ({
@@ -354,15 +360,24 @@ export function InvoiceList() {
           tax_rate: parseFloat(item.tax_rate as any) || 0,
         })) || [];
       setSelectedInvoice(detailedInvoice);
+
+      if (sumResp.ok) {
+        const s: PaymentsSummary = await sumResp.json();
+        setSelectedInvoiceSummary(s);
+      } else {
+        setSelectedInvoiceSummary(null);
+      }
+
       setIsViewModalOpen(true);
     } catch (error: any) {
       toast({ title: 'Error', description: error.message || 'Failed to load invoice details.', variant: 'destructive' });
     }
   };
 
-  // ---------- Email ----------
-  const promptSendInvoiceEmail = async (invoice: Invoice) => {
+  // ---------- Email (Original) ----------
+  const promptSendInvoiceEmail = async (invoice: Invoice, preferUpdated = true) => {
     setInvoiceToSendEmail(invoice);
+    setIncludePaymentsInEmail(preferUpdated);
     setEmailProcessingInvoiceId(invoice.id);
     try {
       let customerEmail = invoice.customer_email || '';
@@ -375,11 +390,31 @@ export function InvoiceList() {
           customerEmail = customerData?.email || '';
         }
       }
+
+      // Try pull summary so the email body includes remaining balance
+      let summaryText = '';
+      try {
+        const sResp = await fetch(`${API_BASE_URL}/api/invoices/${invoice.id}/payments-summary`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (sResp.ok) {
+          const s: PaymentsSummary = await sResp.json();
+          summaryText =
+            `Amount paid to date: ${invoice.currency} ${s.total_paid.toFixed(2)}\n` +
+            `Balance due: ${invoice.currency} ${s.balance_due.toFixed(2)}\n`;
+        }
+      } catch {
+        /* ignore */
+      }
+
       setEmailRecipient(customerEmail);
-      setEmailSubject(`Invoice #${invoice.invoice_number} from ${userProfile?.company || 'Your Company'}`);
+      setEmailSubject(
+        `Invoice #${invoice.invoice_number} from ${userProfile?.company || 'Your Company'}${preferUpdated ? ' (Updated)' : ''}`
+      );
       setEmailBody(
         `Dear ${invoice.customer_name},\n\n` +
-          `Please find attached your invoice (Invoice ID: #${invoice.invoice_number}).\n\n` +
+          `Please find attached your ${preferUpdated ? 'updated ' : ''}invoice (Invoice ID: #${invoice.invoice_number}).\n\n` +
+          `${preferUpdated && summaryText ? summaryText + '\n' : ''}` +
           `Total amount: ${invoice.currency} ${invoice.total_amount.toFixed(2)}\n` +
           `Due Date: ${new Date(invoice.due_date || '').toLocaleDateString('en-ZA')}\n\n` +
           `Thank you for your business!\n\nSincerely,\n` +
@@ -409,7 +444,13 @@ export function InvoiceList() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ customerEmail: emailRecipient, subject: emailSubject, body: emailBody }),
+          body: JSON.stringify({
+            customerEmail: emailRecipient,
+            subject: emailSubject,
+            body: emailBody,
+            // 🚀 NEW: tell backend to include payments table & balance
+            include_payments: !!includePaymentsInEmail,
+          }),
         }
       );
       if (!response.ok) throw new Error((await response.json()).error || 'Failed to send invoice email.');
@@ -467,27 +508,28 @@ export function InvoiceList() {
   );
 
   // ---------- PDF ----------
-  const handleDownloadInvoice = async (invoiceId: string, invoiceNumber: string) => {
+  const handleDownloadInvoice = async (invoiceId: string, invoiceNumber: string, includeUpdated = false) => {
     if (!token) {
       toast({ title: 'Authentication Error', description: 'Log in to download PDFs.', variant: 'destructive' });
       return;
     }
     setDownloadProcessingInvoiceId(invoiceId);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/invoices/${invoiceId}/pdf`, {
+      const url = `${API_BASE_URL}/api/invoices/${invoiceId}/pdf${includeUpdated ? '?include_payments=1' : ''}`;
+      const response = await fetch(url, {
         method: 'GET',
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) throw new Error((await response.text().catch(() => '')) || 'Failed to download invoice PDF.');
       const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
+      const link = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `invoice_${invoiceNumber}.pdf`;
+      a.href = link;
+      a.download = includeUpdated ? `invoice_${invoiceNumber}_updated.pdf` : `invoice_${invoiceNumber}.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
+      window.URL.revokeObjectURL(link);
       toast({ title: 'Download Started', description: `Invoice #${invoiceNumber} is downloading...` });
     } catch (error: any) {
       toast({ title: 'Download Failed', description: error.message || 'Failed to download invoice.', variant: 'destructive' });
@@ -695,36 +737,32 @@ export function InvoiceList() {
     fetchInvoices();
   };
 
-  if (showInvoiceForm) {
-    return (
-      <div className="fixed inset-0 z-50 bg-white overflow-y-auto p-4 sm:p-6 lg:p-8">
-        <div className="max-w-4xl mx-auto">
-          <h2 className="text-2xl font-bold text-gray-800 mb-6">
-            {selectedInvoice ? 'Edit Invoice' : 'Create New Invoice'}
-          </h2>
-          <p className="text-muted-foreground mb-6">
-            {selectedInvoice
-              ? `Editing invoice ${selectedInvoice.invoice_number}.`
-              : 'Fill in the details to create a new sales invoice.'}
-          </p>
-          {isFormLoading ? (
-            <div className="flex justify-center items-center h-40">
-              <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
-              <span className="ml-2 text-gray-600">Loading invoice details...</span>
-            </div>
-          ) : (
-            <InvoiceForm
-              invoice={selectedInvoice}
-              onClose={() => setShowInvoiceForm(false)}
-              onSubmitSuccess={handleFormSubmitSuccess}
-            />
-          )}
-        </div>
+  return showInvoiceForm ? (
+    <div className="fixed inset-0 z-50 bg-white overflow-y-auto p-4 sm:p-6 lg:p-8">
+      <div className="max-w-4xl mx-auto">
+        <h2 className="text-2xl font-bold text-gray-800 mb-6">
+          {selectedInvoice ? 'Edit Invoice' : 'Create New Invoice'}
+        </h2>
+        <p className="text-muted-foreground mb-6">
+          {selectedInvoice
+            ? `Editing invoice ${selectedInvoice.invoice_number}.`
+            : 'Fill in the details to create a new sales invoice.'}
+        </p>
+        {isFormLoading ? (
+          <div className="flex justify-center items-center h-40">
+            <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+            <span className="ml-2 text-gray-600">Loading invoice details...</span>
+          </div>
+        ) : (
+          <InvoiceForm
+            invoice={selectedInvoice}
+            onClose={() => setShowInvoiceForm(false)}
+            onSubmitSuccess={handleFormSubmitSuccess}
+          />
+        )}
       </div>
-    );
-  }
-
-  return (
+    </div>
+  ) : (
     <Card>
       <CardHeader>
         <div className="flex justify-between items-center">
@@ -732,10 +770,16 @@ export function InvoiceList() {
             <FileText className="h-5 w-5" />
             Sales Invoices
           </CardTitle>
-          <Button onClick={handleNewInvoiceClick}>
-            <Plus className="h-4 w-4 mr-2" />
-            New Invoice
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={fetchInvoices} title="Refresh">
+              <RefreshCcw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+            <Button onClick={handleNewInvoiceClick}>
+              <Plus className="h-4 w-4 mr-2" />
+              New Invoice
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -797,17 +841,62 @@ export function InvoiceList() {
                           <Button variant="ghost" size="sm" onClick={() => handleEditInvoiceClick(invoice)}>
                             <Edit className="h-4 w-4" />
                           </Button>
+
+                          {/* Email original/updated */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={isLoadingProfile || emailProcessingInvoiceId === invoice.id}
+                                title="Email invoice PDF"
+                              >
+                                {emailProcessingInvoiceId === invoice.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Mail className="h-4 w-4" />
+                                )}
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuLabel>Email</DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => promptSendInvoiceEmail(invoice, false)}>
+                                <FileTextIcon className="mr-2 h-4 w-4" /> Send Original Invoice
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => promptSendInvoiceEmail(invoice, true)}>
+                                <HandCoins className="mr-2 h-4 w-4" /> Send Updated Invoice (with balance)
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+
+                          {/* Download original */}
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => promptSendInvoiceEmail(invoice)}
-                            disabled={isLoadingProfile || emailProcessingInvoiceId === invoice.id}
-                            title="Email invoice PDF"
+                            onClick={() => handleDownloadInvoice(invoice.id, invoice.invoice_number, false)}
+                            disabled={downloadProcessingInvoiceId === invoice.id}
+                            title="Download original PDF"
                           >
-                            {emailProcessingInvoiceId === invoice.id ? (
+                            {downloadProcessingInvoiceId === invoice.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
                             ) : (
-                              <Mail className="h-4 w-4" />
+                              <Download className="h-4 w-4" />
+                            )}
+                          </Button>
+
+                          {/* Download updated */}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDownloadInvoice(invoice.id, invoice.invoice_number, true)}
+                            disabled={downloadProcessingInvoiceId === invoice.id}
+                            title="Download updated PDF (with balance)"
+                          >
+                            {downloadProcessingInvoiceId === invoice.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <FileTextIcon className="h-4 w-4" />
                             )}
                           </Button>
 
@@ -939,6 +1028,29 @@ export function InvoiceList() {
                   </p>
                 </div>
               </div>
+
+              {/* 🔥 Payment Summary inline */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Invoice Total</div>
+                  <div className="font-semibold">
+                    {selectedInvoiceSummary ? `R ${selectedInvoiceSummary.invoice_total.toFixed(2)}` : '—'}
+                  </div>
+                </div>
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Paid to Date</div>
+                  <div className="font-semibold">
+                    {selectedInvoiceSummary ? `R ${selectedInvoiceSummary.total_paid.toFixed(2)}` : '—'}
+                  </div>
+                </div>
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Balance Due</div>
+                  <div className="font-semibold">
+                    {selectedInvoiceSummary ? `R ${selectedInvoiceSummary.balance_due.toFixed(2)}` : '—'}
+                  </div>
+                </div>
+              </div>
+
               {selectedInvoice.notes && (
                 <p>
                   <strong>Notes:</strong> {selectedInvoice.notes}
@@ -986,7 +1098,7 @@ export function InvoiceList() {
             </Button>
             <Button
               onClick={() =>
-                selectedInvoice && handleDownloadInvoice(selectedInvoice.id, selectedInvoice.invoice_number)
+                selectedInvoice && handleDownloadInvoice(selectedInvoice.id, selectedInvoice.invoice_number, true)
               }
               disabled={!selectedInvoice || downloadProcessingInvoiceId === selectedInvoice?.id}
             >
@@ -995,7 +1107,15 @@ export function InvoiceList() {
               ) : (
                 <Download className="h-4 w-4 mr-2" />
               )}
-              Download PDF
+              Download Updated PDF
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => selectedInvoice && promptSendInvoiceEmail(selectedInvoice, true)}
+              disabled={!selectedInvoice}
+            >
+              <Mail className="h-4 w-4 mr-2" />
+              Email Updated Invoice
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1011,12 +1131,15 @@ export function InvoiceList() {
             setEmailSubject('');
             setEmailBody('');
             setInvoiceToSendEmail(null);
+            setIncludePaymentsInEmail(true);
           }
         }}
       >
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
-            <DialogTitle>Send Invoice #{invoiceToSendEmail?.invoice_number}</DialogTitle>
+            <DialogTitle>
+              Send {includePaymentsInEmail ? 'Updated' : 'Original'} Invoice #{invoiceToSendEmail?.invoice_number}
+            </DialogTitle>
             <DialogDescription>Compose and send this invoice via email.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -1044,6 +1167,20 @@ export function InvoiceList() {
                 Body
               </Label>
               <Textarea id="body" value={emailBody} onChange={(e) => setEmailBody(e.target.value)} className="col-span-3 min-h-[150px]" />
+            </div>
+
+            {/* NEW: toggle include payments */}
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">Attachment</Label>
+              <div className="col-span-3 flex items-center gap-2">
+                <input
+                  id="include-payments"
+                  type="checkbox"
+                  checked={includePaymentsInEmail}
+                  onChange={(e) => setIncludePaymentsInEmail(e.target.checked)}
+                />
+                <Label htmlFor="include-payments">Attach updated invoice (include payments & balance)</Label>
+              </div>
             </div>
           </div>
           <DialogFooter>

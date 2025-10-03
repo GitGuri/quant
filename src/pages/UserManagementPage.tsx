@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react'; 
 import { Pencil, Trash2, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../AuthPage';
@@ -11,55 +11,34 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/components/ui/use-toast';
+import { Badge } from '@/components/ui/badge';
 
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 // Define an interface for the user data
 interface User {
-  id: string;
+  id: string;            // users.id (uuid)
   displayName: string;
   email: string;
-  // The backend now returns an array of roles
   roles: string[];
-  // Add officeCode to the user interface
   officeCode?: string;
+  // optional for display: memberships fetched lazily
+  branches?: Array<{ id: string; code: string; name: string; is_primary: boolean }>;
 }
 
-// A predefined list of roles for the select dropdowns
-const allRoles = [
-  'admin',
-  'ceo',
-  'manager',
-  'cashier',
-  //'user',
-  'accountant',
-  'pos-transact',
-  'transactions',
-  'financials',
-  'import',
-  'tasks',
-  'agent',
-  'super-agent',
-  'data-analytics',
-  'dashboard',
-  'invoice',
-  'payroll',
-  'pos-admin',
-  'projections',
-  'accounting',
-  'documents',
-  'chat',
-  'user-management',
-  'personel-setup',
-  'profile-setup',
-];
+interface Branch {
+  id: string;
+  code: string;
+  name: string;
+}
 
 export default function UserManagementPage() {
   const { isAuthenticated } = useAuth();
-  const token = localStorage.getItem('token');
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const { toast } = useToast();
 
   const [users, setUsers] = useState<User[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,34 +48,35 @@ export default function UserManagementPage() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [userToEdit, setUserToEdit] = useState<User | null>(null);
   const [editFormData, setEditFormData] = useState<Partial<User>>({});
-  // New state to manage roles during the edit process
   const [editUserRoles, setEditUserRoles] = useState<string[]>([]);
 
+  // Branch selection state for the edit modal
+  const [selectedBranchIds, setSelectedBranchIds] = useState<string[]>([]);
+  const [primaryBranchId, setPrimaryBranchId] = useState<string | null>(null);
+
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  // Initial state for new user data, now includes password and officeCode
   const [newUserData, setNewUserData] = useState({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
 
-  // Refactored to fetch users from your local backend API
+  // A predefined list of roles for the select dropdowns
+  const allRoles = [
+    'admin','ceo','manager','cashier','accountant','pos-transact','transactions','financials','import','tasks',
+    'agent','super-agent','data-analytics','dashboard','invoice','payroll','pos-admin','projections','accounting',
+    'documents','chat','user-management','personel-setup','profile-setup',
+  ];
+
   const fetchUsers = useCallback(async () => {
     if (!token) {
-      console.warn('No token found. User is not authenticated.');
       setUsers([]);
       setLoading(false);
       return;
     }
-
     setLoading(true);
     setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/users`, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       });
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       setUsers(data);
     } catch (err: any) {
@@ -107,52 +87,71 @@ export default function UserManagementPage() {
     }
   }, [token]);
 
-  // Fetch users on initial load and when the token changes
+  const fetchBranches = useCallback(async () => {
+    if (!token) return;
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/branches`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      setBranches(data || []);
+    } catch (e) {
+      console.error('Error loading branches:', e);
+    }
+  }, [token]);
+
   useEffect(() => {
     if (isAuthenticated && token) {
       fetchUsers();
+      fetchBranches();
     } else {
       setUsers([]);
+      setBranches([]);
       setLoading(false);
     }
-  }, [isAuthenticated, token, fetchUsers]);
+  }, [isAuthenticated, token, fetchUsers, fetchBranches]);
 
-  // Handler for opening the delete confirmation modal
+  // Load a single user's memberships when opening the edit modal
+  const loadUserMemberships = useCallback(async (userId: string) => {
+    if (!token) return;
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/users/${userId}/branches`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) return;
+      const data = await r.json();
+      const memberships: Array<{ branch_id: string; is_primary: boolean }> = data?.memberships || [];
+      setSelectedBranchIds(memberships.map(m => m.branch_id));
+      const primary = memberships.find(m => m.is_primary);
+      setPrimaryBranchId(primary ? primary.branch_id : null);
+    } catch (e) {
+      console.error('loadUserMemberships error', e);
+    }
+  }, [token]);
+
   const openDeleteModal = (user: User) => {
     setUserToDelete(user);
     setIsDeleteModalOpen(true);
   };
 
-  // Handler for confirming and performing user deletion via the API
   const confirmDeleteUser = async () => {
     if (!userToDelete || !token) return;
     setLoading(true);
     try {
       const response = await fetch(`${API_BASE_URL}/users/${userToDelete.id}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Authorization': `Bearer ${token}` },
       });
-
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
-
-      toast({
-        title: "User Deleted",
-        description: `User ${userToDelete.displayName} has been successfully deleted.`,
-      });
-
-      fetchUsers(); // Re-fetch to update the list
+      toast({ title: "User Deleted", description: `User ${userToDelete.displayName} has been successfully deleted.` });
+      fetchUsers();
     } catch (e: any) {
       console.error("Error deleting user:", e);
-      toast({
-        title: "Deletion Failed",
-        description: `Could not delete user: ${e.message}`,
-        variant: "destructive",
-      });
+      toast({ title: "Deletion Failed", description: `Could not delete user: ${e.message}`, variant: "destructive" });
     } finally {
       setIsDeleteModalOpen(false);
       setUserToDelete(null);
@@ -160,17 +159,13 @@ export default function UserManagementPage() {
     }
   };
 
-  // Handler for opening the edit modal
-  const openEditModal = (user: User) => {
+  const openEditModal = async (user: User) => {
     setUserToEdit(user);
-    setEditFormData({
-      id: user.id,
-      displayName: user.displayName,
-      email: user.email,
-    });
-    // --- FIX START: Deduplicate roles when setting initial state for the edit modal ---
-    setEditUserRoles(Array.from(new Set(user.roles))); // Ensure initial roles are unique
-    // --- FIX END ---
+    setEditFormData({ id: user.id, displayName: user.displayName, email: user.email });
+    setEditUserRoles(Array.from(new Set(user.roles)));
+
+    // Load current memberships
+    await loadUserMemberships(user.id);
     setIsEditModalOpen(true);
   };
 
@@ -180,67 +175,83 @@ export default function UserManagementPage() {
   };
 
   const handleRoleToggle = (role: string) => {
-    setEditUserRoles(prevRoles =>
-      prevRoles.includes(role)
-        ? prevRoles.filter(r => r !== role)
-        : [...prevRoles, role]
+    setEditUserRoles(prev =>
+      prev.includes(role) ? prev.filter(r => r !== role) : [...prev, role]
     );
   };
 
-  // Handler for saving the user's edits via the API
+  // Branch checkbox toggle
+  const toggleBranch = (branchId: string) => {
+    setSelectedBranchIds(prev => {
+      if (prev.includes(branchId)) {
+        // if removing the current primary, also clear primary
+        if (primaryBranchId === branchId) setPrimaryBranchId(null);
+        return prev.filter(id => id !== branchId);
+      }
+      return [...prev, branchId];
+    });
+  };
+
+  // Pick a primary (must also be selected)
+  const pickPrimary = (branchId: string) => {
+    if (!selectedBranchIds.includes(branchId)) {
+      // auto-select it
+      setSelectedBranchIds(prev => [...prev, branchId]);
+    }
+    setPrimaryBranchId(branchId);
+  };
+
   const saveUserEdit = async () => {
     if (!userToEdit || !token) return;
     setLoading(true);
     try {
-      // API call to update user's display name and email
+      // Update basic details
       const updateDetailsResponse = await fetch(`${API_BASE_URL}/users/${userToEdit.id}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          displayName: editFormData.displayName,
-          email: editFormData.email,
-        }),
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ displayName: editFormData.displayName, email: editFormData.email }),
       });
-
       if (!updateDetailsResponse.ok) {
         const errorData = await updateDetailsResponse.json();
         throw new Error(errorData.error || `HTTP error! status: ${updateDetailsResponse.status}`);
       }
 
-      // Ensure roles are unique before sending to backend (redundant if openEditModal is fixed, but good for robustness)
+      // Update roles (dedup)
       const uniqueRoles = Array.from(new Set(editUserRoles));
-
-      // Assuming a separate endpoint exists to handle role updates.
       const updateRolesResponse = await fetch(`${API_BASE_URL}/users/${userToEdit.id}/roles`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({ roles: uniqueRoles }), // Send deduplicated roles
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ roles: uniqueRoles }),
       });
-
       if (!updateRolesResponse.ok) {
         const errorData = await updateRolesResponse.json();
         throw new Error(errorData.error || `HTTP error! status: ${updateRolesResponse.status}`);
       }
 
-      toast({
-        title: "User Updated",
-        description: `User ${editFormData.displayName} has been successfully updated.`,
-      });
+      // Update branch memberships — require exactly one primary
+      if (!primaryBranchId) {
+        throw new Error('Please select a primary branch for this user.');
+      }
+      if (!selectedBranchIds.includes(primaryBranchId)) {
+        throw new Error('Primary branch must be in the selected branches list.');
+      }
 
-      fetchUsers(); // Re-fetch to update the list
+      const memberships = selectedBranchIds.map(id => ({ branchId: id, isPrimary: id === primaryBranchId }));
+      const r = await fetch(`${API_BASE_URL}/api/users/${userToEdit.id}/branches`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ memberships }),
+      });
+      if (!r.ok) {
+        const errorData = await r.json().catch(() => ({}));
+        throw new Error(errorData.error || `Failed to update branch memberships (${r.status})`);
+      }
+
+      toast({ title: "User Updated", description: `User ${editFormData.displayName} has been successfully updated.` });
+      await fetchUsers();
     } catch (e: any) {
       console.error("Error updating user:", e);
-      toast({
-        title: "Update Failed",
-        description: `Could not update user: ${e.message}`,
-        variant: "destructive",
-      });
+      toast({ title: "Update Failed", description: `Could not update user: ${e.message}`, variant: "destructive" });
     } finally {
       setIsEditModalOpen(false);
       setUserToEdit(null);
@@ -248,18 +259,15 @@ export default function UserManagementPage() {
     }
   };
 
-  // Handler for opening the add new user modal
   const openAddModal = () => {
     setNewUserData({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
     setIsAddModalOpen(true);
   };
 
-  // Handler for adding a new user via the API
   const addNewUser = async () => {
     if (!token) return;
     setLoading(true);
     try {
-      // Updated the payload to include officeCode
       const payload = {
         displayName: newUserData.displayName,
         email: newUserData.email,
@@ -267,34 +275,20 @@ export default function UserManagementPage() {
         role: newUserData.role,
         officeCode: newUserData.officeCode,
       };
-
       const response = await fetch(`${API_BASE_URL}/users`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(payload),
       });
-
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
-
-      toast({
-        title: "User Added",
-        description: `A new user has been successfully added.`,
-      });
-
-      fetchUsers(); // Re-fetch to update the list
+      toast({ title: "User Added", description: `A new user has been successfully added.` });
+      fetchUsers();
     } catch (e: any) {
       console.error("Error adding new user:", e);
-      toast({
-        title: "Add User Failed",
-        description: `Could not add new user: ${e.message}`,
-        variant: "destructive",
-      });
+      toast({ title: "Add User Failed", description: `Could not add new user: ${e.message}`, variant: "destructive" });
     } finally {
       setIsAddModalOpen(false);
       setLoading(false);
@@ -305,12 +299,7 @@ export default function UserManagementPage() {
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
       <Header title='User Management' />
 
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.5 }}
-        className='space-y-6'
-      >
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className='space-y-6'>
         <Card>
           <CardHeader className='flex flex-row justify-between items-center'>
             <CardTitle>User Accounts</CardTitle>
@@ -336,13 +325,14 @@ export default function UserManagementPage() {
                       <th className='text-left p-3'>Name</th>
                       <th className='text-left p-3'>Email</th>
                       <th className='text-left p-3'>Roles</th>
+                      <th className='text-left p-3'>Branches</th>
                       <th className='text-right p-3'>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {users.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="text-center py-12 text-muted-foreground">
+                        <td colSpan={5} className="text-center py-12 text-muted-foreground">
                           No users found.
                         </td>
                       </tr>
@@ -357,25 +347,23 @@ export default function UserManagementPage() {
                         >
                           <td className='p-3 font-medium'>{user.displayName}</td>
                           <td className='p-3 text-muted-foreground'>{user.email}</td>
-                          <td className='p-3 text-muted-foreground'>
-                            {/* Display roles as a comma-separated string */}
-                            {user.roles.join(', ')}
+                          <td className='p-3 text-muted-foreground'>{user.roles.join(', ')}</td>
+                          <td className='p-3'>
+                            {/* Optional: show cached memberships if you add them to list payload */}
+                            <div className="flex flex-wrap gap-1">
+                              {user.branches?.map(b => (
+                                <Badge key={b.id} variant={b.is_primary ? 'default' : 'secondary'}>
+                                  {b.code || b.name}{b.is_primary ? ' • primary' : ''}
+                                </Badge>
+                              ))}
+                            </div>
                           </td>
                           <td className='p-3 text-right'>
                             <div className='flex justify-end space-x-2'>
-                              <Button
-                                variant='ghost'
-                                size='sm'
-                                onClick={() => openEditModal(user)}
-                              >
+                              <Button variant='ghost' size='sm' onClick={() => openEditModal(user)}>
                                 <Pencil className='h-4 w-4' />
                               </Button>
-                              <Button
-                                variant='ghost'
-                                size='sm'
-                                onClick={() => openDeleteModal(user)}
-                                className='text-red-600 hover:bg-red-100'
-                              >
+                              <Button variant='ghost' size='sm' onClick={() => openDeleteModal(user)} className='text-red-600 hover:bg-red-100'>
                                 <Trash2 className='h-4 w-4' />
                               </Button>
                             </div>
@@ -417,32 +405,28 @@ export default function UserManagementPage() {
 
       {/* Edit User Modal */}
       <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
           {userToEdit && (
-            <div className='space-y-4 py-4'>
-              <Label htmlFor='edit-name'>Name</Label>
-              <Input
-                id='edit-name'
-                type='text'
-                name='displayName'
-                value={editFormData.displayName || ''}
-                onChange={handleEditFormChange}
-              />
-              <Label htmlFor='edit-email'>Email</Label>
-              <Input
-                id='edit-email'
-                type='email'
-                name='email'
-                value={editFormData.email || ''}
-                onChange={handleEditFormChange}
-              />
+            <div className='space-y-6 py-2'>
+              {/* Basic fields */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor='edit-name'>Name</Label>
+                  <Input id='edit-name' type='text' name='displayName' value={editFormData.displayName || ''} onChange={handleEditFormChange} />
+                </div>
+                <div>
+                  <Label htmlFor='edit-email'>Email</Label>
+                  <Input id='edit-email' type='email' name='email' value={editFormData.email || ''} onChange={handleEditFormChange} />
+                </div>
+              </div>
 
+              {/* Roles */}
               <div className="space-y-2">
                 <Label>Roles</Label>
-                <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-2 border rounded-md">
+                <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto p-2 border rounded-md">
                   {allRoles.map(role => (
                     <div key={role} className="flex items-center space-x-2">
                       <Checkbox
@@ -455,6 +439,45 @@ export default function UserManagementPage() {
                       </Label>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {/* Branch assignments */}
+              <div className="space-y-2">
+                <Label>Branches (select one primary)</Label>
+                <div className="border rounded-md p-2 max-h-60 overflow-y-auto">
+                  {branches.length === 0 ? (
+                    <div className="text-sm text-muted-foreground px-1 py-2">No branches yet. Create branches in Profile &gt; Branches.</div>
+                  ) : branches.map(b => {
+                    const checked = selectedBranchIds.includes(b.id);
+                    const isPrimary = primaryBranchId === b.id;
+                    return (
+                      <div key={b.id} className="flex items-center justify-between py-1 px-1">
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            id={`branch-${b.id}`}
+                            checked={checked}
+                            onCheckedChange={() => toggleBranch(b.id)}
+                          />
+                          <Label htmlFor={`branch-${b.id}`}>{b.name} <span className="text-xs text-muted-foreground">({b.code})</span></Label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name="primaryBranch"
+                            checked={isPrimary}
+                            onChange={() => pickPrimary(b.id)}
+                            disabled={!checked}
+                            aria-label="Primary"
+                          />
+                          <span className="text-xs">{isPrimary ? 'Primary' : 'Set primary'}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Tip: You can select multiple branches, but exactly one must be primary.
                 </div>
               </div>
 
@@ -476,52 +499,72 @@ export default function UserManagementPage() {
             <DialogTitle>Add New User</DialogTitle>
           </DialogHeader>
           <div className='space-y-4 py-4'>
-            <Label htmlFor='add-name'>Name</Label>
-            <Input
-              id='add-name'
-              type='text'
-              name='displayName'
-              value={newUserData.displayName}
-              onChange={(e) => setNewUserData({ ...newUserData, displayName: e.target.value })}
-              placeholder='User Name'
-            />
-            <Label htmlFor='add-email'>Email</Label>
-            <Input
-              id='add-email'
-              type='email'
-              name='email'
-              value={newUserData.email}
-              onChange={(e) => setNewUserData({ ...newUserData, email: e.target.value })}
-              placeholder='user@example.com'
-            />
-            <Label htmlFor='add-password'>Password</Label>
-            <Input
-              id='add-password'
-              type='password'
-              name='password'
-              value={newUserData.password}
-              onChange={(e) => setNewUserData({ ...newUserData, password: e.target.value })}
-              placeholder='Set a password'
-              required
-            />
+            <div>
+              <Label htmlFor='add-name'>Name</Label>
+              <Input
+                id='add-name'
+                type='text'
+                name='displayName'
+                value={newUserData.displayName}
+                onChange={(e) => setNewUserData({ ...newUserData, displayName: e.target.value })}
+                placeholder='User Name'
+              />
+            </div>
+            <div>
+              <Label htmlFor='add-email'>Email</Label>
+              <Input
+                id='add-email'
+                type='email'
+                name='email'
+                value={newUserData.email}
+                onChange={(e) => setNewUserData({ ...newUserData, email: e.target.value })}
+                placeholder='user@example.com'
+              />
+            </div>
+            <div>
+              <Label htmlFor='add-password'>Password</Label>
+              <Input
+                id='add-password'
+                type='password'
+                name='password'
+                value={newUserData.password}
+                onChange={(e) => setNewUserData({ ...newUserData, password: e.target.value })}
+                placeholder='Set a password'
+                required
+              />
+            </div>
+            <div>
+              <Label htmlFor='add-role'>Role</Label>
+              <Select
+                name='role'
+                value={newUserData.role}
+                onValueChange={(value) => setNewUserData({ ...newUserData, role: value })}
+              >
+                <SelectTrigger id='add-role'>
+                  <SelectValue placeholder='Select role' />
+                </SelectTrigger>
+                <SelectContent>
+                  {allRoles.map(role => (
+                    <SelectItem key={role} value={role}>
+                      {role}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {/* Optional legacy field; you can remove if you’re moving fully to branches */}
+            <div>
+              <Label htmlFor='add-office'>Office Code (legacy)</Label>
+              <Input
+                id='add-office'
+                type='text'
+                name='officeCode'
+                value={newUserData.officeCode}
+                onChange={(e) => setNewUserData({ ...newUserData, officeCode: e.target.value })}
+                placeholder='e.g. JHB-01'
+              />
+            </div>
 
-            <Label htmlFor='add-role'>Role</Label>
-            <Select
-              name='role'
-              value={newUserData.role}
-              onValueChange={(value) => setNewUserData({ ...newUserData, role: value })}
-            >
-              <SelectTrigger id='add-role'>
-                <SelectValue placeholder='Select role' />
-              </SelectTrigger>
-              <SelectContent>
-                {allRoles.map(role => (
-                  <SelectItem key={role} value={role}>
-                    {role}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
             <div className='flex justify-end gap-2 mt-4'>
               <Button
                 variant='outline'

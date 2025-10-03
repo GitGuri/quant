@@ -5,8 +5,10 @@ import {
 } from 'antd';
 import { DollarOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import axios from 'axios';
 import { useAuth } from '../../AuthPage';
+
+// 🔌 offline helpers
+import { fetchWithCache, enqueueRequest, flushQueue } from '../../offline';
 
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
@@ -106,7 +108,7 @@ export default function CashInScreen() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
 
-  // 1) Load tellers who made sales on bizDate (your existing endpoint)
+  // ---------- LOAD tellers (with cache) ----------
   const fetchTellers = useCallback(async () => {
     if (!isAuthenticated || !token) {
       setTellers([]);
@@ -115,21 +117,23 @@ export default function CashInScreen() {
     }
     setLoadingTellers(true);
     try {
-      const res = await axios.get<Teller[]>(
-        `${API_BASE_URL}/api/tellers`,
-        { headers: getAuthHeaders(), params: { date: bizDate.format('YYYY-MM-DD') } }
+      const dateKey = bizDate.format('YYYY-MM-DD');
+      const { data, fromCache } = await fetchWithCache<Teller[]>(
+        `cashin:tellers:${dateKey}`,
+        `${API_BASE_URL}/api/tellers?date=${encodeURIComponent(dateKey)}`,
+        { headers: getAuthHeaders() }
       );
-      setTellers(res.data || []);
-    } catch (err) {
-      console.error('Failed to fetch tellers:', err);
-      messageApi.error('Failed to load tellers.');
+      setTellers(data || []);
+      if (fromCache) messageApi.info('Showing cached tellers (offline).');
+    } catch {
       setTellers([]);
+      messageApi.error('Failed to load tellers.');
     } finally {
       setLoadingTellers(false);
     }
   }, [isAuthenticated, token, getAuthHeaders, messageApi, bizDate]);
 
-  // 2) Load expected cash map for bizDate (your existing endpoint)
+  // ---------- LOAD expected cash (with cache) ----------
   const fetchExpectedCash = useCallback(async () => {
     if (!isAuthenticated || !token) {
       setTellerExpectedCash({});
@@ -138,15 +142,13 @@ export default function CashInScreen() {
     }
     setLoadingExpectedCash(true);
     try {
-      const res = await axios.get<Record<string, any>>(
-        `${API_BASE_URL}/api/reconciliation/expected`,
-        {
-          headers: getAuthHeaders(),
-          params: { date: bizDate.format('YYYY-MM-DD') },
-        }
+      const dateKey = bizDate.format('YYYY-MM-DD');
+      const { data, fromCache } = await fetchWithCache<Record<string, any>>(
+        `cashin:expected:${dateKey}`,
+        `${API_BASE_URL}/api/reconciliation/expected?date=${encodeURIComponent(dateKey)}`,
+        { headers: getAuthHeaders() }
       );
-      // coerce numbers in map
-      const raw = res.data || {};
+      const raw = data || {};
       const coerced: Record<string, ExpectedCash> = {};
       Object.keys(raw).forEach(k => {
         coerced[k] = {
@@ -156,10 +158,10 @@ export default function CashInScreen() {
         };
       });
       setTellerExpectedCash(coerced);
-    } catch (err) {
-      console.error('Failed to fetch expected cash:', err);
-      messageApi.error('Failed to load expected cash data.');
+      if (fromCache) messageApi.info('Showing cached expected cash (offline).');
+    } catch {
       setTellerExpectedCash({});
+      messageApi.error('Failed to load expected cash data.');
     } finally {
       setLoadingExpectedCash(false);
     }
@@ -168,22 +170,21 @@ export default function CashInScreen() {
   useEffect(() => { fetchTellers(); }, [fetchTellers]);
   useEffect(() => { fetchExpectedCash(); }, [fetchExpectedCash]);
 
-  /** Drawer loaders */
+  /** Drawer loaders (with cache) */
   const fromStr = range[0].format('YYYY-MM-DD');
   const toStr = range[1].format('YYYY-MM-DD');
 
   const loadHistory = useCallback(async (tellerId: string) => {
     setHistLoading(true);
     try {
-      const res = await axios.get<{ rows: any[] }>(
-        `${API_BASE_URL}/api/reconciliation/history`,
-        { headers: getAuthHeaders(), params: { tellerId, from: fromStr, to: toStr } }
-      );
-      setHistRows((res.data?.rows || []).map(mapRecon));
-    } catch (e) {
-      console.error(e);
-      messageApi.error('Failed to load history.');
+      const key = `cashin:hist:${tellerId}:${fromStr}:${toStr}`;
+      const url = `${API_BASE_URL}/api/reconciliation/history?tellerId=${encodeURIComponent(tellerId)}&from=${encodeURIComponent(fromStr)}&to=${encodeURIComponent(toStr)}`;
+      const { data, fromCache } = await fetchWithCache<{ rows: any[] }>(key, url, { headers: getAuthHeaders() });
+      setHistRows((data?.rows || []).map(mapRecon));
+      if (fromCache) messageApi.info('History from cache (offline).');
+    } catch {
       setHistRows([]);
+      messageApi.error('Failed to load history.');
     } finally {
       setHistLoading(false);
     }
@@ -192,15 +193,14 @@ export default function CashInScreen() {
   const loadMissed = useCallback(async (tellerId: string) => {
     setMissLoading(true);
     try {
-      const res = await axios.get<{ rows: any[] }>(
-        `${API_BASE_URL}/api/reconciliation/missed-days`,
-        { headers: getAuthHeaders(), params: { tellerId, from: fromStr, to: toStr } }
-      );
-      setMissRows((res.data?.rows || []).map(mapMissed));
-    } catch (e) {
-      console.error(e);
-      messageApi.error('Failed to load missed days.');
+      const key = `cashin:miss:${tellerId}:${fromStr}:${toStr}`;
+      const url = `${API_BASE_URL}/api/reconciliation/missed-days?tellerId=${encodeURIComponent(tellerId)}&from=${encodeURIComponent(fromStr)}&to=${encodeURIComponent(toStr)}`;
+      const { data, fromCache } = await fetchWithCache<{ rows: any[] }>(key, url, { headers: getAuthHeaders() });
+      setMissRows((data?.rows || []).map(mapMissed));
+      if (fromCache) messageApi.info('Missed days from cache (offline).');
+    } catch {
       setMissRows([]);
+      messageApi.error('Failed to load missed days.');
     } finally {
       setMissLoading(false);
     }
@@ -209,23 +209,22 @@ export default function CashInScreen() {
   const loadShort = useCallback(async (tellerId: string) => {
     setShortLoading(true);
     try {
-      const res = await axios.get<{ rows: any[]; totals: any }>(
-        `${API_BASE_URL}/api/reconciliation/short-days`,
-        { headers: getAuthHeaders(), params: { tellerId, from: fromStr, to: toStr } }
-      );
-      setShortRows((res.data?.rows || []).map(mapRecon));
-      const t = res.data?.totals ?? {};
+      const key = `cashin:short:${tellerId}:${fromStr}:${toStr}`;
+      const url = `${API_BASE_URL}/api/reconciliation/short-days?tellerId=${encodeURIComponent(tellerId)}&from=${encodeURIComponent(fromStr)}&to=${encodeURIComponent(toStr)}`;
+      const { data, fromCache } = await fetchWithCache<{ rows: any[]; totals: any }>(key, url, { headers: getAuthHeaders() });
+      setShortRows((data?.rows || []).map(mapRecon));
+      const t = data?.totals ?? {};
       setShortTotals({
         days: n(t.days),
         total_expected: n(t.total_expected),
         total_counted: n(t.total_counted),
         total_shortage: n(t.total_shortage),
       });
-    } catch (e) {
-      console.error(e);
-      messageApi.error('Failed to load short days.');
+      if (fromCache) messageApi.info('Short days from cache (offline).');
+    } catch {
       setShortRows([]);
       setShortTotals({ days: 0, total_expected: 0, total_counted: 0, total_shortage: 0 });
+      messageApi.error('Failed to load short days.');
     } finally {
       setShortLoading(false);
     }
@@ -262,7 +261,24 @@ export default function CashInScreen() {
     }
   }, [range, inspectorOpen, inspectorTeller, loadHistory, loadMissed, loadShort]);
 
-  // Submit reconciliation
+  // Flush queued requests on reconnect and refresh screens
+  useEffect(() => {
+    const onOnline = () => {
+      flushQueue().then(() => {
+        fetchExpectedCash();
+        fetchTellers();
+        if (inspectorOpen && inspectorTeller) {
+          loadHistory(inspectorTeller.id);
+          loadMissed(inspectorTeller.id);
+          loadShort(inspectorTeller.id);
+        }
+      });
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [fetchExpectedCash, fetchTellers, inspectorOpen, inspectorTeller, loadHistory, loadMissed, loadShort]);
+
+  // Submit reconciliation (queued when offline)
   const handleSubmit = async () => {
     if (!isAuthenticated || !selectedTeller) {
       messageApi.error('Authentication or teller information missing.');
@@ -275,36 +291,67 @@ export default function CashInScreen() {
     }
     const variance = Number((countedCash - expectedCash).toFixed(2));
 
+    const payload = {
+      tellerId: selectedTeller.id,                 // users.user_id
+      expectedCash,
+      countedCash,
+      variance,
+      notes,
+      date: bizDate.format('YYYY-MM-DD'),          // business day = dashboard date
+    };
+    const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
+
     setSubmitting(true);
     try {
-      await axios.post(
-        `${API_BASE_URL}/api/reconciliation/submit`,
-        {
-          tellerId: selectedTeller.id,                 // users.user_id
-          expectedCash,
-          countedCash,
-          variance,
-          notes,
-          date: bizDate.format('YYYY-MM-DD'),          // business day = dashboard date
-        },
-        { headers: getAuthHeaders() }
-      );
+      if (!navigator.onLine) {
+        await enqueueRequest(`${API_BASE_URL}/api/reconciliation/submit`, 'POST', payload, headers);
+        messageApi.info('Offline: reconciliation queued. It will sync automatically.');
+        setReconciliationModalVisible(false);
+        setSelectedTeller(null);
+        setCountedCash(null);
+        setNotes('');
+        return;
+      }
 
-      messageApi.success(`Reconciliation recorded for ${selectedTeller.name}.`);
+      const res = await fetch(`${API_BASE_URL}/api/reconciliation/submit`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        if (res.status === 409) {
+          messageApi.warning('A reconciliation for this teller and date already exists.');
+        } else {
+          // queue on any other network/server problem
+          await enqueueRequest(`${API_BASE_URL}/api/reconciliation/submit`, 'POST', payload, headers);
+          messageApi.info('Network/server issue: reconciliation queued to sync later.');
+        }
+      } else {
+        messageApi.success(`Reconciliation recorded for ${selectedTeller.name}.`);
+      }
+
       setReconciliationModalVisible(false);
       setSelectedTeller(null);
       setCountedCash(null);
       setNotes('');
-      // Refresh dashboard data
+
+      // opportunistic flush + refresh
+      await flushQueue();
       fetchExpectedCash();
       fetchTellers();
-    } catch (err: any) {
-      console.error('Failed to submit reconciliation:', err);
-      if (axios.isAxiosError(err) && err.response?.status === 409) {
-        messageApi.warning('A reconciliation for this teller and date already exists.');
-      } else {
-        messageApi.error('Failed to submit reconciliation report.');
+      if (inspectorOpen && inspectorTeller) {
+        loadHistory(inspectorTeller.id);
+        loadMissed(inspectorTeller.id);
+        loadShort(inspectorTeller.id);
       }
+    } catch {
+      await enqueueRequest(`${API_BASE_URL}/api/reconciliation/submit`, 'POST', payload, headers);
+      messageApi.info('Network error: reconciliation queued to sync later.');
+      setReconciliationModalVisible(false);
+      setSelectedTeller(null);
+      setCountedCash(null);
+      setNotes('');
     } finally {
       setSubmitting(false);
     }

@@ -37,6 +37,7 @@ interface JournalEntrySummary {
 interface JournalLine {
   id: number;
   account_id: number;
+  account_name?: string; // <-- NEW: backend now returns account_name
   debit: string | number;
   credit: string | number;
 }
@@ -64,8 +65,10 @@ interface UnifiedTxViewRow {
   date: string;
   description: string;
   amount: number;
-  debitAccountId?: number;  // for fast filtering
-  creditAccountId?: number; // for fast filtering
+  debitAccountId?: number;
+  creditAccountId?: number;
+  debitAccountName?: string;   // <-- NEW
+  creditAccountName?: string;  // <-- NEW
   complex?: boolean;
   lineCount?: number;
   dupCount?: number;
@@ -244,10 +247,20 @@ const Transactions: React.FC = () => {
   const detailsCache = useRef<Map<number, JournalEntryDetail>>(new Map());
   const MAX_DETAILS = 200; // initial batch to hydrate
 
-  // Accounts map helpers
-  const accountName = useCallback(
-    (id?: number) => (id ? accounts.find(a => a.id === id)?.name || `#${id}` : '—'),
-    [accounts]
+  // Accounts map + resolver (prefer line name -> id map -> "#id")
+  const accountNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    accounts.forEach(a => map.set(a.id, a.name));
+    return map;
+  }, [accounts]);
+
+  const resolveAccountLabel = useCallback(
+    (id?: number, nameFromLine?: string) => {
+      if (nameFromLine && nameFromLine.trim()) return nameFromLine;
+      if (id && accountNameById.has(id)) return accountNameById.get(id)!;
+      return id ? `#${id}` : '—';
+    },
+    [accountNameById]
   );
 
   // ---------- Fetch Accounts ----------
@@ -361,6 +374,9 @@ const Transactions: React.FC = () => {
               amount,
               debitAccountId: bd?.account_id,
               creditAccountId: bc?.account_id,
+              // include names if present from backend
+              debitAccountName: bd?.account_name,
+              creditAccountName: bc?.account_name,
               complex: lines.length > 2,
               lineCount: s.line_count,
             };
@@ -396,6 +412,8 @@ const Transactions: React.FC = () => {
                     amount,
                     debitAccountId: bd?.account_id,
                     creditAccountId: bc?.account_id,
+                    debitAccountName: bd?.account_name,
+                    creditAccountName: bc?.account_name,
                     complex: lines.length > 2,
                     lineCount: s.line_count,
                   };
@@ -489,7 +507,7 @@ const Transactions: React.FC = () => {
     })();
 
     return () => { cancelled = true; };
-  }, [showDupOnly]);
+  }, [showDupOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------- Build / preview groups and delete dups (keep 1) ----------
   const previewDuplicateGroups = async () => {
@@ -506,7 +524,6 @@ const Transactions: React.FC = () => {
   };
 
   const deleteDuplicatesKeepOne = async () => {
-    // Build preview first if empty
     if (!dupGroupsPreview.length) {
       await previewDuplicateGroups();
       if (!dupGroupsPreview.length) return;
@@ -561,12 +578,12 @@ const Transactions: React.FC = () => {
       const term = searchTerm.toLowerCase();
       r = r.filter(x =>
         (x.description && x.description.toLowerCase().includes(term)) ||
-        (accountName(x.debitAccountId).toLowerCase().includes(term)) ||
-        (accountName(x.creditAccountId).toLowerCase().includes(term))
+        resolveAccountLabel(x.debitAccountId, x.debitAccountName).toLowerCase().includes(term) ||
+        resolveAccountLabel(x.creditAccountId, x.creditAccountName).toLowerCase().includes(term)
       );
     }
     return r;
-  }, [unifiedRows, selectedAccountFilter, showDupOnly, searchTerm, accountName]);
+  }, [unifiedRows, selectedAccountFilter, showDupOnly, searchTerm, resolveAccountLabel]);
 
   // ---------- Select / Bulk delete ----------
   const toggleSelect = (id: string) => {
@@ -729,7 +746,7 @@ const Transactions: React.FC = () => {
     }
     const headers = ['ID','Date','Description','Accounts','Amount','Source','Dup Count'];
     const csvRows = filteredRows.map(r => {
-      const accountsInfo = `${accountName(r.debitAccountId)} ↔ ${accountName(r.creditAccountId)}`;
+      const accountsInfo = `${resolveAccountLabel(r.debitAccountId, r.debitAccountName)} ↔ ${resolveAccountLabel(r.creditAccountId, r.creditAccountName)}`;
       return ([
         r.id,
         r.date,
@@ -986,7 +1003,7 @@ const Transactions: React.FC = () => {
                           </div>
                         </td>
                         <td className="p-3">
-                          {accountName(r.debitAccountId)} <span className="opacity-60">↔</span> {accountName(r.creditAccountId)}
+                          {resolveAccountLabel(r.debitAccountId, r.debitAccountName)} <span className="opacity-60">↔</span> {resolveAccountLabel(r.creditAccountId, r.creditAccountName)}
                           {r.complex && <span className="ml-1 text-xs text-muted-foreground">(Complex)</span>}
                         </td>
                         <td className="p-3">{fmtMoney(r.amount)}</td>
