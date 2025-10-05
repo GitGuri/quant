@@ -25,6 +25,7 @@ import AgentSignup from './pages/AgentSignup';
 import SuperAgentDashboard from './pages/SuperAgentDashboard';
 import AgentDashboard from './pages/AgentDashboard';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
+import ResetPassword from '@/pages/ResetPassword';
 // ✅ Unified Auth Page (Login + Register)
 import { AuthPage, AuthProvider, useAuth } from './AuthPage';
 import { Header } from './components/layout/Header';
@@ -107,6 +108,8 @@ const Unauthorized = () => (
                 </ProtectedRoute>
               } 
             />
+            <Route path="/auth" element={<AuthPage />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/tasks" element={<PrivateRoute><Tasks /></PrivateRoute>} />
             <Route path="/transactions" element={<PrivateRoute><Transactions /></PrivateRoute>} />
             <Route path="/financials" element={<PrivateRoute><Financials /></PrivateRoute>} />

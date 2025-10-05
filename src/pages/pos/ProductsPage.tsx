@@ -37,10 +37,20 @@ import {
 // ---- Config / helpers ----
 const API_BASE = 'https://quantnow-sa1e.onrender.com';
 const api = {
-  list: () => `${API_BASE}/products-services`,
+  // if branchId is provided → filter, else get all
+  list: (branchId?: string | null) =>
+    branchId
+      ? `${API_BASE}/products-services?branch_id=${encodeURIComponent(branchId)}`
+      : `${API_BASE}/products-services`,
   byId: (id: string | number) => `${API_BASE}/products-services/${id}`,
-  restock: (id: string | number) => `${API_BASE}/products-services/${id}/stock`,
+  // if your backend uses branch_id for restock, include it; otherwise the query param will be ignored safely
+  restock: (id: string | number, branchId?: string | null) =>
+    branchId
+      ? `${API_BASE}/products-services/${id}/stock?branch_id=${encodeURIComponent(branchId)}`
+      : `${API_BASE}/products-services/${id}/stock`,
 };
+const apiBranchesMine = () => `${API_BASE}/api/me/branches`;
+
 const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
 const getAuthHeaders = () => {
   const t = getToken();
@@ -60,7 +70,16 @@ type ProductFormValues = {
   availableValue?: number;
 };
 
-// Optional sales stats hook (kept from your original)
+// Branch types
+type MyBranch = { id: string; code: string; name: string; is_primary: boolean };
+
+// Add branch info to Product (non-breaking)
+type ProductWithBranch = Product & {
+  branch_id?: string | null;
+  branch_name?: string | null; // if your API returns it
+};
+
+// Optional sales stats hook (placeholder)
 function useProductSalesStats(products: Product[], isAuthenticated: boolean, messageApi: any) {
   const [bestsellers, setBestsellers] = useState<{ [id: string]: number }>({});
   useEffect(() => {
@@ -76,25 +95,66 @@ function useProductSalesStats(products: Product[], isAuthenticated: boolean, mes
 const ProductsPage = () => {
   const { isAuthenticated } = useAuth();
   const [messageApi, contextHolder] = message.useMessage();
-  const [products, setProducts] = useState<Product[]>([]);
+  const [products, setProducts] = useState<ProductWithBranch[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [manualDrawerOpen, setManualDrawerOpen] = useState(false);
   const [form] = Form.useForm();
-  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editingProduct, setEditingProduct] = useState<ProductWithBranch | null>(null);
   const [search, setSearch] = useState('');
   const [tabKey, setTabKey] = useState('list');
   const [importDrawerOpen, setImportDrawerOpen] = useState(false);
   const [restockModalVisible, setRestockModalVisible] = useState(false);
-  const [restockProduct, setRestockProduct] = useState<Product | null>(null);
+  const [restockProduct, setRestockProduct] = useState<ProductWithBranch | null>(null);
   const [restockForm] = Form.useForm();
   const [formType, setFormType] = useState<'product' | 'service'>('product');
   const isMobile = useMediaQuery({ maxWidth: 767 });
 
   const isUserAuthenticated = isAuthenticated;
 
+  // Branch state
+  const [myBranches, setMyBranches] = useState<MyBranch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+
+  // ---------- LOAD user branches ----------
+  useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setMyBranches([]);
+      setSelectedBranchId(null);
+      return;
+    }
+    (async () => {
+      try {
+        const r = await fetch(apiBranchesMine(), { headers: { ...getAuthHeaders() } });
+        if (!r.ok) throw new Error(String(r.status));
+        const data = await r.json();
+        const memberships: MyBranch[] = (data?.memberships || []).map((m: any) => ({
+          id: String(m.branch_id),
+          code: m.code,
+          name: m.name,
+          is_primary: !!m.is_primary,
+        }));
+        setMyBranches(memberships);
+
+        const saved = localStorage.getItem('products.selected_branch_id');
+        const initial =
+          (saved && memberships.some(b => b.id === saved) && saved) ||
+          memberships.find(b => b.is_primary)?.id ||
+          memberships[0]?.id ||
+          null;
+
+        setSelectedBranchId(initial);
+        if (initial) localStorage.setItem('products.selected_branch_id', initial);
+      } catch {
+        setMyBranches([]);
+        setSelectedBranchId(null);
+      }
+    })();
+  }, []);
+
   // ---------- LOAD (with cache) ----------
-  const mapBackendToProduct = (p: any): Product => ({
+  const mapBackendToProduct = (p: any): ProductWithBranch => ({
     id: p.id,
     name: p.name,
     type: p.is_service ? 'service' : 'product',
@@ -108,6 +168,8 @@ const ProductsPage = () => {
     availableValue: p.is_service ? p.available_value ?? undefined : undefined,
     minQty: p.min_quantity ?? undefined,
     maxQty: p.max_quantity ?? undefined,
+    branch_id: p.branch_id ?? null,
+    branch_name: p.branch_name ?? null,
   });
 
   const fetchProducts = useCallback(async () => {
@@ -120,12 +182,12 @@ const ProductsPage = () => {
     setLoading(true);
     try {
       const { data, fromCache, error } = await fetchWithCache<any[]>(
-        'products:list',
-        api.list(),
+        `products:list:${selectedBranchId ?? 'ALL'}`, // cache key per branch filter
+        api.list(selectedBranchId || undefined),
         { headers: { ...getAuthHeaders() } }
       );
       if (data) {
-        const transformed: Product[] = data.map(mapBackendToProduct);
+        const transformed: ProductWithBranch[] = data.map(mapBackendToProduct);
         setProducts(transformed);
         if (fromCache) {
           messageApi.info('Showing cached products (offline).');
@@ -133,14 +195,13 @@ const ProductsPage = () => {
           messageApi.success('Products loaded.');
         }
       } else {
-        // no data at all (no cache and offline or hard failure)
         setProducts([]);
         if (error) messageApi.error('Failed to load products.');
       }
     } finally {
       setLoading(false);
     }
-  }, [isUserAuthenticated, messageApi]);
+  }, [isUserAuthenticated, messageApi, selectedBranchId]);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
@@ -187,7 +248,7 @@ const ProductsPage = () => {
     setFormType('product');
   };
 
-  const openForm = (record: Product | null = null) => {
+  const openForm = (record: ProductWithBranch | null = null) => {
     if (!isUserAuthenticated) {
       messageApi.error('Please log in to manage products.');
       return;
@@ -198,88 +259,91 @@ const ProductsPage = () => {
   };
 
   // ---------- CREATE / UPDATE (queued when offline) ----------
-  const handleSave = async (values: ProductFormValues) => {
-    if (!isUserAuthenticated) {
-      messageApi.error('Authentication required to save products.');
-      return;
-    }
-    setLoading(true);
-    const isNew = !editingProduct;
-    const endpoint = isNew ? api.list() : api.byId(editingProduct!.id);
-    const method = (isNew ? 'POST' : 'PUT') as 'POST' | 'PUT';
+const handleSave = async (values: ProductFormValues) => {
+  if (!isUserAuthenticated) {
+    messageApi.error('Authentication required to save products.');
+    return;
+  }
+  setLoading(true);
 
-    const body = {
-      name: values.name,
-      description: '',
-      unit_price: Number(values.sellingPrice),
-      cost_price: values.type === 'product' ? Number(values.purchasePrice || 0) : null,
-      is_service: values.type === 'service',
-      stock_quantity: values.type === 'product' ? Number(values.qty || 0) : null,
-      unit: values.type === 'product' ? (values.unit || 'item') : null,
-      sku: null,
-      min_quantity: values.type === 'product' ? Number(values.minQty || 0) : null,
-      max_quantity: values.type === 'product' ? Number(values.maxQty || 0) : null,
-      available_value: values.type === 'service' ? Number(values.availableValue || 0) : null,
-    };
+  const isNew = !editingProduct;
+  const endpoint = isNew ? api.list(/* no need to pass branch here */) : api.byId(editingProduct!.id);
+  const method = (isNew ? 'POST' : 'PUT') as 'POST' | 'PUT';
 
-    const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
+  const body = {
+    name: values.name,
+    description: '',
+    unit_price: Number(values.sellingPrice),
+    cost_price: values.type === 'product' ? Number(values.purchasePrice || 0) : null,
+    is_service: values.type === 'service',
+    stock_quantity: values.type === 'product' ? Number(values.qty || 0) : null,
+    unit: values.type === 'product' ? (values.unit || 'item') : null,
+    sku: null,
+    min_quantity: values.type === 'product' ? Number(values.minQty || 0) : null,
+    max_quantity: values.type === 'product' ? Number(values.maxQty || 0) : null,
+    available_value: values.type === 'service' ? Number(values.availableValue || 0) : null,
+    branch_id: selectedBranchId ?? null, // important
+  };
 
-    const optimisticMerge = (createdOrUpdated: any) => {
-      const newP = mapBackendToProduct(createdOrUpdated);
-      setProducts(prev => {
-        if (isNew) return [newP, ...prev];
-        return prev.map(p => (p.id === newP.id ? newP : p));
-      });
-    };
+  const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
 
-    const optimisticFallback = () => {
-      // if offline and backend id is unknown for create, fabricate a local temp id
-      if (isNew) {
-        const temp = mapBackendToProduct({
-          ...body,
-          id: `tmp-${Date.now()}`,
-        });
-        setProducts(prev => [temp, ...prev]);
-      } else if (editingProduct) {
-        // merge into existing UI state
-        const local = mapBackendToProduct({
-          ...body,
-          id: editingProduct.id,
-        });
-        setProducts(prev => prev.map(p => (p.id === local.id ? local : p)));
-      }
-    };
+  const optimisticMerge = (createdOrUpdated: any) => {
+    const newP = mapBackendToProduct(createdOrUpdated);
+    setProducts(prev => (isNew ? [newP, ...prev] : prev.map(p => (p.id === newP.id ? newP : p))));
+  };
 
-    try {
-      if (!navigator.onLine) {
-        await enqueueRequest(endpoint, method, body, headers);
-        optimisticFallback();
-        messageApi.info('Queued change (offline). Will sync automatically.');
-        closeForm();
-        return;
-      }
-
-      const res = await fetch(endpoint, { method, headers, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      optimisticMerge(data);
-      messageApi.success(`Product ${isNew ? 'added' : 'updated'} successfully.`);
-      closeForm();
-
-      // opportunistic flush (drain any left-behind jobs)
-      await flushQueue();
-      // refresh cached list
-      await fetchProducts();
-    } catch (err: any) {
-      // network/other error: enqueue and optimistic update
-      await enqueueRequest(endpoint, method, body, headers);
-      optimisticFallback();
-      messageApi.info('Network issue: change queued to sync later.');
-      closeForm();
-    } finally {
-      setLoading(false);
+  const optimisticFallback = () => {
+    if (isNew) {
+      const temp = mapBackendToProduct({ ...body, id: `tmp-${Date.now()}` });
+      setProducts(prev => [temp, ...prev]);
+    } else if (editingProduct) {
+      const local = mapBackendToProduct({ ...body, id: editingProduct.id });
+      setProducts(prev => prev.map(p => (p.id === local.id ? local : p)));
     }
   };
+
+  try {
+    if (!navigator.onLine) {
+      // true offline: queue & optimistic update
+      await enqueueRequest(endpoint, method, body, headers);
+      optimisticFallback();
+      messageApi.info('You’re offline. Change queued and will sync automatically.');
+      closeForm();
+      return;
+    }
+
+    const res = await fetch(endpoint, { method, headers, body: JSON.stringify(body) });
+
+    if (!res.ok) {
+      // server responded: show server error and DO NOT queue
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = await res.json();
+        detail = j?.error || j?.detail || detail;
+      } catch {}
+      messageApi.error(`Could not save product: ${detail}`);
+      return; // stop here, no enqueue
+    }
+
+    const data = await res.json();
+    optimisticMerge(data);
+    messageApi.success(`Product ${isNew ? 'added' : 'updated'} successfully.`);
+    closeForm();
+
+    await flushQueue();
+    await fetchProducts();
+
+  } catch (err: any) {
+    // genuine network/CORS error (fetch threw)
+    await enqueueRequest(endpoint, method, body, headers);
+    optimisticFallback();
+    messageApi.info('Network hiccup. Change queued and will sync automatically.');
+    closeForm();
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   // ---------- DELETE (queued when offline) ----------
   const handleDelete = async (id: string) => {
@@ -306,7 +370,6 @@ const ProductsPage = () => {
       await flushQueue();
       await fetchProducts();
     } catch (err: any) {
-      // enqueue anyway for later retry
       await enqueueRequest(api.byId(id), 'DELETE', null, headers);
       optimisticRemove();
       messageApi.info('Network issue: delete queued to sync later.');
@@ -316,7 +379,7 @@ const ProductsPage = () => {
   };
 
   // ---------- RESTOCK (queued when offline) ----------
-  const openRestockModal = (product: Product) => {
+  const openRestockModal = (product: ProductWithBranch) => {
     if (!isUserAuthenticated) {
       messageApi.error('Please log in to restock products.');
       return;
@@ -354,8 +417,13 @@ const ProductsPage = () => {
 
     try {
       setLoading(true);
+      const restockBranch =
+        restockProduct.branch_id ?? selectedBranchId ?? null;
+
+      const endpoint = api.restock(restockProduct.id, restockBranch);
+
       if (!navigator.onLine) {
-        await enqueueRequest(api.restock(restockProduct.id), 'PUT', payload, headers);
+        await enqueueRequest(endpoint, 'PUT', payload, headers);
         optimisticRestock();
         setRestockModalVisible(false);
         setRestockProduct(null);
@@ -363,7 +431,7 @@ const ProductsPage = () => {
         return;
       }
 
-      const res = await fetch(api.restock(restockProduct.id), {
+      const res = await fetch(endpoint, {
         method: 'PUT',
         headers,
         body: JSON.stringify(payload),
@@ -377,7 +445,8 @@ const ProductsPage = () => {
       await flushQueue();
       await fetchProducts();
     } catch (err: any) {
-      await enqueueRequest(api.restock(restockProduct.id), 'PUT', payload, headers);
+      const endpoint = api.restock(restockProduct.id, restockProduct.branch_id ?? selectedBranchId ?? null);
+      await enqueueRequest(endpoint, 'PUT', payload, headers);
       optimisticRestock();
       setRestockModalVisible(false);
       setRestockProduct(null);
@@ -390,7 +459,7 @@ const ProductsPage = () => {
   // ---------- Lists / tables ----------
   const bestsellers = useProductSalesStats(products, isUserAuthenticated, messageApi);
   const sortedProducts = [...products].sort(
-    (a, b) => (bestsellers[b.id] || 0) - (bestsellers[a.id] || 0)
+    (a, b) => (bestsellers[b.id as any] || 0) - (bestsellers[a.id as any] || 0)
   );
   const filteredProducts = sortedProducts.filter(p =>
     p.name?.toLowerCase().includes(search.toLowerCase())
@@ -405,10 +474,16 @@ const ProductsPage = () => {
     { title: 'Name', dataIndex: 'name', key: 'name' },
     { title: 'Type', dataIndex: 'type', key: 'type' },
     {
+      title: 'Branch',
+      key: 'branch',
+      render: (_: any, r: ProductWithBranch) =>
+        r.branch_name ? r.branch_name : (r.branch_id ? `#${String(r.branch_id).slice(0, 6)}` : '—'),
+    },
+    {
       title: 'Quantity',
       dataIndex: 'qty',
       key: 'qty',
-      render: (qty: any, rec: Product) => (rec.unit ? `${qty ?? 0} ${rec.unit}` : qty ?? 0),
+      render: (qty: any, rec: ProductWithBranch) => (rec.unit ? `${qty ?? 0} ${rec.unit}` : qty ?? 0),
     },
     {
       title: 'Min Qty',
@@ -426,7 +501,7 @@ const ProductsPage = () => {
       title: 'Price',
       dataIndex: 'price',
       key: 'price',
-      render: (_: any, r: Product) => `R${r.unitPrice ?? r.price ?? 0}`,
+      render: (_: any, r: ProductWithBranch) => `R${r.unitPrice ?? r.price ?? 0}`,
     },
     {
       title: 'Unit Purchase Price',
@@ -437,7 +512,7 @@ const ProductsPage = () => {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, record: Product) => (
+      render: (_: any, record: ProductWithBranch) => (
         <Space>
           <Button onClick={() => openRestockModal(record)} disabled={!isUserAuthenticated}>
             Restock
@@ -449,7 +524,7 @@ const ProductsPage = () => {
           />
           <Popconfirm
             title="Delete product?"
-            onConfirm={() => handleDelete(record.id)}
+            onConfirm={() => handleDelete(record.id as unknown as string)}
             okText="Yes"
             cancelText="No"
             disabled={!isUserAuthenticated}
@@ -465,10 +540,16 @@ const ProductsPage = () => {
     { title: 'Name', dataIndex: 'name', key: 'name' },
     { title: 'Type', dataIndex: 'type', key: 'type' },
     {
+      title: 'Branch',
+      key: 'branch',
+      render: (_: any, r: ProductWithBranch) =>
+        r.branch_name ? r.branch_name : (r.branch_id ? `#${String(r.branch_id).slice(0, 6)}` : '—'),
+    },
+    {
       title: 'Price',
       dataIndex: 'price',
       key: 'price',
-      render: (_: any, r: Product) => `R${r.unitPrice ?? r.price ?? 0}`,
+      render: (_: any, r: ProductWithBranch) => `R${r.unitPrice ?? r.price ?? 0}`,
     },
     {
       title: 'Available Value',
@@ -479,7 +560,7 @@ const ProductsPage = () => {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, record: Product) => (
+      render: (_: any, record: ProductWithBranch) => (
         <Space>
           <Button
             icon={<EditOutlined />}
@@ -488,7 +569,7 @@ const ProductsPage = () => {
           />
           <Popconfirm
             title="Delete service?"
-            onConfirm={() => handleDelete(record.id)}
+            onConfirm={() => handleDelete(record.id as unknown as string)}
             okText="Yes"
             cancelText="No"
             disabled={!isUserAuthenticated}
@@ -640,7 +721,32 @@ const ProductsPage = () => {
           <Tabs.TabPane tab="Products List" key="list">
             <div className="flex flex-col sm:flex-row sm:justify-between items-start sm:items-center mb-4">
               <h2 className="text-xl font-semibold mb-2 sm:mb-0">Products</h2>
+
               <div className={isMobile ? 'flex flex-col gap-2 w-full' : 'flex gap-2'}>
+                {/* Branch picker (only if user has branches) */}
+                {myBranches.length > 0 && (
+                  <Select
+                    value={selectedBranchId ?? undefined}
+                    placeholder="All branches"
+                    allowClear
+                    style={{ minWidth: 180 }}
+                    onChange={(val) => {
+                      const next = (val as string | undefined) ?? null;
+                      setSelectedBranchId(next);
+                      if (next) localStorage.setItem('products.selected_branch_id', next);
+                      else localStorage.removeItem('products.selected_branch_id');
+                    }}
+                    disabled={!isUserAuthenticated}
+                  >
+                    <Select.Option value={undefined as any}>All branches</Select.Option>
+                    {myBranches.map(b => (
+                      <Select.Option key={b.id} value={b.id}>
+                        {(b.code || b.name) + (b.is_primary ? ' • primary' : '')}
+                      </Select.Option>
+                    ))}
+                  </Select>
+                )}
+
                 <Button
                   type="primary"
                   icon={<PlusOutlined />}
@@ -679,7 +785,7 @@ const ProductsPage = () => {
                 <Space direction="vertical" style={{ width: '100%' }}>
                   {filteredProducts.filter(p => p.type === 'product').map(product => (
                     <Card
-                      key={product.id}
+                      key={product.id as any}
                       title={product.name}
                       size="small"
                       styles={{ body: { padding: 16 } }}
@@ -695,7 +801,7 @@ const ProductsPage = () => {
                           />
                           <Popconfirm
                             title="Delete product?"
-                            onConfirm={() => handleDelete(product.id)}
+                            onConfirm={() => handleDelete(product.id as unknown as string)}
                             okText="Yes"
                             cancelText="No"
                             disabled={!isUserAuthenticated}
@@ -707,6 +813,10 @@ const ProductsPage = () => {
                     >
                       <p>Type: {product.type}</p>
                       <p>Price: R{product.price || product.unitPrice}</p>
+                      <p>
+                        <strong>Branch:</strong>{' '}
+                        {product.branch_name ?? (product.branch_id ? `#${String(product.branch_id).slice(0,6)}` : '—')}
+                      </p>
                       <p>
                         <strong>Unit Purchase Price:</strong>{' '}
                         {product.unitPurchasePrice ? `R${product.unitPurchasePrice}` : '-'}
@@ -721,7 +831,7 @@ const ProductsPage = () => {
                   ))}
                 </Space>
               ) : (
-                <Table<Product>
+                <Table<ProductWithBranch>
                   columns={productColumns as any}
                   dataSource={filteredProducts.filter(p => p.type === 'product')}
                   rowKey="id"
@@ -767,7 +877,7 @@ const ProductsPage = () => {
                 <Space direction="vertical" style={{ width: '100%' }}>
                   {filteredProducts.filter(p => p.type === 'service').map(service => (
                     <Card
-                      key={service.id}
+                      key={service.id as any}
                       title={service.name}
                       size="small"
                       styles={{ body: { padding: 16 } }}
@@ -780,7 +890,7 @@ const ProductsPage = () => {
                           />
                           <Popconfirm
                             title="Delete service?"
-                            onConfirm={() => handleDelete(service.id)}
+                            onConfirm={() => handleDelete(service.id as unknown as string)}
                             okText="Yes"
                             cancelText="No"
                             disabled={!isUserAuthenticated}
@@ -793,6 +903,10 @@ const ProductsPage = () => {
                       <p>Type: {service.type}</p>
                       <p>Price: R{service.price || service.unitPrice}</p>
                       <p>
+                        <strong>Branch:</strong>{' '}
+                        {service.branch_name ?? (service.branch_id ? `#${String(service.branch_id).slice(0,6)}` : '—')}
+                      </p>
+                      <p>
                         <strong>Available Value:</strong>{' '}
                         {service.availableValue ? `${service.availableValue} hours` : '-'}
                       </p>
@@ -800,7 +914,7 @@ const ProductsPage = () => {
                   ))}
                 </Space>
               ) : (
-                <Table<Product>
+                <Table<ProductWithBranch>
                   columns={serviceColumns as any}
                   dataSource={filteredProducts.filter(p => p.type === 'service')}
                   rowKey="id"

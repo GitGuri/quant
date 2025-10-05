@@ -55,26 +55,35 @@ declare global {
 }
 
 // ------------ Types ------------
+// ------------ Types ------------
 interface Transaction {
   id?: string;
   type: 'income' | 'expense' | 'debt';
-  amount: number;
+  amount: number;            // for sales we auto-calc from qty*unit_price when present
   description: string;
   date: string;
   category: string;
   account_id: string;
   account_name?: string;
-  source: string;
+  source: string;            // we'll use 'sales-preview' for rows that become /api/sales
   is_verified: boolean;
   file_url?: string;
   _tempId?: string;
   original_text?: string;
   confidenceScore?: number;
-  // duplicate UX
   duplicateFlag?: boolean;
   duplicateMatches?: DupMatch[];
   includeInImport?: boolean;
+
+  // ---- NEW: sales-only fields (optional) ----
+  is_sale?: boolean;
+  product_id?: number | null;
+  product_name?: string | null;
+  quantity?: number | null;
+  unit_price?: number | null;
+  total?: number | null;     // if user typed a total only
 }
+
 
 interface ProductDB {
   id: number;
@@ -1150,6 +1159,32 @@ function parseSaleLocally(text:string, list: ProductDB[]) {
     fetchAccounts();
   }, [isAuthenticated, token, getAuthHeaders]);
 
+
+
+  // --- Turn a queued sale into a preview row for the editable table ---
+function saleToPreviewRow(
+  s: { customer_name: string; office?: string | null; date: string; description: string; amount: number; },
+  accounts: Account[]
+): Transaction {
+  const salesRevenueAcc =
+    accounts.find(a => a.type?.toLowerCase() === 'income' && a.name?.toLowerCase().includes('sales revenue'));
+
+  return {
+    _tempId: crypto.randomUUID(),
+    type: 'income',
+    amount: Number(s.amount || 0),
+    description: `SALE • ${s.description} — ${s.customer_name}${s.office ? ` @ ${s.office}` : ''}`,
+    date: s.date || new Date().toISOString().slice(0,10),
+    category: 'Sales Revenue',
+    account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
+    original_text: 'sales-queue',
+    source: 'sales-preview',              // <— IMPORTANT: marks it as a sale row
+    is_verified: true,
+    confidenceScore: 100,
+    includeInImport: true,
+  };
+}
+
   
 
   // ImportScreen.tsx
@@ -1499,6 +1534,43 @@ const submitSale = async (sale: {
           amount: Math.abs(revenue),
         });
 
+
+
+        if (revenue) {
+  const date = new Date().toISOString().slice(0,10);
+  const customer_name = client || 'Walk-in';
+  const desc = `Sale — ${customer_name}${office ? ` @ ${office}` : ''}`;
+
+  // try to preselect Sales Revenue account
+  const salesRevenueAcc = accounts.find(
+    a => a.type?.toLowerCase() === 'income' && a.name?.toLowerCase().includes('sales revenue')
+  );
+
+  // ---- NEW: add a sale row that is editable in the table ----
+  prepared.push({
+    _tempId: crypto.randomUUID(),
+    type: 'income',
+    amount: Math.abs(revenue),              // user can override; we'll also show qty/price editors
+    description: `${desc} [Sales]`,
+    date,
+    category: 'Sales Revenue',
+    account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
+    original_text: JSON.stringify(row),
+    source: 'sales-preview',                // <-- IMPORTANT: marks this row as a SALE
+    is_verified: true,
+    confidenceScore: 100,
+    includeInImport: true,
+
+    // sales meta (unknown qty/price from Excel? default to 1 × total)
+    is_sale: true,
+    product_id: null,
+    product_name: customer_name ? `Sale to ${customer_name}` : 'Sale',
+    quantity: 1,
+    unit_price: Math.abs(revenue),
+    total: Math.abs(revenue),
+  });
+}
+
 // (optional) try to prefill the Sales Revenue account so mapping won't skip
 const salesRevenueAcc = accounts.find(
   a => a.type?.toLowerCase() === 'income' && a.name?.toLowerCase().includes('sales revenue')
@@ -1532,24 +1604,33 @@ prepared.push({
       addAssistantMessage(
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
           <div className="font-semibold">Sales queued for posting:</div>
-          <div>{salesQueue.length} sale(s), total R {salesTotal.toFixed(2)} — will be submitted to <code>/api/sales</code> after you click <em>Confirm &amp; Submit Selected</em>.</div>
+         <div>
+  {salesQueue.length} sale(s), total R {salesTotal.toFixed(2)} — will be submitted
+  after you click <em>Confirm &amp; Submit Selected</em>.
+</div>
         </div>
       );
 
-      const flagged = markDuplicates(prepared, existingTxs);
+// Build preview rows for each queued sale so they appear in the table
+const saleRows = salesQueue.map(s => saleToPreviewRow(s, accounts));
 
-      addAssistantMessage(
-        <EditableTransactionTable
-          transactions={flagged}
-          accounts={accounts}
-          categories={categories}
-          onConfirm={handleConfirmProcessedTransaction}
-          onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-          forceCash={forceCash}
-          onToggleForceCash={setForceCash}
-          isBusy={importBusy}
-        />
-      );
+// Show BOTH: journals + sale previews in one table
+const previewRows = [...prepared, ...saleRows];
+const flagged = markDuplicates(previewRows, existingTxs);
+
+addAssistantMessage(
+  <EditableTransactionTable
+    transactions={flagged}
+    accounts={accounts}
+    categories={categories}
+    onConfirm={handleConfirmProcessedTransaction}
+    onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+    forceCash={forceCash}
+    onToggleForceCash={setForceCash}
+    isBusy={importBusy}
+  />
+);
+
     } catch (err: any) {
       console.error('Excel parse error:', err);
       addAssistantMessage(`Failed to process Excel file: ${err.message || 'Unknown error'}`);
@@ -1598,24 +1679,31 @@ const handleTypedDescriptionSubmit = async () => {
 
       const customer = await ensureCustomer('Walk-in Customer'); // default
 
-      const salePayload = {
-        cart: [{
-          id: product.id,
-          name: product.name,
-          quantity: qty,
-          unit_price: unitPrice,
-          subtotal: unitPrice * qty,
-          is_service: !!product.is_service,
-          tax_rate_value: product.tax_rate_value ?? 0,
-        }],
-        total: unitPrice * qty,
-        paymentType: 'Bank',
-        customer: { id: customer.id, name: customer.name },
-        tellerName: 'Chat Import',
-        amountPaid: unitPrice * qty,
-        change: 0,
-        dueDate: null,
-      };
+ const saleRow: Transaction = {
+  _tempId: crypto.randomUUID(),
+  type: 'income',
+  amount: Number(total || (unitPrice ?? 0) * qty || 0),
+  description: `${desc || (product?.name || 'Sale')} [Sales]`,
+  date,
+  category: 'Sales Revenue',
+  account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
+  original_text: userMessageContent,
+  source: 'sales-preview',     // <-- IMPORTANT
+  is_verified: true,
+  confidenceScore: 100,
+  includeInImport: true,
+
+  // sales meta
+  is_sale: true,
+  product_id: product?.id ?? null,
+  product_name: product?.name ?? (tx.Customer_name ? `Sale to ${tx.Customer_name}` : 'Sale'),
+  quantity: Math.max(1, Number(tx.Quantity || qty || 1)),
+  unit_price: unitPrice ?? product?.unit_price ?? null,
+  total: Number(total || 0) || null,
+};
+
+// collect and show in table along with any journal rows
+saleRows.push(saleRow);
 
       const saleResponse = await fetch(`${API_BASE_URL}/api/sales`, {
         method: 'POST',
@@ -1684,7 +1772,7 @@ Respond with a JSON object with this exact schema:
 try {
   const salesToSubmit = [...pendingSalesRef.current];
   if (salesToSubmit.length) {
-    addAssistantMessage(`Posting ${salesToSubmit.length} sale(s) to /api/sales…`);
+    //addAssistantMessage(`Posting ${salesToSubmit.length} sale(s) to /api/sales…`);
     let ok = 0;
     for (const s of salesToSubmit) {
       try { 
@@ -1807,28 +1895,37 @@ try {
       addAssistantMessage(
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
           <div className="font-semibold">Sales queued for posting:</div>
-          <div>{salesQueue.length} sale(s), total R {totalSales.toFixed(2)} — will be submitted to <code>/api/sales</code> after you click <em>Confirm &amp; Submit Selected</em>.</div>
+          <div>
+  {salesQueue.length} sale(s), total R {totalSales.toFixed(2)} — will be submitted
+  after you click <em>Confirm &amp; Submit Selected</em>.
+</div>
         </div>
       );
     }
 
     // Show journal table if any; else immediately post queued sales
-    if (journalRows.length) {
-      const flagged = markDuplicates(journalRows, existingTxs);
-      addAssistantMessage(
-        <EditableTransactionTable
-          transactions={flagged}
-          accounts={accounts}
-          categories={categories}
-          onConfirm={handleConfirmProcessedTransaction}
-          onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-          forceCash={forceCash}
-          onToggleForceCash={setForceCash}
-          isBusy={importBusy}
-        />
-      );
-      openEvidenceFor(journalRows, 'typed');
-    } else {
+if (journalRows.length) {
+  // If we queued sales, also show them as rows in the same table
+  const saleRows = (pendingSalesRef.current || []).map(s => saleToPreviewRow(s, accounts));
+  const previewRows = [...journalRows, ...saleRows];
+
+  const flagged = markDuplicates(previewRows, existingTxs);
+
+  addAssistantMessage(
+    <EditableTransactionTable
+      transactions={flagged}
+      accounts={accounts}
+      categories={categories}
+      onConfirm={handleConfirmProcessedTransaction}
+      onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+      forceCash={forceCash}
+      onToggleForceCash={setForceCash}
+      isBusy={importBusy}
+    />
+  );
+  openEvidenceFor(previewRows, 'typed');
+} else {
+
       // No journals → post sales right away
       try {
         const q = [...pendingSalesRef.current];
@@ -1983,264 +2080,334 @@ try {
 
   // -------------- Save Selected --------------
   // PIPELINE: stage -> preview -> (PATCH) -> commit
-  const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
-    const API_BASE_URL_REAL = 'https://quantnow-sa1e.onrender.com';
-    const authHeaders = getAuthHeaders();
+// -------------- Save Selected --------------
+// PIPELINE: stage -> preview -> (PATCH) -> commit
+const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
+  const API_BASE_URL_REAL = 'https://quantnow-sa1e.onrender.com';
+  const authHeaders = getAuthHeaders();
 
-    if (importBusy) return;
-    setImportBusy(true);
+  if (importBusy) return;
+  setImportBusy(true);
 
-    // show the progress widget once
-    addAssistantMessage(<ImportProgressBubble />);
+  // show the progress widget once
+  addAssistantMessage(<ImportProgressBubble />);
 
-const toSubmit = (transactionsToSave || [])
-  .filter(t => t.includeInImport !== false)
-  .filter(t => t.source !== 'sales-preview');
+  const toSubmit = (transactionsToSave || [])
+    .filter(t => t.includeInImport !== false)
+    .filter(t => t.source !== 'sales-preview');
 
-    const salesOnlyQueue = [...pendingSalesRef.current];
+  const salesOnlyQueue = [...pendingSalesRef.current];
 
-if (toSubmit.length === 0) {
-  if (salesOnlyQueue.length === 0) {
-    addAssistantMessage('Nothing selected to import.');
-    setImportBusy(false);
-    sendProgress('staging', 'done');
-    sendProgress('preview', 'done');
-    sendProgress('mapping', 'done');
-    sendProgress('posting', 'done');
-    return;
-  }
-
-  // SALES-ONLY path
-  addAssistantMessage(`No journal rows to import. Proceeding to post ${salesOnlyQueue.length} sale(s)…`);
-  try {
-    let ok = 0;
-    for (const s of salesOnlyQueue) {
-      try { await submitSale(s); ok++; }
-      catch (e: any) {
-        addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
-      }
-    }
-    addAssistantMessage(`Sales posting complete: ${ok}/${salesOnlyQueue.length} succeeded.`);
-  } finally {
-    pendingSalesRef.current = [];
-    setPendingSales([]);
-    setImportBusy(false);
-    sendProgress('staging', 'done');
-    sendProgress('preview', 'done');
-    sendProgress('mapping', 'done');
-    sendProgress('posting', 'done');
-  }
-
-
-
-  return;
-}
-
-
-    // ---- PRECHECK: Block zero-amount rows before any API calls ----
-    const zeroRows = toSubmit.filter(t => Number(t.amount) === 0);
-    if (zeroRows.length) {
-      addAssistantMessage(
-        <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
-          <div className="font-semibold mb-1">Amounts can’t be zero</div>
-          <div>{zeroRows.length} selected row{zeroRows.length > 1 ? 's' : ''} have an amount of 0. Update the amount or uncheck “Import?”.</div>
-          <ul className="list-disc ml-5 mt-1">
-            {zeroRows.slice(0,5).map((t, i) => (
-              <li key={i}>{t.date} — {t.description}</li>
-            ))}
-          </ul>
-          {zeroRows.length > 5 && <div className="mt-1">…and {zeroRows.length - 5} more.</div>}
-        </div>
-      );
+  // SALES-ONLY early path
+  if (toSubmit.length === 0) {
+    if (salesOnlyQueue.length === 0) {
+      addAssistantMessage('Nothing selected to import.');
       setImportBusy(false);
-      sendProgress('posting', 'error');
+      sendProgress('staging', 'done');
+      sendProgress('preview', 'done');
+      sendProgress('mapping', 'done');
+      sendProgress('posting', 'done');
       return;
     }
 
+    addAssistantMessage(`No journal rows to import. Proceeding to post ${salesOnlyQueue.length} sale(s)…`);
     try {
-      // STAGING
-      sendProgress('staging', 'running');
-      const rows = toSubmit.map(tx => ({
-        sourceUid:   sourceUidOf(tx),
-        date:        tx.date || new Date().toISOString().slice(0,10),
-        description: tx.description || 'Imported',
-        amount:      Number(tx.amount || 0),
-      }));
-      const staged = await stageSelected(API_BASE_URL_REAL, authHeaders, rows);
-      sendProgress('staging', 'done');
-      addAssistantMessage(`Stage complete (batch ${staged.batchId}). Inserted: ${staged.inserted}, duplicates skipped: ${staged.duplicates}.`);
-
-      // PREVIEW
-      sendProgress('preview', 'running');
-      const preview = await loadPreview(API_BASE_URL_REAL, authHeaders, staged.batchId);
-      sendProgress('preview', 'done');
-
-      // MAPPING
-      sendProgress('mapping', 'running');
-      // pick cash/bank account (honor toggle)
-      const pickCashOrBank = () => {
-        const toLower = (s?: string) => (s || '').toLowerCase();
-
-        const findBank = () =>
-          accounts.find(a =>
-            toLower(a.type) === 'asset' &&
-            /bank|cheque|current/.test(toLower(a.name))
+      let ok = 0;
+      for (const s of salesOnlyQueue) {
+        try {
+          await submitSale(s);
+          ok++;
+          // Per-sale success line
+          addAssistantMessage(
+            successBubble('✅ Sale submitted', [
+              `${s.description} — R ${Number(s.amount || 0).toFixed(2)} (${s.customer_name})`
+            ])
           );
-
-        const findCash = () =>
-          accounts.find(a =>
-            toLower(a.type) === 'asset' &&
-            /cash/.test(toLower(a.name))
-          );
-
-        if (forceCash) {
-          const cash = findCash();
-          if (cash) return Number(cash.id);
-          const bank = findBank();
-          return bank ? Number(bank.id) : null;
-        } else {
-          const bank = findBank();
-          if (bank) return Number(bank.id);
-          const cash = findCash();
-          return cash ? Number(cash.id) : null;
+        } catch (e: any) {
+          addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
         }
-      };
-
-      const cashOrBankId = pickCashOrBank();
-      let patchedCount = 0;
-
-      for (const p of preview.items) {
-        const original = toSubmit.find(t => sourceUidOf(t) === p.sourceUid);
-        if (!original) continue;
-
-        const chosenId = Number(original.account_id || 0) || null;
-        if (!chosenId) continue;
-
-        let debitId: number | null = null;
-        let creditId: number | null = null;
-
-        const ttype = (original.type || '').toLowerCase();
-        if (ttype === 'income') {
-          debitId = cashOrBankId;
-          creditId = chosenId;
-        } else if (ttype === 'expense') {
-          debitId = chosenId;
-          creditId = cashOrBankId;
-        } else if (ttype === 'debt') {
-          debitId = cashOrBankId;
-          creditId = chosenId;
-        } else {
-          debitId = cashOrBankId;
-          creditId = chosenId;
-        }
-
-        await patchRowMapping(
-          API_BASE_URL_REAL,
-          authHeaders,
-          p.rowId,
-          debitId || undefined,
-          creditId || undefined
-        );
-        patchedCount++;
       }
-
-      addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
-      sendProgress('mapping', 'done');
-
-      // POSTING
-      sendProgress('posting', 'running');
-// [KEEP THIS ORDER] 1) commit journal batch
-const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
-// Build pretty confirmations per imported row
-const prettyLines = toSubmit.map(t => {
-  const amt = Number(t.amount || 0).toFixed(2);
-  const d   = t.date || new Date().toISOString().slice(0,10);
-  if (t.type === 'expense') return `Paid ${t.description} — R ${amt} on ${d}`;
-  if (t.type === 'income')  return `Received ${t.description} — R ${amt} on ${d}`;
-  if (t.type === 'debt')    return `Debt entry: ${t.description} — R ${amt} on ${d}`;
-  return `${t.type} ${t.description} — R ${amt} on ${d}`;
-});
-
-// Show the green confirmations
-addAssistantMessage(
-  successBubble('✅ Transactions recorded', prettyLines)
-);
-
-sendProgress('posting', 'done');
-
-addAssistantMessage(
-  <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
-    <div className="font-semibold mb-1">Journal posting complete</div>
-    <div>{result.posted} posted, {result.skipped} skipped.</div>
-    <div className="mt-2 text-sm">
-      To see financial statements, go to the{' '}
-      <Link to="/financials" className="underline font-medium text-green-800">Financials</Link>{' '}
-      tab.
-    </div>
-  </div>
-);
-
-// 2) THEN post the queued sales
-try {
-  const salesToSubmit = [...pendingSalesRef.current];
-  if (salesToSubmit.length) {
-    addAssistantMessage(`Posting ${salesToSubmit.length} sale(s) to /api/sales…`);
-    let ok = 0;
-    for (const s of salesToSubmit) {
-      try { await submitSale(s); ok++; }
-      catch (e: any) {
-        addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
-      }
-    }
-    addAssistantMessage(`Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`);
-  }
-} finally {
-  // prevent double-post on the next run
-  pendingSalesRef.current = [];
-  setPendingSales([]);
-}
-
-
-    } catch (e: any) {
-      console.error('[IMPORT] Import failed:', e);
-
-      // Try to translate DB constraint errors (e.g., 23514 / check constraint) to a friendly message
-      let raw = e?.message || '';
-      try {
-        const parsed = JSON.parse(raw);
-        raw = parsed.detail || parsed.error || raw;
-      } catch {
-        // keep raw
-      }
-      const looksLikeZeroAmount =
-        e?.code === '23514' ||
-        /check constraint/i.test(raw) ||
-        /journal_lines_check1/i.test(raw) ||
-        /0\.00/.test(raw);
-
-      if (looksLikeZeroAmount) {
-        addAssistantMessage(
-          <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
-            <div className="font-semibold mb-1">Import failed: zero amounts detected</div>
-            <div>One or more selected transactions have an amount of 0. Please edit the amount or uncheck “Import?” and try again.</div>
-          </div>
-        );
-      } else {
-        const msg = raw || String(e);
-        addAssistantMessage(
-          <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200">
-            <div className="font-semibold mb-1">Import failed</div>
-            <div className="text-sm">{msg}</div>
-          </div>
-        );
-      }
-
-      // flip the appropriate stage to error if we can’t tell which; mark overall
-      sendProgress('posting', 'error');
+      addAssistantMessage(`Sales posting complete: ${ok}/${salesOnlyQueue.length} succeeded.`);
     } finally {
+      pendingSalesRef.current = [];
+      setPendingSales([]);
       setImportBusy(false);
+      sendProgress('staging', 'done');
+      sendProgress('preview', 'done');
+      sendProgress('mapping', 'done');
+      sendProgress('posting', 'done');
     }
-  };
+    return;
+  }
+
+  // ---- PRECHECK: Block zero-amount rows before any API calls ----
+  const zeroRows = toSubmit.filter(t => Number(t.amount) === 0);
+  if (zeroRows.length) {
+    addAssistantMessage(
+      <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
+        <div className="font-semibold mb-1">Amounts can’t be zero</div>
+        <div>{zeroRows.length} selected row{zeroRows.length > 1 ? 's' : ''} have an amount of 0. Update the amount or uncheck “Import?”.</div>
+        <ul className="list-disc ml-5 mt-1">
+          {zeroRows.slice(0,5).map((t, i) => (
+            <li key={i}>{t.date} — {t.description}</li>
+          ))}
+        </ul>
+        {zeroRows.length > 5 && <div className="mt-1">…and {zeroRows.length - 5} more.</div>}
+      </div>
+    );
+    setImportBusy(false);
+    sendProgress('posting', 'error');
+    return;
+  }
+
+  try {
+    // STAGING
+    sendProgress('staging', 'running');
+    const rows = toSubmit.map(tx => ({
+      sourceUid:   sourceUidOf(tx),
+      date:        tx.date || new Date().toISOString().slice(0,10),
+      description: tx.description || 'Imported',
+      amount:      Number(tx.amount || 0),
+    }));
+    const staged = await stageSelected(API_BASE_URL_REAL, authHeaders, rows);
+    sendProgress('staging', 'done');
+    addAssistantMessage(`Stage complete (batch ${staged.batchId}). Inserted: ${staged.inserted}, duplicates skipped: ${staged.duplicates}.`);
+
+    // PREVIEW
+    sendProgress('preview', 'running');
+    const preview = await loadPreview(API_BASE_URL_REAL, authHeaders, staged.batchId);
+    sendProgress('preview', 'done');
+
+    // -----------------------
+    // MAPPING with validation
+    // -----------------------
+    sendProgress('mapping', 'running');
+
+    // Build a set of valid account IDs for THIS user/tenant
+    const validAccountIds = new Set(accounts.map(a => Number(a.id)));
+
+    // Normalize + validate an ID against the set
+    const normalizeValidId = (id: number | string | null | undefined): number | null => {
+      if (id == null) return null;
+      const n = Number(id);
+      return Number.isFinite(n) && validAccountIds.has(n) ? n : null;
+    };
+
+    // pick cash/bank account (honor toggle) and validate it
+    const pickCashOrBank = (): number | null => {
+      const toLower = (s?: string) => (s || '').toLowerCase();
+
+      const findBank = () =>
+        accounts.find(a =>
+          toLower(a.type) === 'asset' &&
+          /bank|cheque|current/.test(toLower(a.name))
+        );
+
+      const findCash = () =>
+        accounts.find(a =>
+          toLower(a.type) === 'asset' &&
+          /cash/.test(toLower(a.name))
+        );
+
+      let picked: number | null = null;
+
+      if (forceCash) {
+        picked = findCash() ? Number(findCash()!.id) : (findBank() ? Number(findBank()!.id) : null);
+      } else {
+        picked = findBank() ? Number(findBank()!.id) : (findCash() ? Number(findCash()!.id) : null);
+      }
+
+      return normalizeValidId(picked); // ensure it belongs to this user
+    };
+
+    const cashOrBankRaw = pickCashOrBank();
+
+    let patchedCount = 0;
+    const unmappedRows: Array<{ date: string; description: string; reason: string }> = [];
+
+    for (const p of preview.items) {
+      const original = toSubmit.find(t => sourceUidOf(t) === p.sourceUid);
+      if (!original) continue;
+
+      // “other leg” (what user selected in the table)
+      const chosenId = normalizeValidId(original.account_id ? Number(original.account_id) : null);
+
+      // validate cash/bank leg too
+      const cashBankId = normalizeValidId(cashOrBankRaw);
+
+      // build legs by type
+      const ttype = (original.type || '').toLowerCase();
+      let debitId: number | null = null;
+      let creditId: number | null = null;
+
+      if (ttype === 'income') {
+        debitId = cashBankId;
+        creditId = chosenId;
+      } else if (ttype === 'expense') {
+        debitId = chosenId;
+        creditId = cashBankId;
+      } else if (ttype === 'debt') {
+        debitId = cashBankId;
+        creditId = chosenId;
+      } else {
+        debitId = cashBankId;
+        creditId = chosenId;
+      }
+
+      // stop if either side is invalid; collect nice errors
+      if (!debitId || !creditId) {
+        unmappedRows.push({
+          date: original.date || '',
+          description: original.description || 'Imported',
+          reason: !debitId && !creditId
+            ? 'No valid debit & credit accounts'
+            : !debitId
+            ? 'No valid debit account'
+            : 'No valid credit account',
+        });
+        continue;
+      }
+
+      await patchRowMapping(
+        API_BASE_URL_REAL,
+        authHeaders,
+        p.rowId,
+        debitId,
+        creditId
+      );
+      patchedCount++;
+    }
+
+    // If anything couldn't be mapped, show it and stop before commit
+    if (unmappedRows.length) {
+      sendProgress('mapping', 'error');
+      setImportBusy(false);
+
+      addAssistantMessage(
+        <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200 text-sm">
+          <div className="font-semibold mb-1">Some rows need attention</div>
+          <div className="mb-1">
+            {unmappedRows.length} row{unmappedRows.length > 1 ? 's' : ''} couldn’t be mapped to your accounts.
+            Pick a valid <em>Account</em> in the table (and make sure you have a Bank/Cash account).
+          </div>
+          <ul className="list-disc ml-5">
+            {unmappedRows.slice(0,5).map((r,i) => (
+              <li key={i}>{r.date} — {r.description} <span className="italic">({r.reason})</span></li>
+            ))}
+          </ul>
+          {unmappedRows.length > 5 && <div className="mt-1">…and {unmappedRows.length - 5} more.</div>}
+        </div>
+      );
+
+      return; // don’t commit
+    }
+
+    addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
+    sendProgress('mapping', 'done');
+
+    // POSTING
+    sendProgress('posting', 'running');
+
+    // 1) commit journal batch
+    const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
+
+    // Build pretty confirmations per imported row
+    const prettyLines = toSubmit.map(t => {
+      const amt = Number(t.amount || 0).toFixed(2);
+      const d   = t.date || new Date().toISOString().slice(0,10);
+      if (t.type === 'expense') return `Paid ${t.description} — R ${amt} on ${d}`;
+      if (t.type === 'income')  return `Received ${t.description} — R ${amt} on ${d}`;
+      if (t.type === 'debt')    return `Debt entry: ${t.description} — R ${amt} on ${d}`;
+      return `${t.type} ${t.description} — R ${amt} on ${d}`;
+    });
+
+    addAssistantMessage(
+      successBubble('✅ Transactions recorded', prettyLines)
+    );
+
+    sendProgress('posting', 'done');
+
+    addAssistantMessage(
+      <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+        <div className="font-semibold mb-1">Journal posting complete</div>
+        <div>{result.posted} posted, {result.skipped} skipped.</div>
+        <div className="mt-2 text-sm">
+          To see financial statements, go to the{' '}
+          <Link to="/financials" className="underline font-medium text-green-800">Financials</Link>{' '}
+          tab.
+        </div>
+      </div>
+    );
+
+    // 2) THEN post the queued sales
+    try {
+      const salesToSubmit = [...pendingSalesRef.current];
+      if (salesToSubmit.length) {
+       // addAssistantMessage(`Posting ${salesToSubmit.length} sale(s) to /api/sales…`);
+        let ok = 0;
+        for (const s of salesToSubmit) {
+          try {
+            await submitSale(s);
+            ok++;
+            // Per-sale success line
+            addAssistantMessage(
+              successBubble('✅ Sale submitted', [
+                `${s.description} — R ${Number(s.amount || 0).toFixed(2)} (${s.customer_name})`
+              ])
+            );
+          } catch (e: any) {
+            addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+          }
+        }
+        addAssistantMessage(`Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`);
+      }
+    } finally {
+      // prevent double-post on the next run
+      pendingSalesRef.current = [];
+      setPendingSales([]);
+    }
+
+  } catch (e: any) {
+    console.error('[IMPORT] Import failed:', e);
+
+    // Try to translate DB constraint errors (e.g., 23514 / check constraint) to a friendly message
+    let raw = e?.message || '';
+    try {
+      const parsed = JSON.parse(raw);
+      raw = parsed.detail || parsed.error || raw;
+    } catch {
+      // keep raw
+    }
+    const looksLikeZeroAmount =
+      e?.code === '23514' ||
+      /check constraint/i.test(raw) ||
+      /journal_lines_check1/i.test(raw) ||
+      /0\.00/.test(raw);
+
+    if (looksLikeZeroAmount) {
+      addAssistantMessage(
+        <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
+          <div className="font-semibold mb-1">Import failed: zero amounts detected</div>
+          <div>One or more selected transactions have an amount of 0. Please edit the amount or uncheck “Import?” and try again.</div>
+        </div>
+      );
+    } else {
+      const msg = raw || String(e);
+      addAssistantMessage(
+        <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200">
+          <div className="font-semibold mb-1">Import failed</div>
+          <div className="text-sm">{msg}</div>
+        </div>
+      );
+    }
+
+    // flip the appropriate stage to error if we can’t tell which; mark overall
+    sendProgress('posting', 'error');
+  } finally {
+    setImportBusy(false);
+  }
+};
+
 
   const handleUnifiedSend = () => {
     if (file) {

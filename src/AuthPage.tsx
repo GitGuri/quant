@@ -126,13 +126,17 @@ const PROVINCES = [
 // --- End Define Provinces ---
 
 export function AuthPage() {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
 
   // --- Login State ---
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   // --- End Login State ---
+
+  // --- Forgot Password State ---
+  const [forgotEmail, setForgotEmail] = useState('');
+  // --- End Forgot Password State ---
 
   // --- Registration State (Extended) ---
   const [regName, setRegName] = useState(''); // First Name
@@ -342,6 +346,44 @@ export function AuthPage() {
   };
   // --- End Handle Registration Submit ---
 
+  // --- Handle Forgot Password Submit ---
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast({
+          title: '📨 Check your email',
+          description: 'If that address exists, we sent a reset link. It expires in 60 minutes.',
+        });
+        setMode('login');
+        setLoginEmail(forgotEmail); // convenient
+        setForgotEmail('');
+      } else {
+        toast({
+          title: 'Could not send reset link',
+          description: data.error || 'Please try again.',
+          variant: 'destructive',
+        });
+      }
+    } catch (err) {
+      toast({
+        title: 'Network error',
+        description: 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  // --- End Handle Forgot Password Submit ---
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-[#0f172a] via-[#111827] to-[#1f2937]">
       {/* subtle background ornaments */}
@@ -403,7 +445,11 @@ export function AuthPage() {
             <CardHeader className="space-y-1 border-b border-gray-200/60 bg-gradient-to-r from-fuchsia-50 to-indigo-50 px-6 py-5 dark:from-gray-900 dark:to-gray-900 dark:border-white/10">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-2xl font-bold">
-                  {mode === 'login' ? 'Login to QxAnalytix' : 'Create your QxAnalytix account'}
+                  {mode === 'login'
+                    ? 'Login to QxAnalytix'
+                    : mode === 'register'
+                    ? 'Create your QxAnalytix account'
+                    : 'Reset your password'}
                 </CardTitle>
 
                 {/* Pretty toggle */}
@@ -436,7 +482,9 @@ export function AuthPage() {
               <CardDescription className="text-sm">
                 {mode === 'login'
                   ? 'Enter your credentials to access your dashboard.'
-                  : 'All fields marked * are required.'}
+                  : mode === 'register'
+                  ? 'All fields marked * are required.'
+                  : 'Enter your email to receive a reset link.'}
               </CardDescription>
             </CardHeader>
 
@@ -522,6 +570,16 @@ export function AuthPage() {
                     />
                     Continue with Google
                   </Button>
+
+                  <div className="text-center text-sm text-gray-600 dark:text-gray-300">
+                    <button
+                      type="button"
+                      onClick={() => setMode('forgot')}
+                      className="font-medium text-fuchsia-700 hover:underline dark:text-fuchsia-400"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
 
                   <div className="text-center text-sm text-gray-600 dark:text-gray-300">
                     Don’t have an account?{' '}
@@ -821,6 +879,51 @@ export function AuthPage() {
                 </form>
               )}
               {/* --- END REGISTRATION FORM --- */}
+
+              {/* --- FORGOT PASSWORD FORM --- */}
+              {mode === 'forgot' && (
+                <form onSubmit={handleForgotSubmit} className="space-y-5">
+                  <div className="space-y-2">
+                    <Label htmlFor="forgot-email">Email Address</Label>
+                    <Input
+                      id="forgot-email"
+                      type="email"
+                      placeholder="you@example.com"
+                      value={forgotEmail}
+                      onChange={(e) => setForgotEmail(e.target.value)}
+                      required
+                      className="h-11"
+                    />
+                  </div>
+
+                  <Button
+                    type="submit"
+                    className="h-11 w-full bg-gradient-to-r from-fuchsia-600 to-indigo-600 text-white hover:from-fuchsia-700 hover:to-indigo-700"
+                    disabled={isLoading}
+                  >
+                    {isLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Sending link...
+                      </>
+                    ) : (
+                      'Send reset link'
+                    )}
+                  </Button>
+
+                  <div className="text-center text-sm text-gray-600 dark:text-gray-300">
+                    Remembered your password?{' '}
+                    <button
+                      type="button"
+                      onClick={() => setMode('login')}
+                      className="font-medium text-fuchsia-700 hover:underline dark:text-fuchsia-400"
+                    >
+                      Back to login
+                    </button>
+                  </div>
+                </form>
+              )}
+              {/* --- END FORGOT PASSWORD FORM --- */}
             </CardContent>
           </Card>
 

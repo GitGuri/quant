@@ -1027,8 +1027,8 @@ const Financials = () => {
         .forEach(li => rows.push([li.item, li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })]));
 
       pushBlank();
-      rows.push(['TOTAL ASSETS (control)', csvAmount(balanceSheetData.totals.totalAssets, { alwaysShow: true })]);
-      rows.push(['TOTAL EQUITY AND LIABILITIES (control)', csvAmount(balanceSheetData.totals.totalEquityAndLiabilities, { alwaysShow: true })]);
+      rows.push(['TOTAL ASSETS ', csvAmount(balanceSheetData.totals.totalAssets, { alwaysShow: true })]);
+      rows.push(['TOTAL EQUITY AND LIABILITIES ', csvAmount(balanceSheetData.totals.totalEquityAndLiabilities, { alwaysShow: true })]);
       return rows;
     }
 
@@ -1169,113 +1169,143 @@ const Financials = () => {
       >
 
 
-        <Card className="mb-6 bg-white dark:bg-gray-800 shadow-lg rounded-lg">
-          <CardHeader>
-            <CardTitle className="text-2xl font-bold text-gray-800 dark:text-gray-200">Financial Reports</CardTitle>
-            <CardDescription className="text-gray-600 dark:text-gray-400">
-              View and generate various financial statements for your business.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col sm:flex-row items-center gap-4 mb-6">
-              <div className="flex-1 w-full sm:w-auto">
-                <label htmlFor="fromDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  From Date
-                </label>
-                <Input id="fromDate" type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setPreset('custom'); }} className="w-full" />
-              </div>
-              <div className="flex-1 w-full sm:w-auto">
-                <label htmlFor="toDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  To Date
-                </label>
-                <Input id="toDate" type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setPreset('custom'); }} className="w-full" />
-              </div>
+<Card className="mb-6 bg-white dark:bg-gray-950/60 shadow-sm border">
+  {/* Top bar: title on left, actions on right */}
+  <CardHeader className="pb-3">
+    <div className="flex items-center justify-between gap-3">
+      <div>
+        <CardTitle className="text-2xl font-semibold tracking-tight">
+          Financial Reports
+        </CardTitle>
+        <CardDescription className="mt-1">
+          View and export your statutory statements.
+        </CardDescription>
+      </div>
 
-              {/* Period Preset */}
-              <div className="flex-1 w-full sm:w-auto">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Period Preset
-                </label>
-                <Select value={preset} onValueChange={(v) => setPreset(v as PresetKey)}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Choose a preset" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="custom">Custom (use dates)</SelectItem>
-                    <SelectItem value="2m">Last 2 months</SelectItem>
-                    <SelectItem value="quarter">This quarter</SelectItem>
-                    <SelectItem value="half">Last 6 months</SelectItem>
-                    <SelectItem value="year">Last 12 months</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+      {/* Actions on the right */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={handleDownloadPdf}>Download PDF</Button>
+        <Button size="sm" variant="secondary" onClick={handleDownloadCsv}>CSV</Button>
+        <Button size="sm" variant="outline" onClick={handleDownloadCsvZip}>CSV (ZIP)</Button>
+      </div>
+    </div>
+  </CardHeader>
 
-              {/* Breakdown */}
-              <div className="flex-1 w-full sm:w-auto">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Breakdown
-                </label>
-                <Select value={breakdown} onValueChange={(v) => setBreakdown(v as Breakdown)}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Aggregate or Monthly" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="aggregate">Aggregate</SelectItem>
-                    <SelectItem value="monthly">Monthly (pivot)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+  <CardContent className="pt-0">
+    {/* Quick period chips */}
+    <div className="flex flex-wrap gap-2 py-3">
+      {[
+        {k:'custom', t:'Custom'},
+        {k:'2m', t:'Last 2 mo'},
+        {k:'quarter', t:'This quarter'},
+        {k:'half', t:'Last 6 mo'},
+        {k:'year', t:'Last 12 mo'},
+      ].map(p => (
+        <button
+          key={p.k}
+          onClick={() => setPreset(p.k as any)}
+          className={[
+            "px-3 py-1 rounded-full border text-xs",
+            preset === p.k
+              ? "bg-primary text-primary-foreground border-primary"
+              : "bg-background hover:bg-accent"
+          ].join(" ")}
+        >
+          {p.t}
+        </button>
+      ))}
+    </div>
 
-              {/* Compare */}
-              <div className="flex-1 w-full sm:w-auto">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Compare
-                </label>
-                <Select
-                  value={compareMode}
-                  onValueChange={(v) => setCompareMode(v as CompareMode)}
-                  disabled={breakdown === 'monthly'}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="No comparison" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">No comparison</SelectItem>
-                    <SelectItem value="prev-period">Previous period</SelectItem>
-                    <SelectItem value="prev-year">Same period last year</SelectItem>
-                  </SelectContent>
-                </Select>
-                {breakdown === 'monthly' && (
-                  <p className="text-xs text-gray-500 mt-1">Comparison is available in Aggregate view.</p>
-                )}
-              </div>
+    {/* Dense controls grid */}
+    <div className="grid gap-3 lg:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 items-end">
+      {/* From / To */}
+      <div className="lg:col-span-2">
+        <label htmlFor="fromDate" className="block text-[11px] font-medium text-muted-foreground mb-1">From</label>
+        <Input id="fromDate" type="date"
+          value={fromDate}
+          onChange={(e)=>{ setFromDate(e.target.value); setPreset('custom'); }}
+          className="h-9" />
+      </div>
+      <div className="lg:col-span-2">
+        <label htmlFor="toDate" className="block text-[11px] font-medium text-muted-foreground mb-1">To</label>
+        <Input id="toDate" type="date"
+          value={toDate}
+          onChange={(e)=>{ setToDate(e.target.value); setPreset('custom'); }}
+          className="h-9" />
+      </div>
 
-              <div className="flex-1 w-full sm:w-auto">
-                <label htmlFor="documentType" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Document Type
-                </label>
-                <Select onValueChange={setSelectedDocumentType} value={selectedDocumentType}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select a document type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {reportTypes.map((report) => (
-                      <SelectItem key={report.id} value={report.id}>
-                        {report.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+      {/* Preset (select) */}
+      <div className="lg:col-span-2">
+        <label className="block text-[11px] font-medium text-muted-foreground mb-1">Period Preset</label>
+        <Select value={preset} onValueChange={(v)=>setPreset(v as any)}>
+          <SelectTrigger className="h-9"><SelectValue placeholder="Preset" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="custom">Custom</SelectItem>
+            <SelectItem value="2m">Last 2 months</SelectItem>
+            <SelectItem value="quarter">This quarter</SelectItem>
+            <SelectItem value="half">Last 6 months</SelectItem>
+            <SelectItem value="year">Last 12 months</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
-              <div className="flex gap-2 mt-7">
-                <Button onClick={handleDownloadPdf} className="w-full sm:w-auto">Download PDF</Button>
-                <Button onClick={handleDownloadCsv} variant="secondary" className="w-full sm:w-auto">Download CSV</Button>
-                <Button onClick={handleDownloadCsvZip} variant="outline" className="w-full sm:w-auto">Download CSV (ZIP)</Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Breakdown */}
+      <div className="lg:col-span-2">
+        <label className="block text-[11px] font-medium text-muted-foreground mb-1">Breakdown</label>
+        <Select value={breakdown} onValueChange={(v)=>setBreakdown(v as any)}>
+          <SelectTrigger className="h-9"><SelectValue placeholder="Breakdown" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="aggregate">Aggregate</SelectItem>
+            <SelectItem value="monthly">Monthly (pivot)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Compare */}
+      <div className="lg:col-span-2">
+        <label className="block text-[11px] font-medium text-muted-foreground mb-1">Compare</label>
+        <Select value={compareMode} onValueChange={(v)=>setCompareMode(v as any)} disabled={breakdown==='monthly'}>
+          <SelectTrigger className="h-9"><SelectValue placeholder="Compare" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">No comparison</SelectItem>
+            <SelectItem value="prev-period">Previous period</SelectItem>
+            <SelectItem value="prev-year">Same period last year</SelectItem>
+          </SelectContent>
+        </Select>
+        {breakdown==='monthly' && (
+          <div className="text-[11px] text-muted-foreground mt-1">Comparison only in Aggregate view.</div>
+        )}
+      </div>
+
+      {/* Document type */}
+      <div className="lg:col-span-2">
+        <label className="block text-[11px] font-medium text-muted-foreground mb-1">Document Type</label>
+        <Select value={selectedDocumentType} onValueChange={setSelectedDocumentType}>
+          <SelectTrigger className="h-9"><SelectValue placeholder="Type" /></SelectTrigger>
+          <SelectContent>
+            {reportTypes.map(r => (
+              <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Period summary chip */}
+      <div className="lg:col-span-12">
+        <div className="mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs bg-background">
+          <span className="opacity-70">Period:</span>
+          <span className="font-medium">
+            {new Date(fromDate).toLocaleDateString('en-ZA')} — {new Date(toDate).toLocaleDateString('en-ZA')}
+          </span>
+          {compareMode!=='none' && breakdown==='aggregate' && (
+            <span className="ml-2 rounded-full bg-primary/10 px-2 py-[2px] text-primary">Comparison on</span>
+          )}
+        </div>
+      </div>
+    </div>
+  </CardContent>
+</Card>
+
 
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as ReportId)}>
           <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
