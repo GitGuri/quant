@@ -12,24 +12,21 @@ import {
   AlertTriangle,
   FolderPlus,
   Filter,
-  Mic,
-  StopCircle,
   DownloadCloud,
   RefreshCw,
 } from 'lucide-react';
 import { KpiCard } from './KpiCard';
 import { TasksTable } from './TasksTable';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
 import { ProjectForm, type ProjectFormData } from './ProjectForm';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
-
-declare global {
-  interface Window {
-    webkitSpeechRecognition: any;
-    SpeechRecognition: any;
-  }
-}
 
 const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
@@ -51,11 +48,21 @@ type Task = {
   priority: 'Low' | 'Medium' | 'High';
 };
 
+/* Small debounce util (keeps UI snappy when many events fire) */
+function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
+  let t: ReturnType<typeof setTimeout> | null = null;
+  return (...args: Parameters<T>) => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
 export default function TasksDashboard() {
   const { toast } = useToast();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [activeTab, setActiveTab] = useState<'all' | 'inprogress' | 'completed' | 'overdue' | 'archived'>('all');
+  const [activeTab, setActiveTab] =
+    useState<'all' | 'inprogress' | 'completed' | 'overdue' | 'archived'>('all');
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState<string | 'all'>('all');
 
@@ -65,14 +72,10 @@ export default function TasksDashboard() {
 
   // Projects Progress UX state
   const [projQuery, setProjQuery] = useState('');
-  const [projSort, setProjSort] = useState<'name' | 'progress_desc' | 'progress_asc'>('progress_desc');
+  const [projSort, setProjSort] =
+    useState<'name' | 'progress_desc' | 'progress_asc'>('progress_desc');
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [condensed, setCondensed] = useState(true);
-
-  // Voice Recording State
-  const [isRecording, setIsRecording] = useState(false);
-  const [transcribedText, setTranscribedText] = useState('');
-  const recognitionRef = useRef<any>(null);
 
   // Demo “Read.ai” import loading
   const [importingReadAi, setImportingReadAi] = useState(false);
@@ -85,9 +88,15 @@ export default function TasksDashboard() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
+  /* ===========================
+     FETCHERS (cache-busting)
+     =========================== */
   const fetchTasks = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/api/tasks`, { headers: { 'Content-Type': 'application/json', ...authHeaders() } });
+      const r = await fetch(`${API_BASE}/api/tasks?ts=${Date.now()}`, {
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        cache: 'no-store',
+      });
       if (!r.ok) throw new Error('Failed to load tasks');
       const data = await r.json();
       setTasks(Array.isArray(data) ? data : []);
@@ -98,7 +107,10 @@ export default function TasksDashboard() {
 
   const fetchProjects = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/api/projects`, { headers: { ...authHeaders() } });
+      const r = await fetch(`${API_BASE}/api/projects?ts=${Date.now()}`, {
+        headers: { ...authHeaders() },
+        cache: 'no-store',
+      });
       if (!r.ok) throw new Error('Failed to load projects');
       const data = await r.json();
       setProjects(Array.isArray(data) ? data : []);
@@ -118,13 +130,49 @@ export default function TasksDashboard() {
     }
   }, []);
 
+  // Initial load
   useEffect(() => {
     fetchTasks();
     fetchProjects();
     fetchUsers();
   }, [fetchTasks, fetchProjects, fetchUsers]);
 
-  // REFRESH handler
+  /* ======================================================
+     LIVE RELOAD: listen for app-wide custom events
+     (no extra context; just window events)
+     ====================================================== */
+  useEffect(() => {
+    const refreshDebounced = debounce(async () => {
+      await Promise.all([fetchTasks(), fetchProjects()]);
+    }, 250);
+
+    const handler = () => refreshDebounced();
+
+    const events = [
+      'tasks:refresh',
+      'tasks:created',
+      'tasks:updated',
+      'tasks:deleted',
+      'tasks:import', // demo imports into table
+      'projects:refresh',
+      'projects:created',
+      'projects:updated',
+      'projects:deleted',
+    ];
+
+    events.forEach((e) => window.addEventListener(e, handler as EventListener));
+    window.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refreshDebounced();
+    });
+    window.addEventListener('focus', handler as EventListener);
+
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, handler as EventListener));
+      window.removeEventListener('focus', handler as EventListener);
+    };
+  }, [fetchTasks, fetchProjects]);
+
+  // Manual refresh button
   const handleRefresh = useCallback(async () => {
     try {
       setRefreshing(true);
@@ -137,67 +185,10 @@ export default function TasksDashboard() {
     }
   }, [fetchTasks, fetchProjects, fetchUsers, toast]);
 
-  // Voice Recording
-  const startRecording = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      toast({
-        title: 'Speech Recognition Not Supported',
-        description: 'Your browser does not support speech recognition. Please try Chrome.',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'en-US';
-    recognition.continuous = false;
-    recognition.interimResults = true;
-
-    recognition.onstart = () => {
-      setIsRecording(true);
-      setTranscribedText('');
-      toast({ title: 'Recording Started', description: 'Listening...' });
-    };
-
-    recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results).map((r: any) => r[0].transcript).join('');
-      setTranscribedText(transcript);
-    };
-
-    recognition.onerror = (event: any) => {
-      console.error('Speech recognition error:', event);
-      toast({
-        title: 'Speech Recognition Error',
-        description: `Error occurred: ${event.error}. Please try again.`,
-        variant: 'destructive',
-      });
-      setIsRecording(false);
-    };
-
-    recognition.onend = () => {
-      setIsRecording(false);
-      if (transcribedText.trim()) {
-        window.dispatchEvent(new CustomEvent('tasks:add', { detail: { initialText: transcribedText } }));
-      } else {
-        toast({ title: 'Recording Stopped', description: 'No text was captured.' });
-      }
-    };
-
-    recognitionRef.current = recognition;
-    recognition.start();
-  };
-
-  const stopRecording = () => {
-    if (recognitionRef.current && isRecording) {
-      recognitionRef.current.stop();
-    }
-  };
-
-  // Helpers
-  type TaskStatus = Task['status'];
+  /* ===========================
+     Helpers / KPIs
+     =========================== */
   const pctNum = (v: unknown) => Math.max(0, Math.min(100, Math.round(Number(v ?? 0))));
-  const statusFromPct = (pct: number): TaskStatus => (pct >= 100 ? 'Done' : pct >= 1 ? 'In Progress' : 'To Do');
   const isOverdue = (t: { due_date?: string | null; status: Task['status']; progress_percentage: number | string }) => {
     if (!t.due_date) return false;
     if (t.status === 'Done' || t.status === 'Archived') return false;
@@ -206,16 +197,7 @@ export default function TasksDashboard() {
     const due = new Date(t.due_date as string); due.setHours(0, 0, 0, 0);
     return due.getTime() < today.getTime();
   };
-  const deriveUiStatus = (t: Task): TaskStatus => {
-    if (t.status === 'Archived') return 'Archived';
-    const pctStatus = statusFromPct(Math.round(t.progress_percentage || 0));
-    if (pctStatus === 'Done') return 'Done';
-    if (isOverdue(t)) return 'Overdue';
-    if (t.status === 'Review') return 'Review';
-    return pctStatus;
-  };
 
-  // KPIs
   const kpis = useMemo(() => {
     const total = tasks.length;
     const completed = tasks.filter((t) => t.status !== 'Archived' && pctNum(t.progress_percentage) >= 100).length;
@@ -227,7 +209,7 @@ export default function TasksDashboard() {
     return { total, completed, inProgress, overdue };
   }, [tasks]);
 
-  // Per-project progress
+  // Per-project progress (average of task %s)
   const projectsWithProgress = useMemo<Project[]>(() => {
     if (!projects.length) return projects;
     const sums = new Map<string, { total: number; count: number }>();
@@ -246,7 +228,7 @@ export default function TasksDashboard() {
     });
   }, [projects, tasks]);
 
-  // Filter/sort/topN for Projects Progress card
+  // Filter/sort for Projects Progress card
   const filteredSortedProjects = useMemo(() => {
     let rows = projectsWithProgress;
     if (projQuery.trim()) {
@@ -263,6 +245,9 @@ export default function TasksDashboard() {
     return rows;
   }, [projectsWithProgress, projQuery, projSort]);
 
+  /* ===========================
+     Create project
+     =========================== */
   const onProjectSaved = async (data: ProjectFormData) => {
     try {
       const r = await fetch(`${API_BASE}/api/projects`, {
@@ -280,6 +265,10 @@ export default function TasksDashboard() {
       toast({ title: `Project "${data.name}" created` });
       setProjectDialogOpen(false);
       await fetchProjects();
+
+      // Tell any open tables/boards to refresh
+      window.dispatchEvent(new Event('projects:created'));
+      window.dispatchEvent(new Event('projects:refresh'));
     } catch (e: any) {
       toast({ title: 'Error', description: e.message || 'Failed to create project', variant: 'destructive' });
     }
@@ -287,12 +276,12 @@ export default function TasksDashboard() {
 
   const currentFilters = { search, projectId: projectFilter === 'all' ? undefined : projectFilter, tab: activeTab };
 
-  /** -------- DEMO: Import from Read.ai -------- */
+  /** -------- DEMO: Import from Read.ai (emits tasks:import the table listens to) -------- */
   const handleImportFromReadAi = async () => {
     try {
       setImportingReadAi(true);
 
-      // simulate a short fetch delay so the button shows loading feels real
+      // small delay so the loading state is visible
       await new Promise((r) => setTimeout(r, 650));
 
       const today = new Date();
@@ -300,17 +289,14 @@ export default function TasksDashboard() {
 
       const t1 = new Date(today); t1.setDate(t1.getDate() + 2);
       const t2 = new Date(today); t2.setDate(t2.getDate() - 1); // overdue
-      const t3 = new Date(today); t3.setDate(t3.getDate() + 7);
-      const t4 = new Date(today); t4.setDate(t4.getDate() + 1);
 
-      // If we have users/projects, sprinkle them in so it looks legit
       const someUser = users[0];
       const someProject = projects[0];
 
       const mockTasks = [
         {
           id: 'demo-readai-1',
-          title: 'Follow-ups from Read.ai: Tshepiso Branding sync',
+          title: 'Follow-ups from Read.ai: Branding sync',
           status: 'To Do' as const,
           progress_percentage: 0,
           due_date: iso(t1),
@@ -321,45 +307,25 @@ export default function TasksDashboard() {
         },
         {
           id: 'demo-readai-2',
-          title: 'Compile actions: Supplier onboarding notes',
+          title: 'Compile actions: Supplier onboarding',
           status: 'To Do' as const,
           progress_percentage: 10,
-          due_date: iso(t2), // yesterday → will show Overdue
+          due_date: iso(t2), // yesterday → Overdue in UI
           assignee_name: someUser?.name || 'Auto-import',
           project_id: someProject?.id ?? null,
           project_name: someProject?.name ?? 'Read.ai Imports',
           priority: 'Medium' as const,
         },
-        {
-          id: 'demo-readai-3',
-          title: 'Prepare summary deck for Monday review',
-          status: 'In Progress' as const,
-          progress_percentage: 45,
-          due_date: iso(t3),
-          assignee_name: someUser?.name || 'Auto-import',
-          project_id: someProject?.id ?? null,
-          project_name: someProject?.name ?? 'Read.ai Imports',
-          priority: 'High' as const,
-        },
-        {
-          id: 'demo-readai-4',
-          title: 'Email minutes to stakeholders',
-          status: 'To Do' as const,
-          progress_percentage: 0,
-          due_date: iso(t4),
-          assignee_name: someUser?.name || 'Auto-import',
-          project_id: someProject?.id ?? null,
-          project_name: someProject?.name ?? 'Read.ai Imports',
-          priority: 'Low' as const,
-        },
       ];
 
-      // Broadcast to whichever view/table is currently mounted.
       window.dispatchEvent(new CustomEvent('tasks:import', {
         detail: { source: 'readai', tasks: mockTasks }
       }));
 
-      toast({ title: 'Imported from Read.ai', description: 'Added 4 tasks from the latest transcript.' });
+      // Also refresh KPI + projects progress
+      window.dispatchEvent(new Event('tasks:refresh'));
+
+      toast({ title: 'Imported from Ai Notetaker', description: 'Added 2 tasks from the latest transcript.' });
     } finally {
       setImportingReadAi(false);
     }
@@ -446,8 +412,6 @@ export default function TasksDashboard() {
               <Plus className="h-4 w-4 mr-2" /> Add Task
             </Button>
 
-
-
             <Button variant="outline" onClick={() => setProjectDialogOpen(true)}>
               <FolderPlus className="h-4 w-4 mr-2" /> Add Project
             </Button>
@@ -458,7 +422,7 @@ export default function TasksDashboard() {
               {importingReadAi ? 'Importing…' : 'Import from Ai Notetaker'}
             </Button>
 
-            {/* NEW: Refresh */}
+            {/* Refresh */}
             <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
               <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
               {refreshing ? 'Refreshing…' : 'Refresh'}
@@ -511,6 +475,9 @@ export default function TasksDashboard() {
             onChanged={async () => {
               await fetchTasks();
               await fetchProjects();
+              // echo to other parts of the app
+              window.dispatchEvent(new Event('tasks:refresh'));
+              window.dispatchEvent(new Event('projects:refresh'));
             }}
             projects={projects}
             users={users}
@@ -524,6 +491,8 @@ export default function TasksDashboard() {
             onChanged={async () => {
               await fetchTasks();
               await fetchProjects();
+              window.dispatchEvent(new Event('tasks:refresh'));
+              window.dispatchEvent(new Event('projects:refresh'));
             }}
             projects={projects}
             users={users}
@@ -537,6 +506,8 @@ export default function TasksDashboard() {
             onChanged={async () => {
               await fetchTasks();
               await fetchProjects();
+              window.dispatchEvent(new Event('tasks:refresh'));
+              window.dispatchEvent(new Event('projects:refresh'));
             }}
             projects={projects}
             users={users}
@@ -550,6 +521,8 @@ export default function TasksDashboard() {
             onChanged={async () => {
               await fetchTasks();
               await fetchProjects();
+              window.dispatchEvent(new Event('tasks:refresh'));
+              window.dispatchEvent(new Event('projects:refresh'));
             }}
             projects={projects}
             users={users}
@@ -563,6 +536,8 @@ export default function TasksDashboard() {
             onChanged={async () => {
               await fetchTasks();
               await fetchProjects();
+              window.dispatchEvent(new Event('tasks:refresh'));
+              window.dispatchEvent(new Event('projects:refresh'));
             }}
             projects={projects}
             users={users}
@@ -577,7 +552,11 @@ export default function TasksDashboard() {
             <DialogTitle>New Project</DialogTitle>
             <DialogDescription className="sr-only">Create a new project</DialogDescription>
           </DialogHeader>
-          <ProjectForm users={users} onSave={onProjectSaved} onCancel={() => setProjectDialogOpen(false)} />
+          <ProjectForm
+            users={users}
+            onSave={onProjectSaved}
+            onCancel={() => setProjectDialogOpen(false)}
+          />
         </DialogContent>
       </Dialog>
     </div>

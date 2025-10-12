@@ -234,6 +234,23 @@ interface ApiCashFlowGrouped {
   financing?: ApiCashFlowSectionItem[];
 }
 
+interface ApiVatResponse {
+  period: { from: string; to: string };
+  accounts: {
+    vatPayableId: number | null;
+    vatInputId: number | null;
+    salesRevenueId: number | null;
+  };
+  results: {
+    output_vat_1A: number;     // Output VAT (Box 1A)
+    input_vat_1B: number;      // Input VAT  (Box 1B)
+    net_vat_1C: number;        // Net (payable/refund)
+    taxable_supplies_excl: number; // For 1A context
+    zero_rated_supplies: number;
+    exempt_supplies: number;
+  };
+}
+
 // Use your deployed backend
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
@@ -251,7 +268,7 @@ const openBlobInNewTab = (blob: Blob, filename: string) => {
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 };
 
-type ReportId = 'trial-balance' | 'income-statement' | 'balance-sheet' | 'cash-flow-statement';
+type ReportId = 'trial-balance' | 'income-statement' | 'balance-sheet' | 'cash-flow-statement' | 'vat';
 
 type SimpleLine = {
   item: string;
@@ -293,6 +310,9 @@ const Financials = () => {
     totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
   });
   const [cashflowData, setCashflowData] = useState<{ category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[]>([]);
+  // near your other useState hooks
+  const [vatData, setVatData] = useState<ApiVatResponse | null>(null);
+
 
   // Previous-period datasets (aggregate mode)
   const [trialBalanceDataPrev, setTrialBalanceDataPrev] = useState<ApiTrialBalanceItem[]>([]);
@@ -310,16 +330,22 @@ const Financials = () => {
   const [trialMonthly, setTrialMonthly] = useState<ApiTrialBalanceItem[][]>([]);
   const [bsMonthly, setBsMonthly] = useState<BalanceSheetData[]>([]);
   const [cfMonthly, setCfMonthly] = useState<typeof cashflowData[]>([]);
+  // add near other monthly state
+  const [incomeOrderHint, setIncomeOrderHint] = useState<string[]>([]);
+
 
   const [activeTab, setActiveTab] = useState<ReportId>('income-statement');
   const [selectedDocumentType, setSelectedDocumentType] = useState<string>('income-statement');
 
-  const reportTypes = [
-    { id: 'trial-balance' as ReportId, label: 'Trial Balance' },
-    { id: 'income-statement' as ReportId, label: 'Income Statement' },
-    { id: 'balance-sheet' as ReportId, label: 'Balance Sheet' },
-    { id: 'cash-flow-statement' as ReportId, label: 'Cashflow Statement' },
-  ] as const;
+// reportTypes
+const reportTypes = [
+  { id: 'trial-balance' as ReportId, label: 'Trial Balance' },
+  { id: 'income-statement' as ReportId, label: 'Income Statement' },
+  { id: 'balance-sheet' as ReportId, label: 'Balance Sheet' },
+  { id: 'cash-flow-statement' as ReportId, label: 'Cashflow Statement' },
+  { id: 'vat' as ReportId, label: 'VAT' }, // NEW
+] as const;
+
 
   
   const token = localStorage.getItem('token');
@@ -334,8 +360,14 @@ const Financials = () => {
   const isZeroish = (n: any) => Math.abs(Number(n) || 0) < ZEPS;
   const nonZero = (n: number) => !isZeroish(n);
 
-  const toMoney = (val: number): string =>
-    `R ${Math.abs(Number(val)).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// replaces the existing toMoney()
+const toMoney = (val: number): string => {
+  const n = Number(val);
+  const abs = Math.abs(n);
+  const s = abs.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n < 0 ? `(R ${s})` : `R ${s}`;
+};
+
 
   const moneyOrBlank = (amount: number | null | undefined): string => {
     if (amount === null || amount === undefined) return '';
@@ -382,31 +414,38 @@ const Financials = () => {
   // ======= ALIGNMENT / PIVOT HELPERS =======
   const toNumOrNull = (v: number | '' | undefined): number | null => (typeof v === 'number' ? v : null);
 
-  function multiAlignByItem(series: SimpleLine[][]) {
-    const monthMaps: Map<string, SimpleLine>[] = series.map(lines => {
-      const m = new Map<string, SimpleLine>();
-      (lines || []).forEach(l => m.set(l.item, l));
-      return m;
-    });
+// replaces the existing multiAlignByItem()
+function multiAlignByItem(series: SimpleLine[][], orderHint?: string[]) {
+  const monthMaps: Map<string, SimpleLine>[] = series.map(lines => {
+    const m = new Map<string, SimpleLine>();
+    (lines || []).forEach(l => m.set(l.item, l));
+    return m;
+  });
 
-    const orderedKeys: string[] = [];
-    (series[0] || []).forEach(l => orderedKeys.push(l.item));
-    for (let i = 1; i < monthMaps.length; i++) {
-      monthMaps[i].forEach((_v, k) => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
-    }
-
-    return orderedKeys.map(k => {
-      const metaFrom = (monthMaps.find(m => m.has(k))?.get(k));
-      const flags = {
-        type: metaFrom?.type,
-        isTotal: metaFrom?.isTotal,
-        isSubheader: metaFrom?.isSubheader,
-        isAdjustment: metaFrom?.isAdjustment,
-      };
-      const values = monthMaps.map(m => toNumOrNull(m.get(k)?.amount as any));
-      return { item: k, ...flags, values };
-    });
+  // Build the order:
+  // 1) use orderHint (aggregate order) if provided,
+  // 2) else start from the first series,
+  // 3) then append any remaining keys.
+  const orderedKeys: string[] = orderHint ? [...orderHint] : [];
+  if (!orderedKeys.length && series[0]) series[0].forEach(l => orderedKeys.push(l.item));
+  for (let i = 0; i < monthMaps.length; i++) {
+    monthMaps[i].forEach((_v, k) => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
   }
+
+  return orderedKeys.map(k => {
+    const metaFrom = (monthMaps.find(m => m.has(k))?.get(k));
+    const values = monthMaps.map(m => (typeof m.get(k)?.amount === 'number' ? (m.get(k)!.amount as number) : null));
+    return {
+      item: k,
+      type: metaFrom?.type,
+      isTotal: metaFrom?.isTotal,
+      isSubheader: metaFrom?.isSubheader,
+      isAdjustment: metaFrom?.isAdjustment,
+      values
+    };
+  });
+}
+
 
   // ======= Memoized builders to prevent update loops =======
   const buildIncomeStatementLines = useCallback((sections: ApiIncomeStatementSection[] | undefined): SimpleLine[] => {
@@ -713,18 +752,16 @@ const Financials = () => {
 
       const headers = { Accept: 'application/json', Authorization: `Bearer ${token}` };
 
-      const buildUrl = (t: ReportId, start: string, end: string) => {
-        switch (t) {
-          case 'income-statement':
-            return `${API_BASE_URL}/reports/income-statement?start=${start}&end=${end}`;
-          case 'balance-sheet':
-            return `${API_BASE_URL}/reports/balance-sheet?asOf=${end}&start=${start}&debug=1`;
-          case 'trial-balance':
-            return `${API_BASE_URL}/reports/trial-balance?start=${start}&end=${end}`;
-          case 'cash-flow-statement':
-            return `${API_BASE_URL}/reports/cash-flow?start=${start}&end=${end}`;
-        }
-      };
+const buildUrl = (t: ReportId, start: string, end: string) => {
+  switch (t) {
+    case 'income-statement': return `${API_BASE_URL}/reports/income-statement?start=${start}&end=${end}`;
+    case 'balance-sheet':    return `${API_BASE_URL}/reports/balance-sheet?asOf=${end}&start=${start}&debug=1`;
+    case 'trial-balance':    return `${API_BASE_URL}/reports/trial-balance?start=${start}&end=${end}`;
+    case 'cash-flow-statement': return `${API_BASE_URL}/reports/cash-flow?start=${start}&end=${end}`;
+    case 'vat':              return `${API_BASE_URL}/reports/vat?from=${start}&to=${end}`; // NEW
+  }
+};
+
 
       const doFetch = async (url: string) => {
         const res = await fetch(url, { headers });
@@ -750,7 +787,12 @@ const Financials = () => {
           setBalanceSheetData(normalizeBalanceSheetFromServer(payload as ApiBalanceSheetResponse));
         } else if (type === 'cash-flow-statement') {
           setCashflowData(normalizeCashflow(payload?.sections as ApiCashFlowGrouped | undefined));
-        }
+        } // ✅ NEW: Handle VAT report
+else if (type === 'vat') {
+  setVatData(payload as ApiVatResponse);
+}
+
+
 
         // Comparison period (aggregate only)
         const prevRange = previousPeriod(fromDate, toDate, compareMode);
@@ -766,7 +808,8 @@ const Financials = () => {
             setBalanceSheetDataPrev(normalizeBalanceSheetFromServer(prevPayload as ApiBalanceSheetResponse));
           } else if (type === 'cash-flow-statement') {
             setCashflowDataPrev(normalizeCashflow(prevPayload?.sections as ApiCashFlowGrouped | undefined));
-          }
+
+          } 
         } else {
           setIncomeStatementDataPrev([]);
           setTrialBalanceDataPrev([]);
@@ -790,6 +833,8 @@ const Financials = () => {
           totals: { totalAssets: 0, totalLiabilities: 0, totalEquity: 0, totalEquityAndLiabilities: 0, diff: 0 }
         });
         if (type === 'cash-flow-statement') setCashflowData([]);
+        if (type === 'vat') setVatData(null);
+
       }
     },
     [fromDate, toDate, token, toast, compareMode, breakdown, buildIncomeStatementLines, normalizeBalanceSheetFromServer, normalizeCashflow]
@@ -861,15 +906,30 @@ const Financials = () => {
     };
 
     try {
-      if (type === 'income-statement') {
-        const results = await Promise.all(buckets.map(async b => {
-          const res = await fetch(buildUrl(type, b.start, b.end)!, { headers });
-          if (!res.ok) throw new Error('Income (monthly) fetch failed');
-          const payload = await res.json();
-          return buildIncomeStatementLines(payload?.sections);
-        }));
-        setIncomeMonthly(results);
-      }
+if (type === 'income-statement') {
+  const results = await Promise.all(buckets.map(async b => {
+    const res = await fetch(buildUrl(type, b.start, b.end)!, { headers });
+    if (!res.ok) throw new Error('Income (monthly) fetch failed');
+    const payload = await res.json();
+    return buildIncomeStatementLines(payload?.sections);
+  }));
+  setIncomeMonthly(results);
+
+  // NEW: fetch aggregate once to get canonical row order
+  try {
+    const aggRes = await fetch(buildUrl(type, fromDate, toDate)!, { headers });
+    if (aggRes.ok) {
+      const aggPayload = await aggRes.json();
+      const aggLines = buildIncomeStatementLines(aggPayload?.sections);
+      setIncomeOrderHint(aggLines.map(l => l.item));
+    } else {
+      setIncomeOrderHint([]);
+    }
+  } catch {
+    setIncomeOrderHint([]);
+  }
+}
+
 
       if (type === 'cash-flow-statement') {
         const results = await Promise.all(buckets.map(async b => {
@@ -1064,40 +1124,48 @@ const Financials = () => {
     return rows;
   };
 
-  const handleDownloadPdf = async () => {
-    if (!token) {
-      toast({ title: "Authentication Required", description: "Please log in to download financial documents.", variant: "destructive" });
-      return;
+const handleDownloadPdf = async () => {
+  if (!token) {
+    toast({ title: "Authentication Required", description: "Please log in to download financial documents.", variant: "destructive" });
+    return;
+  }
+  if (!selectedDocumentType || !fromDate || !toDate) {
+    toast({ title: "Missing Information", description: "Please select a document type and valid dates.", variant: "destructive" });
+    return;
+  }
+  try {
+    const qs = new URLSearchParams({
+      documentType: selectedDocumentType,
+      startDate: fromDate,
+      endDate: toDate,
+      breakdown,                      // "aggregate" | "monthly"
+      compare: compareMode,           // "none" | "prev-period" | "prev-year"
+    });
+    const resp = await fetch(`${API_BASE_URL}/generate-financial-document?${qs}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Download failed: ${resp.status} ${resp.statusText}. Details: ${text.substring(0, 200)}`);
     }
-    if (!selectedDocumentType || !fromDate || !toDate) {
-      toast({ title: "Missing Information", description: "Please select a document type and valid dates.", variant: "destructive" });
-      return;
-    }
-    try {
-      const qs = new URLSearchParams({
-        documentType: selectedDocumentType,
-        startDate: fromDate,
-        endDate: toDate,
-      });
-      const resp = await fetch(`${API_BASE_URL}/generate-financial-document?${qs}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!resp.ok) {
-        const text = await resp.text();
-        throw new Error(`Download failed: ${resp.status} ${resp.statusText}. Details: ${text.substring(0, 200)}`);
-      }
-      const cd = resp.headers.get('Content-Disposition') || '';
-      const match = /filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i.exec(cd);
-      const filename = decodeURIComponent(match?.[1] || match?.[2] || `${selectedDocumentType}-${fromDate}-to-${toDate}.pdf`);
-      const blob = await resp.blob();
-      openBlobInNewTab(blob, filename);
-      toast({ title: "Download ready", description: `Your ${selectedDocumentType.replace(/-/g, ' ')} opened in a new tab.` });
-    } catch (err: any) {
-      console.error("Error downloading PDF:", err);
-      toast({ title: "Download Failed", description: err?.message || "There was an error generating the report. Please try again.", variant: "destructive" });
-    }
-  };
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const match = /filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i.exec(cd);
+    const suffix =
+      breakdown === 'monthly' ? '_pivot' :
+      (compareMode !== 'none' ? '_comparative' : '');
+    const fallback = `${selectedDocumentType}-${fromDate}-to-${toDate}${suffix}.pdf`;
+
+    const filename = decodeURIComponent(match?.[1] || match?.[2] || fallback);
+    const blob = await resp.blob();
+    openBlobInNewTab(blob, filename);
+    toast({ title: "Download ready", description: `Your ${selectedDocumentType.replace(/-/g, ' ')} opened in a new tab.` });
+  } catch (err: any) {
+    console.error("Error downloading PDF:", err);
+    toast({ title: "Download Failed", description: err?.message || "There was an error generating the report. Please try again.", variant: "destructive" });
+  }
+};
+
 
   const handleDownloadCsv = () => {
     if (breakdown === 'monthly') {
@@ -1308,7 +1376,7 @@ const Financials = () => {
 
 
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as ReportId)}>
-          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5">
             {reportTypes.map((report) => (
               <TabsTrigger key={report.id} value={report.id}>
                 {report.label}
@@ -1921,6 +1989,46 @@ const Financials = () => {
               </CardContent>
             </Card>
           </TabsContent>
+      {/* ================== VAT report ================== */}
+
+          <TabsContent value="vat" className="mt-4">
+  <Card>
+    <CardHeader>
+      <CardTitle className="text-xl">VAT Report (SARS summary)</CardTitle>
+      <CardDescription>
+        For the period {new Date(fromDate).toLocaleDateString('en-ZA')} to {new Date(toDate).toLocaleDateString('en-ZA')}
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      {!vatData ? (
+        <div className="text-sm text-gray-500">No VAT data for this period.</div>
+      ) : (
+        <>
+          <div className="mb-4 text-sm">
+            <div className="flex justify-between"><span>Output VAT (Box 1A)</span><span className="font-mono">{formatCurrency(vatData.results.output_vat_1A)}</span></div>
+            <div className="flex justify-between"><span>Input VAT (Box 1B)</span><span className="font-mono">{formatCurrency(vatData.results.input_vat_1B)}</span></div>
+            <div className="flex justify-between border-t pt-2 mt-2">
+              <span className="font-semibold">Net VAT – Payable(+) / Refund(-) (Box 1C)</span>
+              <span className="font-mono font-semibold">{formatCurrency(vatData.results.net_vat_1C)}</span>
+            </div>
+          </div>
+
+          <div className="mt-6">
+            <h4 className="font-semibold mb-2">Support</h4>
+            <div className="flex justify-between"><span>Taxable supplies (excl)</span><span className="font-mono">{formatCurrency(vatData.results.taxable_supplies_excl)}</span></div>
+            <div className="flex justify-between"><span>Zero-rated supplies</span><span className="font-mono">{formatCurrency(vatData.results.zero_rated_supplies)}</span></div>
+            <div className="flex justify-between"><span>Exempt supplies</span><span className="font-mono">{formatCurrency(vatData.results.exempt_supplies)}</span></div>
+          </div>
+
+          <div className="mt-6 text-xs text-muted-foreground">
+            Accounts used: VAT Payable #{vatData.accounts.vatPayableId ?? 'n/a'}, VAT Input #{vatData.accounts.vatInputId ?? 'n/a'}, Sales Revenue #{vatData.accounts.salesRevenueId ?? 'n/a'}.
+          </div>
+        </>
+      )}
+    </CardContent>
+  </Card>
+</TabsContent>
+
 
           {/* ================== CASH FLOW ================== */}
           <TabsContent value="cash-flow-statement" className="mt-4">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'; 
+import React, { useState, useEffect, useCallback } from 'react';
 import { Pencil, Trash2, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../AuthPage';
@@ -64,6 +64,35 @@ export default function UserManagementPage() {
     'documents','chat','user-management','personel-setup','profile-setup',
   ];
 
+  // ---------- helpers (no-cache fetch + optimistic state) ----------
+  const fetchJson = async (url: string, init?: RequestInit) => {
+    const r = await fetch(url, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache', ...(init?.headers || {}) },
+      ...init,
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  };
+
+  const makeTempId = () => {
+    // crypto.randomUUID() fallback
+    try { return crypto.randomUUID(); } catch { return `tmp_${Date.now()}_${Math.random().toString(16).slice(2)}`; }
+  };
+
+  const upsertUser = (next: User) =>
+    setUsers(prev => {
+      const i = prev.findIndex(u => u.id === next.id || u.email === next.email);
+      if (i === -1) return [next, ...prev];
+      const copy = prev.slice();
+      copy[i] = { ...prev[i], ...next };
+      return copy;
+    });
+
+  const removeUser = (id: string) =>
+    setUsers(prev => prev.filter(u => u.id !== id));
+
+  // ---------- fetchers ----------
   const fetchUsers = useCallback(async () => {
     if (!token) {
       setUsers([]);
@@ -73,12 +102,10 @@ export default function UserManagementPage() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/users`, {
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      const data = await fetchJson(`${API_BASE_URL}/users`, {
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       });
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const data = await response.json();
-      setUsers(data);
+      setUsers(Array.isArray(data) ? data : []);
     } catch (err: any) {
       console.error("Error fetching users:", err);
       setError(`Failed to load users: ${err.message}.`);
@@ -90,17 +117,16 @@ export default function UserManagementPage() {
   const fetchBranches = useCallback(async () => {
     if (!token) return;
     try {
-      const r = await fetch(`${API_BASE_URL}/api/branches`, {
+      const data = await fetchJson(`${API_BASE_URL}/api/branches`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
       setBranches(data || []);
     } catch (e) {
       console.error('Error loading branches:', e);
     }
   }, [token]);
 
+  // initial load + focus refetch
   useEffect(() => {
     if (isAuthenticated && token) {
       fetchUsers();
@@ -112,12 +138,27 @@ export default function UserManagementPage() {
     }
   }, [isAuthenticated, token, fetchUsers, fetchBranches]);
 
+  useEffect(() => {
+    if (!isAuthenticated || !token) return;
+    const onFocus = () => fetchUsers();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [isAuthenticated, token, fetchUsers]);
+
+  // optional light polling (30s)
+  useEffect(() => {
+    if (!isAuthenticated || !token) return;
+    const id = setInterval(() => fetchUsers(), 30000);
+    return () => clearInterval(id);
+  }, [isAuthenticated, token, fetchUsers]);
+
   // Load a single user's memberships when opening the edit modal
   const loadUserMemberships = useCallback(async (userId: string) => {
     if (!token) return;
     try {
       const r = await fetch(`${API_BASE_URL}/api/users/${userId}/branches`, {
         headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
       });
       if (!r.ok) return;
       const data = await r.json();
@@ -135,23 +176,30 @@ export default function UserManagementPage() {
     setIsDeleteModalOpen(true);
   };
 
+  // optimistic delete
   const confirmDeleteUser = async () => {
     if (!userToDelete || !token) return;
     setLoading(true);
+
+    const deletedId = userToDelete.id;
+    const snapshot = users;
+    removeUser(deletedId);
+
     try {
-      const response = await fetch(`${API_BASE_URL}/users/${userToDelete.id}`, {
+      const response = await fetch(`${API_BASE_URL}/users/${deletedId}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
       });
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
       toast({ title: "User Deleted", description: `User ${userToDelete.displayName} has been successfully deleted.` });
-      fetchUsers();
     } catch (e: any) {
       console.error("Error deleting user:", e);
-      toast({ title: "Deletion Failed", description: `Could not delete user: ${e.message}`, variant: "destructive" });
+      setUsers(snapshot); // rollback
+      toast({ title: "Deletion Failed", description: e.message, variant: "destructive" });
     } finally {
       setIsDeleteModalOpen(false);
       setUserToDelete(null);
@@ -184,7 +232,6 @@ export default function UserManagementPage() {
   const toggleBranch = (branchId: string) => {
     setSelectedBranchIds(prev => {
       if (prev.includes(branchId)) {
-        // if removing the current primary, also clear primary
         if (primaryBranchId === branchId) setPrimaryBranchId(null);
         return prev.filter(id => id !== branchId);
       }
@@ -195,52 +242,60 @@ export default function UserManagementPage() {
   // Pick a primary (must also be selected)
   const pickPrimary = (branchId: string) => {
     if (!selectedBranchIds.includes(branchId)) {
-      // auto-select it
       setSelectedBranchIds(prev => [...prev, branchId]);
     }
     setPrimaryBranchId(branchId);
   };
 
+  // optimistic edit
   const saveUserEdit = async () => {
     if (!userToEdit || !token) return;
     setLoading(true);
     try {
-      // Update basic details
+      const uniqueRoles = Array.from(new Set(editUserRoles));
+
+      // optimistic update for list
+      upsertUser({
+        ...userToEdit,
+        displayName: editFormData.displayName || userToEdit.displayName,
+        email: (editFormData.email || userToEdit.email)!,
+        roles: uniqueRoles,
+      });
+
+      // 1) basic details
       const updateDetailsResponse = await fetch(`${API_BASE_URL}/users/${userToEdit.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ displayName: editFormData.displayName, email: editFormData.email }),
+        cache: 'no-store',
       });
       if (!updateDetailsResponse.ok) {
-        const errorData = await updateDetailsResponse.json();
-        throw new Error(errorData.error || `HTTP error! status: ${updateDetailsResponse.status}`);
+        const errorData = await updateDetailsResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${updateDetailsResponse.status}`);
       }
 
-      // Update roles (dedup)
-      const uniqueRoles = Array.from(new Set(editUserRoles));
+      // 2) roles
       const updateRolesResponse = await fetch(`${API_BASE_URL}/users/${userToEdit.id}/roles`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ roles: uniqueRoles }),
+        cache: 'no-store',
       });
       if (!updateRolesResponse.ok) {
-        const errorData = await updateRolesResponse.json();
-        throw new Error(errorData.error || `HTTP error! status: ${updateRolesResponse.status}`);
+        const errorData = await updateRolesResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${updateRolesResponse.status}`);
       }
 
-      // Update branch memberships — require exactly one primary
-      if (!primaryBranchId) {
-        throw new Error('Please select a primary branch for this user.');
-      }
-      if (!selectedBranchIds.includes(primaryBranchId)) {
-        throw new Error('Primary branch must be in the selected branches list.');
-      }
+      // 3) branches
+      if (!primaryBranchId) throw new Error('Please select a primary branch for this user.');
+      if (!selectedBranchIds.includes(primaryBranchId)) throw new Error('Primary branch must be in the selected branches list.');
 
       const memberships = selectedBranchIds.map(id => ({ branchId: id, isPrimary: id === primaryBranchId }));
       const r = await fetch(`${API_BASE_URL}/api/users/${userToEdit.id}/branches`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ memberships }),
+        cache: 'no-store',
       });
       if (!r.ok) {
         const errorData = await r.json().catch(() => ({}));
@@ -248,10 +303,12 @@ export default function UserManagementPage() {
       }
 
       toast({ title: "User Updated", description: `User ${editFormData.displayName} has been successfully updated.` });
+      // Reconcile with server
       await fetchUsers();
     } catch (e: any) {
       console.error("Error updating user:", e);
-      toast({ title: "Update Failed", description: `Could not update user: ${e.message}`, variant: "destructive" });
+      toast({ title: "Update Failed", description: e.message, variant: "destructive" });
+      await fetchUsers(); // roll back to server truth
     } finally {
       setIsEditModalOpen(false);
       setUserToEdit(null);
@@ -264,9 +321,21 @@ export default function UserManagementPage() {
     setIsAddModalOpen(true);
   };
 
+  // optimistic add
   const addNewUser = async () => {
     if (!token) return;
     setLoading(true);
+
+    const tempId = makeTempId();
+    const tempUser: User = {
+      id: tempId,
+      displayName: newUserData.displayName,
+      email: newUserData.email,
+      roles: [newUserData.role],
+      officeCode: newUserData.officeCode || undefined,
+    };
+    setUsers(prev => [tempUser, ...prev]);
+
     try {
       const payload = {
         displayName: newUserData.displayName,
@@ -277,20 +346,59 @@ export default function UserManagementPage() {
       };
       const response = await fetch(`${API_BASE_URL}/users`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(payload),
+        cache: 'no-store',
       });
+
+      const body = await response.json().catch(() => ({ error: 'Unknown error' }));
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+        const msg = body?.error || `HTTP error! status: ${response.status}`;
+        // rollback optimistic
+        removeUser(tempId);
+
+        if (
+          response.status === 409 ||
+          /duplicate|unique constraint|users_email_key/i.test(msg)
+        ) {
+          toast({
+            title: "Email Already Exists",
+            description: "A user with this email address already exists in the system. Please use a different email address.",
+            variant: "destructive"
+          });
+          return;
+        }
+
+        throw new Error(msg);
       }
-      toast({ title: "User Added", description: `A new user has been successfully added.` });
-      fetchUsers();
+
+      // If API returns created user, merge it; otherwise refetch
+      const created: User | undefined = body?.user || body;
+      if (created?.id) {
+        setUsers(prev =>
+          prev.map(u => (u.id === tempId || u.email === created.email ? { ...u, ...created } : u))
+        );
+      } else {
+        await fetchUsers();
+      }
+
+      toast({
+        title: "User Added Successfully",
+        description: `The user "${newUserData.displayName}" has been created.`
+      });
+      setIsAddModalOpen(false);
+      setNewUserData({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
     } catch (e: any) {
       console.error("Error adding new user:", e);
-      toast({ title: "Add User Failed", description: `Could not add new user: ${e.message}`, variant: "destructive" });
+      // rollback optimistic
+      removeUser(tempId);
+      toast({
+        title: "Add User Failed",
+        description: e.message || "An unexpected error occurred while adding the user. Please try again.",
+        variant: "destructive"
+      });
     } finally {
-      setIsAddModalOpen(false);
       setLoading(false);
     }
   };
@@ -349,13 +457,12 @@ export default function UserManagementPage() {
                           <td className='p-3 text-muted-foreground'>{user.email}</td>
                           <td className='p-3 text-muted-foreground'>{user.roles.join(', ')}</td>
                           <td className='p-3'>
-                            {/* Optional: show cached memberships if you add them to list payload */}
                             <div className="flex flex-wrap gap-1">
                               {user.branches?.map(b => (
                                 <Badge key={b.id} variant={b.is_primary ? 'default' : 'secondary'}>
                                   {b.code || b.name}{b.is_primary ? ' • primary' : ''}
                                 </Badge>
-                              ))}
+                              )) || null}
                             </div>
                           </td>
                           <td className='p-3 text-right'>

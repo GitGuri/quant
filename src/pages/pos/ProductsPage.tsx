@@ -37,17 +37,14 @@ import {
 // ---- Config / helpers ----
 const API_BASE = 'https://quantnow-sa1e.onrender.com';
 const api = {
-  // if branchId is provided → filter, else get all
+  // if branchId is provided → filter; else get all
   list: (branchId?: string | null) =>
     branchId
       ? `${API_BASE}/products-services?branch_id=${encodeURIComponent(branchId)}`
       : `${API_BASE}/products-services`,
   byId: (id: string | number) => `${API_BASE}/products-services/${id}`,
-  // if your backend uses branch_id for restock, include it; otherwise the query param will be ignored safely
-  restock: (id: string | number, branchId?: string | null) =>
-    branchId
-      ? `${API_BASE}/products-services/${id}/stock?branch_id=${encodeURIComponent(branchId)}`
-      : `${API_BASE}/products-services/${id}/stock`,
+  // stock receipt endpoint (handles VAT + journals + moving avg) — must exist on server
+  stockReceipt: () => `${API_BASE}/stock-receipts`,
 };
 const apiBranchesMine = () => `${API_BASE}/api/me/branches`;
 
@@ -56,6 +53,21 @@ const getAuthHeaders = () => {
   const t = getToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 };
+
+// --- network helpers: only queue on true network failures ---
+function isNetworkError(err: unknown) {
+  return err instanceof TypeError || (err as any)?.name === 'TypeError';
+}
+
+// (optional) API ping for a small status badge (not used to gate actions)
+async function pingApi(base = API_BASE, headers = {}) {
+  try {
+    const r = await fetch(`${base}/health`, { headers, cache: 'no-store' });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
 
 // Types for the form
 type ProductFormValues = {
@@ -79,7 +91,6 @@ type ProductWithBranch = Product & {
   branch_name?: string | null; // if your API returns it
 };
 
-// Optional sales stats hook (placeholder)
 function useProductSalesStats(products: Product[], isAuthenticated: boolean, messageApi: any) {
   const [bestsellers, setBestsellers] = useState<{ [id: string]: number }>({});
   useEffect(() => {
@@ -115,6 +126,14 @@ const ProductsPage = () => {
   // Branch state
   const [myBranches, setMyBranches] = useState<MyBranch[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+
+  // Optional status badge
+  const [apiOk, setApiOk] = useState<boolean | null>(null);
+  useEffect(() => {
+    (async () => setApiOk(await pingApi(API_BASE, getAuthHeaders())))();
+    const t = setInterval(async () => setApiOk(await pingApi(API_BASE, getAuthHeaders())), 15000);
+    return () => clearInterval(t);
+  }, []);
 
   // ---------- LOAD user branches ----------
   useEffect(() => {
@@ -161,7 +180,7 @@ const ProductsPage = () => {
     price: p.unit_price,
     unitPrice: p.unit_price,
     purchasePrice: p.cost_price,
-    unitPurchasePrice: p.cost_price,
+    unitPurchasePrice: p.cost_price, // moving average cost (net)
     qty: p.is_service ? undefined : p.stock_quantity,
     unit: p.unit,
     companyName: 'Ngenge Stores',
@@ -258,127 +277,128 @@ const ProductsPage = () => {
     else setModalVisible(true);
   };
 
-  // ---------- CREATE / UPDATE (queued when offline) ----------
-const handleSave = async (values: ProductFormValues) => {
-  if (!isUserAuthenticated) {
-    messageApi.error('Authentication required to save products.');
-    return;
-  }
-  setLoading(true);
-
-  const isNew = !editingProduct;
-  const endpoint = isNew ? api.list(/* no need to pass branch here */) : api.byId(editingProduct!.id);
-  const method = (isNew ? 'POST' : 'PUT') as 'POST' | 'PUT';
-
-  const body = {
-    name: values.name,
-    description: '',
-    unit_price: Number(values.sellingPrice),
-    cost_price: values.type === 'product' ? Number(values.purchasePrice || 0) : null,
-    is_service: values.type === 'service',
-    stock_quantity: values.type === 'product' ? Number(values.qty || 0) : null,
-    unit: values.type === 'product' ? (values.unit || 'item') : null,
-    sku: null,
-    min_quantity: values.type === 'product' ? Number(values.minQty || 0) : null,
-    max_quantity: values.type === 'product' ? Number(values.maxQty || 0) : null,
-    available_value: values.type === 'service' ? Number(values.availableValue || 0) : null,
-    branch_id: selectedBranchId ?? null, // important
-  };
-
-  const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
-
-  const optimisticMerge = (createdOrUpdated: any) => {
-    const newP = mapBackendToProduct(createdOrUpdated);
-    setProducts(prev => (isNew ? [newP, ...prev] : prev.map(p => (p.id === newP.id ? newP : p))));
-  };
-
-  const optimisticFallback = () => {
-    if (isNew) {
-      const temp = mapBackendToProduct({ ...body, id: `tmp-${Date.now()}` });
-      setProducts(prev => [temp, ...prev]);
-    } else if (editingProduct) {
-      const local = mapBackendToProduct({ ...body, id: editingProduct.id });
-      setProducts(prev => prev.map(p => (p.id === local.id ? local : p)));
-    }
-  };
-
-  try {
-    if (!navigator.onLine) {
-      // true offline: queue & optimistic update
-      await enqueueRequest(endpoint, method, body, headers);
-      optimisticFallback();
-      messageApi.info('You’re offline. Change queued and will sync automatically.');
-      closeForm();
+  // ---------- CREATE / UPDATE (queue only on true network failures) ----------
+  const handleSave = async (values: ProductFormValues) => {
+    if (!isUserAuthenticated) {
+      messageApi.error('Authentication required to save products.');
       return;
     }
+    setLoading(true);
 
-    const res = await fetch(endpoint, { method, headers, body: JSON.stringify(body) });
+    const isNew = !editingProduct;
+    const endpoint = isNew ? api.list() : api.byId(editingProduct!.id);
+    const method = (isNew ? 'POST' : 'PUT') as 'POST' | 'PUT';
 
-    if (!res.ok) {
-      // server responded: show server error and DO NOT queue
-      let detail = `HTTP ${res.status}`;
-      try {
-        const j = await res.json();
-        detail = j?.error || j?.detail || detail;
-      } catch {}
-      messageApi.error(`Could not save product: ${detail}`);
-      return; // stop here, no enqueue
+    const body = {
+      name: values.name,
+      description: '',
+      unit_price: Number(values.sellingPrice),
+      cost_price: values.type === 'product' ? Number(values.purchasePrice || 0) : null,
+      is_service: values.type === 'service',
+      stock_quantity: values.type === 'product' ? Number(values.qty || 0) : null,
+      unit: values.type === 'product' ? (values.unit || 'item') : null,
+      sku: null,
+      min_quantity: values.type === 'product' ? Number(values.minQty || 0) : null,
+      max_quantity: values.type === 'product' ? Number(values.maxQty || 0) : null,
+      available_value: values.type === 'service' ? Number(values.availableValue || 0) : null,
+      branch_id: selectedBranchId ?? null, // important
+    };
+
+    const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
+
+    const optimisticMerge = (createdOrUpdated: any) => {
+      const newP = mapBackendToProduct(createdOrUpdated);
+      setProducts(prev => (isNew ? [newP, ...prev] : prev.map(p => (p.id === newP.id ? newP : p))));
+    };
+
+    const optimisticFallback = () => {
+      if (isNew) {
+        const temp = mapBackendToProduct({ ...body, id: `tmp-${Date.now()}` });
+        setProducts(prev => [temp, ...prev]);
+      } else if (editingProduct) {
+        const local = mapBackendToProduct({ ...body, id: editingProduct.id });
+        setProducts(prev => prev.map(p => (p.id === local.id ? local : p)));
+      }
+    };
+
+    try {
+      const res = await fetch(endpoint, { method, headers, body: JSON.stringify(body) });
+
+      if (!res.ok) {
+        // Server responded but unhappy — show server error, DO NOT queue
+        let detail = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          detail = j?.error || j?.detail || detail;
+        } catch {}
+        messageApi.error(`Could not save product: ${detail}`);
+        return;
+      }
+
+      const data = await res.json();
+      optimisticMerge(data);
+      messageApi.success(`Product ${isNew ? 'added' : 'updated'} successfully.`);
+      closeForm();
+
+      await flushQueue();
+      await fetchProducts();
+    } catch (err: any) {
+      if (isNetworkError(err)) {
+        await enqueueRequest(endpoint, method, body, headers);
+        optimisticFallback();
+        messageApi.info('Network hiccup. Change queued and will sync automatically.');
+        closeForm();
+      } else {
+        messageApi.error(`Save failed: ${err?.message ?? 'Unknown error'}`);
+      }
+    } finally {
+      setLoading(false);
     }
+  };
 
-    const data = await res.json();
-    optimisticMerge(data);
-    messageApi.success(`Product ${isNew ? 'added' : 'updated'} successfully.`);
-    closeForm();
-
-    await flushQueue();
-    await fetchProducts();
-
-  } catch (err: any) {
-    // genuine network/CORS error (fetch threw)
-    await enqueueRequest(endpoint, method, body, headers);
-    optimisticFallback();
-    messageApi.info('Network hiccup. Change queued and will sync automatically.');
-    closeForm();
-  } finally {
-    setLoading(false);
-  }
-};
-
-
-  // ---------- DELETE (queued when offline) ----------
+  // ---------- DELETE (queue only on true network failures) ----------
   const handleDelete = async (id: string) => {
     if (!isUserAuthenticated) {
       messageApi.error('Authentication required to delete products.');
       return;
     }
     const headers = { ...getAuthHeaders() };
+    const endpoint = api.byId(id);
 
     const optimisticRemove = () => setProducts(prev => prev.filter(p => p.id !== id));
 
     try {
       setLoading(true);
-      if (!navigator.onLine) {
-        await enqueueRequest(api.byId(id), 'DELETE', null, headers);
-        optimisticRemove();
-        messageApi.info('Queued delete (offline). Will sync automatically.');
+      const res = await fetch(endpoint, { method: 'DELETE', headers });
+
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          detail = j?.error || j?.detail || detail;
+        } catch {}
+        messageApi.error(`Delete failed: ${detail}`);
         return;
       }
-      const res = await fetch(api.byId(id), { method: 'DELETE', headers });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
       optimisticRemove();
       messageApi.success('Deleted successfully.');
       await flushQueue();
       await fetchProducts();
     } catch (err: any) {
-      await enqueueRequest(api.byId(id), 'DELETE', null, headers);
-      optimisticRemove();
-      messageApi.info('Network issue: delete queued to sync later.');
+      if (isNetworkError(err)) {
+        await enqueueRequest(endpoint, 'DELETE', null, headers);
+        optimisticRemove();
+        messageApi.info('Network issue: delete queued to sync later.');
+      } else {
+        messageApi.error(`Delete failed: ${err?.message ?? 'Unknown error'}`);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  // ---------- RESTOCK (queued when offline) ----------
+  // ---------- RESTOCK (uses /stock-receipts; queue only on true network failures) ----------
   const openRestockModal = (product: ProductWithBranch) => {
     if (!isUserAuthenticated) {
       messageApi.error('Please log in to restock products.');
@@ -386,19 +406,34 @@ const handleSave = async (values: ProductFormValues) => {
     }
     setRestockProduct(product);
     restockForm.resetFields();
+    restockForm.setFieldsValue({
+      qty: 1,
+      unitCostIncl: product.unitPurchasePrice ?? 0,
+      vatRate: 15,
+      paidFromBank: false,
+      supplierName: '',
+    });
     setRestockModalVisible(true);
   };
 
-  const handleRestock = async (values: { qty: number; purchasePrice: number }) => {
+  const handleRestock = async (values: { qty: number; unitCostIncl: number; vatRate?: number; paidFromBank?: boolean; supplierName?: string }) => {
     if (!isUserAuthenticated || !restockProduct) {
       messageApi.error('Authentication or product information missing for restock.');
       return;
     }
+
     const payload = {
-      adjustmentQuantity: Number(values.qty),
-      updatedCostPrice: Number(values.purchasePrice),
+      product_id: restockProduct.id,
+      qty: Number(values.qty),
+      unit_cost_incl: Number(values.unitCostIncl),
+      vat_rate: values.vatRate ?? 15,
+      paid_from_bank: !!values.paidFromBank,         // false => AP, true => Bank
+      supplier_name: values.supplierName || null,
+      branch_id: restockProduct.branch_id ?? selectedBranchId ?? null,
     };
+
     const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
+    const endpoint = api.stockReceipt();
 
     const optimisticRestock = () => {
       setProducts(prev =>
@@ -406,9 +441,7 @@ const handleSave = async (values: ProductFormValues) => {
           p.id === restockProduct.id
             ? {
                 ...p,
-                qty: (Number(p.qty || 0) + payload.adjustmentQuantity),
-                unitPurchasePrice: payload.updatedCostPrice ?? p.unitPurchasePrice,
-                purchasePrice: payload.updatedCostPrice ?? p.purchasePrice,
+                qty: (Number(p.qty || 0) + Number(values.qty)),
               }
             : p
         )
@@ -417,40 +450,40 @@ const handleSave = async (values: ProductFormValues) => {
 
     try {
       setLoading(true);
-      const restockBranch =
-        restockProduct.branch_id ?? selectedBranchId ?? null;
-
-      const endpoint = api.restock(restockProduct.id, restockBranch);
-
-      if (!navigator.onLine) {
-        await enqueueRequest(endpoint, 'PUT', payload, headers);
-        optimisticRestock();
-        setRestockModalVisible(false);
-        setRestockProduct(null);
-        messageApi.info('Queued restock (offline). Will sync automatically.');
-        return;
-      }
 
       const res = await fetch(endpoint, {
-        method: 'PUT',
+        method: 'POST',
         headers,
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          detail = j?.error || j?.detail || detail;
+        } catch {}
+        // DO NOT queue on server errors; show the reason
+        messageApi.error(`Restock failed: ${detail}`);
+        return;
+      }
 
       optimisticRestock();
       setRestockModalVisible(false);
       setRestockProduct(null);
       messageApi.success('Product restocked successfully!');
       await flushQueue();
-      await fetchProducts();
+      await fetchProducts(); // pulls the **new avg cost** back from API
     } catch (err: any) {
-      const endpoint = api.restock(restockProduct.id, restockProduct.branch_id ?? selectedBranchId ?? null);
-      await enqueueRequest(endpoint, 'PUT', payload, headers);
-      optimisticRestock();
-      setRestockModalVisible(false);
-      setRestockProduct(null);
-      messageApi.info('Network issue: restock queued to sync later.');
+      if (isNetworkError(err)) {
+        await enqueueRequest(endpoint, 'POST', payload, headers);
+        optimisticRestock();
+        setRestockModalVisible(false);
+        setRestockProduct(null);
+        messageApi.info('Network issue: restock queued to sync later.');
+      } else {
+        messageApi.error(`Restock failed: ${err?.message ?? 'Unknown error'}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -504,7 +537,7 @@ const handleSave = async (values: ProductFormValues) => {
       render: (_: any, r: ProductWithBranch) => `R${r.unitPrice ?? r.price ?? 0}`,
     },
     {
-      title: 'Unit Purchase Price',
+      title: 'Unit Purchase Price (Avg)',
       dataIndex: 'unitPurchasePrice',
       key: 'unitPurchasePrice',
       render: (val: any) => (val ? `R${val}` : '-'),
@@ -717,6 +750,14 @@ const handleSave = async (values: ProductFormValues) => {
     <>
       {contextHolder}
       <div className="bg-white p-4 rounded-lg shadow-sm">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div />
+          <div style={{ fontSize: 12 }}>
+            {apiOk === false && <span style={{ color: '#cc0000' }}>API unreachable</span>}
+            {apiOk === true && <span style={{ color: '#00aa55' }}>API OK</span>}
+          </div>
+        </div>
+
         <Tabs activeKey={tabKey} onChange={key => setTabKey(key)}>
           <Tabs.TabPane tab="Products List" key="list">
             <div className="flex flex-col sm:flex-row sm:justify-between items-start sm:items-center mb-4">
@@ -729,7 +770,7 @@ const handleSave = async (values: ProductFormValues) => {
                     value={selectedBranchId ?? undefined}
                     placeholder="All branches"
                     allowClear
-                    style={{ minWidth: 180 }}
+                    style={{ minWidth: 220 }}
                     onChange={(val) => {
                       const next = (val as string | undefined) ?? null;
                       setSelectedBranchId(next);
@@ -818,7 +859,7 @@ const handleSave = async (values: ProductFormValues) => {
                         {product.branch_name ?? (product.branch_id ? `#${String(product.branch_id).slice(0,6)}` : '—')}
                       </p>
                       <p>
-                        <strong>Unit Purchase Price:</strong>{' '}
+                        <strong>Unit Purchase Price (Avg):</strong>{' '}
                         {product.unitPurchasePrice ? `R${product.unitPurchasePrice}` : '-'}
                       </p>
                       <p>
@@ -987,13 +1028,47 @@ const handleSave = async (values: ProductFormValues) => {
           >
             <InputNumber min={1} style={{ width: '100%' }} />
           </Form.Item>
+
           <Form.Item
-            name="purchasePrice"
-            label="Purchase Price (new unit cost, optional)"
-            rules={[{ required: true, message: 'Please enter purchase price' }]}
+            name="unitCostIncl"
+            label="Unit Cost (Incl VAT)"
+            rules={[{ required: true, message: 'Please enter unit cost incl VAT' }]}
           >
             <InputNumber min={0} style={{ width: '100%' }} formatter={currencyFormatter} parser={currencyParser} />
           </Form.Item>
+
+          <Form.Item name="vatRate" label="VAT Rate (%)" initialValue={15}>
+            <InputNumber min={0} max={100} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item name="paidFromBank" label="Payment Method" initialValue={false}>
+            <Select
+              options={[
+                { value: false, label: 'On Account (Accounts Payable)' },
+                { value: true,  label: 'Paid from Bank now' },
+              ]}
+            />
+          </Form.Item>
+
+          <Form.Item name="supplierName" label="Supplier (optional)">
+            <Input placeholder="e.g. ABC Wholesalers" />
+          </Form.Item>
+
+          {/* Branch display/override (read-only display; branch used is product.branch_id or selectedBranchId) */}
+          <Form.Item label="Branch (auto)">
+            <Input
+              disabled
+              value={
+                restockProduct?.branch_name
+                  ?? (restockProduct?.branch_id
+                        ? `#${String(restockProduct.branch_id).slice(0,6)}`
+                        : (selectedBranchId
+                            ? `#${String(selectedBranchId).slice(0,6)}`
+                            : '—'))
+              }
+            />
+          </Form.Item>
+
           <Form.Item>
             <Button type="primary" htmlType="submit" block disabled={!isUserAuthenticated || loading}>
               Restock

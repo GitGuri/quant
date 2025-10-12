@@ -1,9 +1,9 @@
-// TasksTable.tsx
+// src/components/tasks/TasksTable.tsx
 import React, { useEffect, useMemo, useState, useCallback, useRef, memo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { Loader2, Edit3, Archive, Save, ListChecks, Gauge, RefreshCw } from 'lucide-react';
+import { Loader2, Edit3, Archive, Save, ListChecks, Gauge, RefreshCw, Send } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { TaskForm, type TaskFormData, type TaskStepFormData } from './TaskForm';
@@ -102,6 +102,24 @@ async function putStatusForPct(task: FullTask, pctVal: number) {
     body: JSON.stringify({ status: nextStatus }),
   });
 }
+
+/* ---------- 🔔 Tiny event bus helpers (no context needed) ---------- */
+function debounce<T extends (...args: any[]) => any>(fn: T, ms = 250) {
+  let t: any;
+  return (...args: Parameters<T>) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+/** Call this anywhere (Kanban/QuickTaskInput/TaskForm/ProjectForm) after create/update/delete */
+export const notifyTasksChanged = () => {
+  window.dispatchEvent(new Event('tasks:refresh'));
+};
+/** Optional: after a project add/edit if you want task tables to refetch */
+export const notifyProjectsChanged = () => {
+  window.dispatchEvent(new Event('projects:refresh'));
+};
 
 const useIncrementProgress = () =>
   useCallback(async (taskId: string, incrementValue: number) => {
@@ -636,6 +654,7 @@ type RowProps = {
   onOpenProgress: (task: FullTask) => void;
   formatDate: (d?: string | null) => string;
   onChangePriority: (id: string, p: Priority) => void;
+  onSendReminder: (task: FullTask) => void; // ★ NEW
 };
 
 const TaskRow = memo(function TaskRow({
@@ -646,6 +665,7 @@ const TaskRow = memo(function TaskRow({
   onOpenProgress,
   formatDate,
   onChangePriority,
+  onSendReminder, // ★ NEW
 }: RowProps) {
   return (
     <TableRow className={t.status === 'Overdue' ? 'bg-red-50' : ''}>
@@ -715,6 +735,16 @@ const TaskRow = memo(function TaskRow({
             title="Update progress (manual/target/steps)"
           >
             <Gauge className="h-4 w-4" />
+          </Button>
+
+          {/* ★ NEW: send reminder */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onSendReminder(t)}
+            title="Send reminder email"
+          >
+            <Send className="h-4 w-4" />
           </Button>
         </div>
       </TableCell>
@@ -821,9 +851,16 @@ export function TasksTable({
   const [showTargetDialog, setShowTargetDialog] = useState(false);
   const [showStepsDialog, setShowStepsDialog] = useState(false);
 
+  // ★ NEW: reminder states
+  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [noteFor, setNoteFor] = useState<FullTask | null>(null);
+  const [customNote, setCustomNote] = useState('');
+
   const formatDate = useStableFormatDate();
 
-  const normalize = (t: any): FullTask => ({
+  const normalize = (t: any): FullTask => ([
+    'manual','target','steps'
+  ].includes(t.progress_mode) ? t : { ...t, progress_mode: 'manual' }) && ({
     ...t,
     progress_mode: t.progress_mode ?? 'manual',
     progress_goal: t.progress_goal ?? null,
@@ -840,7 +877,6 @@ export function TasksTable({
 
     setLoading(true);
     try {
-      // cache-busting to avoid stale reads
       const r = await fetch(`${API_BASE}/api/tasks?ts=${Date.now()}`, {
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         signal: ctrl.signal,
@@ -890,6 +926,31 @@ export function TasksTable({
   useEffect(() => {
     fetchTasks();
     return () => inFlight.current?.abort();
+  }, [fetchTasks]);
+
+  /** ---------- Auto-refresh hooks (events, focus/visibility) ---------- */
+  useEffect(() => {
+    const refreshDebounced = debounce(() => fetchTasks(), 200);
+    const handler = () => refreshDebounced();
+    const events = [
+      'tasks:refresh',
+      'tasks:created',
+      'tasks:updated',
+      'tasks:deleted',
+      'projects:refresh',
+      'projects:created',
+    ];
+    events.forEach((e) => window.addEventListener(e as any, handler));
+
+    const onVisibility = () => { if (document.visibilityState === 'visible') refreshDebounced(); };
+    window.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', handler);
+
+    return () => {
+      events.forEach((e) => window.removeEventListener(e as any, handler));
+      window.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', handler);
+    };
   }, [fetchTasks]);
 
   /** ---------- Handle demo imports (e.g., Read.ai) ---------- */
@@ -956,6 +1017,7 @@ export function TasksTable({
         await putStatusForPct({ ...t, status: finalStatus }, pct);
 
         onChanged?.();
+        notifyTasksChanged(); // 🔔 inform other views
       } catch (e: any) {
         toast({ title: 'Error', description: e.message || 'Failed to update progress', variant: 'destructive' });
       } finally {
@@ -980,6 +1042,7 @@ export function TasksTable({
         if (!res.ok) throw new Error('Failed to update priority');
         toast({ title: 'Priority updated', description: `Set to ${PRIORITY_META[p].label}` });
         onChanged?.();
+        notifyTasksChanged(); // 🔔
       } catch (e: any) {
         if (prev) patchTask(id, { priority: prev as FullTask['priority'] });
         toast({ title: 'Error', description: e?.message || 'Failed to update priority', variant: 'destructive' });
@@ -1005,6 +1068,7 @@ export function TasksTable({
         if (!updateResponse.ok) throw new Error('Failed to archive task');
         toast({ title: 'Task archived' });
         onChanged?.();
+        notifyTasksChanged(); // 🔔
       } catch (e: any) {
         toast({ title: 'Error', description: e.message || 'Failed to archive task', variant: 'destructive' });
         fetchTasks(); // revert
@@ -1028,6 +1092,7 @@ export function TasksTable({
         if (!updateResponse.ok) throw new Error('Failed to unarchive task');
         toast({ title: 'Task unarchived' });
         onChanged?.();
+        notifyTasksChanged(); // 🔔
       } catch (e: any) {
         toast({ title: 'Error', description: e.message || 'Failed to unarchive task', variant: 'destructive' });
         fetchTasks(); // revert
@@ -1125,6 +1190,7 @@ export function TasksTable({
         // Fresh read (cache-busting) so server-enriched fields show up
         await fetchTasks();
         onChanged?.();
+        notifyTasksChanged(); // 🔔 let other views update
       } catch (e: any) {
         toast({
           title: 'Error',
@@ -1189,6 +1255,7 @@ export function TasksTable({
       });
 
       onChanged?.();
+      notifyTasksChanged(); // 🔔
     },
     [onChanged]
   );
@@ -1291,6 +1358,41 @@ export function TasksTable({
     return [...rows].sort(comparator);
   }, [tasks, mode, filters?.projectId, filters?.search, makeComparator, sortKey, sortDir]);
 
+  /* ---------- NEW: reminder senders ---------- */
+  const sendReminder = useCallback(async (taskId: string, note?: string) => {
+    setSendingId(taskId);
+    try {
+      const r = await fetch(`${API_BASE}/api/tasks/${taskId}/send-reminder-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ customNote: note ?? '' })
+      });
+      const ok = r.ok || r.status === 207;
+      const j = await r.json().catch(() => ({} as any));
+
+      if (r.status === 429) {
+        toast({ title: 'Rate limited', description: j.error || 'Reminder recently sent.', variant: 'destructive' });
+      } else {
+        toast({
+          title: ok ? 'Reminder sent' : 'Failed to send',
+          description: j.message || j.error || '',
+          variant: ok ? 'default' : 'destructive'
+        });
+      }
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message ?? 'Failed to send reminder', variant: 'destructive' });
+    } finally {
+      setSendingId(null);
+      setNoteFor(null);
+      setCustomNote('');
+    }
+  }, [toast]);
+
+  const onSendReminder = useCallback((task: FullTask) => {
+    // Open dialog to include custom note
+    setNoteFor(task);
+  }, []);
+
   return (
     <Card className="p-0 overflow-hidden">
       {loading ? (
@@ -1300,7 +1402,7 @@ export function TasksTable({
         </div>
       ) : (
         <div className="overflow-x-auto">
-          {/* NEW: Sort toolbar */}
+          {/* Sort toolbar */}
           <div className="flex items-center justify-between px-4 pt-4">
             <div className="text-xs text-muted-foreground">
               {filtered.length} task{filtered.length === 1 ? '' : 's'}
@@ -1366,6 +1468,7 @@ export function TasksTable({
                     onOpenProgress={onOpenProgress}
                     formatDate={formatDate}
                     onChangePriority={onChangePriority}
+                    onSendReminder={onSendReminder} // ★ pass down
                   />
                 ))
               )}
@@ -1444,6 +1547,36 @@ export function TasksTable({
           />
         </>
       )}
+
+      {/* ★ NEW: Send Reminder — custom note dialog */}
+      <Dialog open={!!noteFor} onOpenChange={(o) => { if (!o) { setNoteFor(null); setCustomNote(''); } }}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Send reminder</DialogTitle>
+            <DialogDescription>
+              Optional: include a short note to the assignees of “{noteFor?.title}”.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <Label>Custom note</Label>
+            <Input
+              placeholder="e.g. Please update progress before stand-up."
+              value={customNote}
+              onChange={(e) => setCustomNote(e.target.value)}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNoteFor(null)} disabled={sendingId === noteFor?.id}>
+              Cancel
+            </Button>
+            <Button onClick={() => noteFor && sendReminder(noteFor.id, customNote)} disabled={sendingId === noteFor?.id}>
+              {sendingId === noteFor?.id ? 'Sending…' : 'Send'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

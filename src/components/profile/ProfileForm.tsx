@@ -105,6 +105,8 @@ export function ProfileForm() {
     language: '',
     currency: '',
     userId: '',
+    isVatRegistered: false,   // ADD
+    vatNumber: '',
   });
 
   const [loading, setLoading] = useState(true);
@@ -165,26 +167,30 @@ export function ProfileForm() {
         }
         const data = await res.json();
         const [firstName, ...lastNameParts] = (data.name || '').split(' ');
-        setFormData({
-          firstName: firstName || '',
-          lastName: lastNameParts.join(' ') || '',
-          email: data.email || '',
-          phone: data.phone || '',
-          address: data.address || '',
-          company: data.company || '',
-          position: data.position || '',
-          city: data.city || '',
-          province: data.province || '',
-          postalCode: data.postal_code || '',
-          country: data.country || '',
-          bio: data.bio || '',
-          website: data.website || '',
-          linkedin: data.linkedin || '',
-          timezone: data.timezone || '',
-          language: data.language || '',
-          currency: data.currency || '',
-          userId: data.user_id || '',
-        });
+       setFormData({
+  firstName: firstName || '',
+  lastName: lastNameParts.join(' ') || '',
+  email: data.email || '',
+  phone: data.phone || '',
+  address: data.address || '',
+  company: data.company || '',
+  position: data.position || '',
+  city: data.city || '',
+  province: data.province || '',
+  postalCode: data.postal_code || '',
+  country: data.country || '',
+  bio: data.bio || '',
+  website: data.website || '',
+  linkedin: data.linkedin || '',
+  timezone: data.timezone || '',
+  language: data.language || '',
+  currency: data.currency || '',
+  userId: data.user_id || '',
+
+  // NEW (reads from backend fields you already return)
+  isVatRegistered: !!data.is_vat_registered,
+  vatNumber: data.vat_number || '',
+});
 
         // Logo URL
         const lres = await fetch(`${API_BASE_URL}/logo`, {
@@ -263,6 +269,8 @@ export function ProfileForm() {
         timezone: formData.timezone,
         language: formData.language,
         currency: formData.currency,
+        is_vat_registered: formData.isVatRegistered,
+        vat_number: formData.vatNumber || null,
       };
 
       const res = await fetch(`${API_BASE_URL}/api/profile`, {
@@ -615,6 +623,42 @@ export function ProfileForm() {
           </p>
         </CardContent>
       </Card>
+
+      {/* Tax / VAT (NEW) */}
+<Card>
+  <CardHeader><CardTitle>Tax / VAT</CardTitle></CardHeader>
+  <CardContent className="space-y-4">
+    <div className="flex items-center space-x-2">
+      <input
+        id="vatRegistered"
+        type="checkbox"
+        checked={formData.isVatRegistered}
+        onChange={(e) =>
+          // use setFormData directly for boolean to avoid string casting
+          setFormData((p) => ({ ...p, isVatRegistered: e.target.checked }))
+        }
+      />
+      <Label htmlFor="vatRegistered">VAT Registered</Label>
+    </div>
+
+    <div className="space-y-2">
+      <Label htmlFor="vatNumber">VAT Number</Label>
+      <Input
+        id="vatNumber"
+        placeholder="e.g. 4xxx-xxx-xxx"
+        value={formData.vatNumber}
+        onChange={(e) => handleChange('vatNumber', e.target.value)}
+        disabled={!formData.isVatRegistered}
+      />
+      {!formData.isVatRegistered ? (
+        <p className="text-xs text-muted-foreground">
+          Enable “VAT Registered” to enter a VAT number.
+        </p>
+      ) : null}
+    </div>
+  </CardContent>
+</Card>
+
 
       {/* Branches Manager */}
       <Card>

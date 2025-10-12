@@ -187,6 +187,10 @@ export default function POSScreen() {
   const [amountPaid, setAmountPaid] = useState(0);
   const [dueDate, setDueDate] = useState<string | null>(null);
   const [bankName, setBankName] = useState<string | null>(null);
+  // VAT config (from backend)
+const [isVatRegistered, setIsVatRegistered] = useState(false);
+const [defaultVatRate, setDefaultVatRate] = useState(0); // 0.15 when registered
+
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const [isLoading, setIsLoading] = useState(false);
@@ -279,6 +283,33 @@ useEffect(() => {
   useEffect(() => {
     flushOutbox();
   }, [flushOutbox]);
+
+
+
+  // Load VAT config from backend (server is source of truth)
+useEffect(() => {
+  if (!isAuthenticated || !token) {
+    setIsVatRegistered(false);
+    setDefaultVatRate(0);
+    return;
+  }
+  (async () => {
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/me/vat`, {
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      });
+      if (!r.ok) throw new Error(String(r.status));
+      const j = await r.json();
+      const on = !!j.is_vat_registered;
+      setIsVatRegistered(on);
+      setDefaultVatRate(on ? 0.15 : 0);
+    } catch {
+      setIsVatRegistered(false);
+      setDefaultVatRate(0);
+    }
+  })();
+}, [isAuthenticated, token, getAuthHeaders]);
+
 
   // === Accounts helper (unchanged) ===
   const [accountsCache, setAccountsCache] = useState<any[] | null>(null);
@@ -451,7 +482,8 @@ useEffect(() => {
               tax_rate_id: null,
               category: null,
               unit: isService ? 'service' : 'unit',
-              tax_rate_value: customProductTaxRate,
+              tax_rate_value: isVatRegistered ? Number(customProductTaxRate) : 0,
+
             };
           } else {
             // ONLINE: reuse if exists, else create
@@ -466,7 +498,8 @@ useEffect(() => {
                 unit_price: customProductUnitPrice,
                 is_service: isService,
                 stock_quantity: isService ? 0 : 0,
-                tax_rate_value: customProductTaxRate,
+                tax_rate_value: isVatRegistered ? Number(customProductTaxRate) : 0,
+
                 category: null,
                 unit: isService ? 'service' : 'unit',
                 cost_price: null,
@@ -554,11 +587,16 @@ useEffect(() => {
     if (!selectedProduct || productQty < 1) return;
 
     if (selectedProduct.is_service) {
-      itemToAdd = {
-        ...selectedProduct,
-        quantity: productQty,
-        subtotal: productQty * selectedProduct.unit_price * (1 + (selectedProduct.tax_rate_value ?? 0)),
-      };
+const seededRate =
+  isVatRegistered ? (selectedProduct.tax_rate_value ?? defaultVatRate) : 0;
+
+itemToAdd = {
+  ...selectedProduct,
+  tax_rate_value: seededRate,
+  quantity: productQty,
+  subtotal: productQty * selectedProduct.unit_price * (1 + seededRate),
+};
+
     } else {
       const availableQty = selectedProduct.stock_quantity ?? 0;
       const alreadyInCart = cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
@@ -722,9 +760,33 @@ useEffect(() => {
       newCustomerForm.resetFields();
     }
   };
+   // Recompute totals using server-driven VAT logic
+const totals = React.useMemo(() => {
+  let ex = 0, vat = 0, inc = 0;
+
+  for (const it of cart) {
+    const rate = isVatRegistered
+      ? (typeof it.tax_rate_value === 'number' ? it.tax_rate_value : defaultVatRate)
+      : 0;
+
+    const subEx = +(it.quantity * it.unit_price).toFixed(2);
+    const lineVat = +(subEx * rate).toFixed(2);
+    const subIn = +(subEx + lineVat).toFixed(2);
+
+    ex += subEx;
+    vat += lineVat;
+    inc += subIn;
+  }
+  return {
+    excl: +ex.toFixed(2),
+    vat: +vat.toFixed(2),
+    incl: +inc.toFixed(2),
+  };
+}, [cart, isVatRegistered, defaultVatRate]);
 
   const total = cart.reduce((sum, item) => sum + item.subtotal, 0);
-  const change = paymentType === 'Cash' ? amountPaid - total : 0;
+  
+const change = paymentType === 'Cash' ? amountPaid - totals.incl : 0;
 
   const handleSubmit = async () => {
     if (!isAuthenticated || !token) {
@@ -778,26 +840,33 @@ useEffect(() => {
 
     const tellerName = getUserNameFromLocalStorage();
 
-   const salePayload = {
-  cart: cart.map((item) => ({
-    id: item.id,
-    name: item.name,
-    quantity: item.quantity,
-    unit_price: item.unit_price,
-    subtotal: item.subtotal,
-    is_service: item.is_service || false,
-    tax_rate_value: item.tax_rate_value ?? 0,
-  })),
+const salePayload = {
+  cart: cart.map((item) => {
+    const rate = isVatRegistered
+      ? (typeof item.tax_rate_value === 'number' ? item.tax_rate_value : defaultVatRate)
+      : 0;
+    return {
+      id: item.id,
+      name: item.name,
+      quantity: item.quantity,
+      unit_price: item.unit_price,        // excl VAT per unit
+      is_service: item.is_service || false,
+      tax_rate_value: rate,               // server will still enforce/clamp
+      // subtotal is optional for BE; okay to include what UI shows:
+      subtotal: +(item.quantity * item.unit_price * (1 + rate)).toFixed(2),
+    };
+  }),
   paymentType,
-  total,
+  total: totals.incl,                            // send gross
   customer: selectedCustomer ? { id: selectedCustomer.id, name: selectedCustomer.name } : null,
-  amountPaid: paymentType === 'Cash' ? amountPaid : 0,
+  amountPaid: paymentType === 'Cash' ? amountPaid : (paymentType === 'Bank' ? totals.incl : 0),
   change: paymentType === 'Cash' ? change : 0,
   dueDate: paymentType === 'Credit' ? dueDate : null,
   bankName: paymentType === 'Bank' ? bankName : null,
   tellerName,
-  branch_id: selectedBranchId,  // <<--- IMPORTANT
+  branch_id: selectedBranchId,
 };
+
 
     // Offline: queue
     if (!isOnline) {
@@ -933,6 +1002,9 @@ useEffect(() => {
           <Tag color={isOnline ? 'green' : 'red'}>
             {isOnline ? 'Online' : 'Offline'}
           </Tag>
+        <Tag color={isVatRegistered ? 'green' : 'default'}>
+  {isVatRegistered ? 'VAT ON (15%)' : 'VAT OFF'}
+</Tag>
 
           {myBranches.length > 0 ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1109,8 +1181,13 @@ useEffect(() => {
             ]}
             summary={() => (
               <Table.Summary.Row>
-                <Table.Summary.Cell colSpan={3}>Total</Table.Summary.Cell>
-                <Table.Summary.Cell>R{total.toFixed(2)}</Table.Summary.Cell>
+<Table.Summary.Cell colSpan={2}>
+  Subtotal (excl): R{totals.excl.toFixed(2)} | VAT: R{totals.vat.toFixed(2)}
+</Table.Summary.Cell>
+<Table.Summary.Cell colSpan={2} align="right">
+  Total (incl): <strong>R{totals.incl.toFixed(2)}</strong>
+</Table.Summary.Cell>
+
                 <Table.Summary.Cell />
               </Table.Summary.Row>
             )}
@@ -1162,7 +1239,7 @@ useEffect(() => {
               disabled={!isAuthenticated || isLoading}
             >
               <Option value="Cash">Cash</Option>
-              <Option value="Bank">Bank</Option>
+              <Option value="Bank">Bank/Swipe</Option>
               <Option value="Credit">Credit</Option>
             </Select>
           </div>
@@ -1235,7 +1312,14 @@ useEffect(() => {
 
         <Divider style={{ margin: '16px 0' }} />
         <div style={{ textAlign: 'center', marginBottom: 12 }}>
-          <Text strong>Total: R{total.toFixed(2)}</Text>
+          <div style={{ marginBottom: 6 }}>
+  Subtotal (excl): <strong>R{totals.excl.toFixed(2)}</strong>
+</div>
+<div style={{ marginBottom: 6 }}>
+  VAT: <strong>R{totals.vat.toFixed(2)}</strong>
+</div>
+<Text strong>Total (incl): R{totals.incl.toFixed(2)}</Text>
+
         </div>
         <Button
           type="primary"

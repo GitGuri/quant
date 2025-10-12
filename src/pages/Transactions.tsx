@@ -1150,7 +1150,7 @@ const Transactions: React.FC = () => {
                           <div className="font-medium text-amber-900">Multi-line journal</div>
                           <div className="text-amber-900/90">
                             This entry has {editJEDetail.lines.length} lines. You can change the date & memo
-                            here. For line-level edits, use the Journals screen.
+                            here. 
                           </div>
                         </div>
                       </div>
