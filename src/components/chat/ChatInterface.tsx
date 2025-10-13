@@ -1,10 +1,19 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Send, Bot, User } from 'lucide-react'
+import { Send, Bot, User, FileText, Megaphone, Lightbulb, ClipboardList } from 'lucide-react'
 import { motion } from 'framer-motion'
+
+type DatasetKey =
+  | 'customers'
+  | 'products'
+  | 'sales'
+  | 'invoices'
+  | 'suppliers'
+  | 'ledger'
+  | 'custom'
 
 interface Message {
   id: string
@@ -15,8 +24,7 @@ interface Message {
   isImage?: boolean          // render as <img>
 }
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || 'https://quantnow-sa1e.onrender.com'
+const API_BASE = 'https://quantnow-sa1e.onrender.com'
 
 // Helper: auth header (same token you already store on login)
 function authHeaders() {
@@ -25,9 +33,8 @@ function authHeaders() {
 }
 
 // Optional: super-light dataset detector.
-// You can also add a small dropdown in the UI if you prefer.
-function guessDataset(q: string):
-  'customers'|'products'|'sales'|'invoices'|'suppliers'|'ledger'|'custom' {
+// You can also select explicitly with the UI pills below.
+function guessDataset(q: string): DatasetKey {
   const s = q.toLowerCase()
   if (s.includes('customer')) return 'customers'
   if (s.includes('product') || s.includes('sku') || s.includes('stock')) return 'products'
@@ -36,6 +43,10 @@ function guessDataset(q: string):
   if (s.includes('ledger') || s.includes('journal') || s.includes('account')) return 'ledger'
   if (s.includes('sale') || s.includes('revenue') || s.includes('profit')) return 'sales'
   return 'sales'
+}
+
+function nowId() {
+  return (Date.now() + Math.random()).toString()
 }
 
 export function ChatInterface () {
@@ -51,13 +62,17 @@ export function ChatInterface () {
   const [inputMessage, setInputMessage] = useState('')
   const [isTyping, setIsTyping] = useState(false)
 
+  // Optional: dataset override via UI. If empty, we guess from the query.
+  const [datasetOverride, setDatasetOverride] = useState<DatasetKey | ''>('')
+
   const pushBotMessage = (content: string) => {
-    const asHtml = content.trim().startsWith('<')
-    const asImage = content.startsWith('data:image/')
+    const trimmed = content?.trim?.() || ''
+    const asHtml = trimmed.startsWith('<')
+    const asImage = trimmed.startsWith('data:image/')
     setMessages(prev => [
       ...prev,
       {
-        id: (Date.now() + Math.random()).toString(),
+        id: nowId(),
         content,
         sender: 'bot',
         timestamp: new Date(),
@@ -67,38 +82,44 @@ export function ChatInterface () {
     ])
   }
 
+  const pushUserMessage = (content: string) => {
+    setMessages(prev => [
+      ...prev,
+      {
+        id: nowId(),
+        content,
+        sender: 'user',
+        timestamp: new Date()
+      }
+    ])
+  }
+
+  const getDatasetForQuery = (q: string): DatasetKey => {
+    // allow inline override like "/dataset:products ..."
+    const match = q.match(/\/dataset:(\w+)/i)
+    if (match) return (match[1].toLowerCase() as DatasetKey)
+    // allow UI override
+    if (datasetOverride) return datasetOverride
+    // fallback to guesser
+    return guessDataset(q)
+  }
+
   const handleSendMessage = async () => {
-    const q = inputMessage.trim()
-    if (!q) return
+    const qRaw = inputMessage.trim()
+    if (!qRaw) return
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      content: q,
-      sender: 'user',
-      timestamp: new Date()
-    }
-
-    setMessages(prev => [...prev, userMessage])
+    pushUserMessage(qRaw)
     setInputMessage('')
     setIsTyping(true)
 
     try {
-      // You can override dataset via a quick syntax like:
-      // /dataset:products What are my low-stock items?
-      const match = q.match(/\/dataset:(\w+)/i)
-      const dataset = match
-        ? (match[1].toLowerCase() as any)
-        : guessDataset(q)
-
-      const body = {
-        question: q.replace(/\/dataset:\w+\s*/i, ''),
-        dataset // server scopes by req.user/org
-      }
+      const dataset = getDatasetForQuery(qRaw)
+      const question = qRaw.replace(/\/dataset:\w+\s*/i, '')
 
       const r = await fetch(`${API_BASE}/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ question, dataset })
       })
 
       if (!r.ok) {
@@ -106,11 +127,13 @@ export function ChatInterface () {
         throw new Error(errText || `AI error ${r.status}`)
       }
 
-      const data = await r.json() as { ok: boolean; answer: string }
+      const data = await r.json() as { ok: boolean; answer?: string; error?: string }
       pushBotMessage(data.answer ?? 'No answer returned.')
     } catch (err: any) {
       pushBotMessage(
-        `<div style="color:#b91c1c"><strong>Oops:</strong> ${err.message || 'Failed to contact AI service.'}</div>`
+        `<div style="color:#b91c1c"><strong>Oops:</strong> ${
+          err?.message || 'Failed to contact AI service.'
+        }</div>`
       )
     } finally {
       setIsTyping(false)
@@ -124,16 +147,87 @@ export function ChatInterface () {
     }
   }
 
+  // Generic helper for report-like endpoints that return { report: string }
+  const runReportEndpoint = async (
+    kind: 'report' | 'marketing' | 'bplan' | 'notify',
+    dataset?: DatasetKey
+  ) => {
+    setIsTyping(true)
+    try {
+      const body: any = {}
+      if (dataset) body.dataset = dataset
+
+      const r = await fetch(`${API_BASE}/ai/${kind}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(body)
+      })
+
+      if (!r.ok) {
+        const errText = await r.text().catch(() => '')
+        throw new Error(errText || `AI error ${r.status}`)
+      }
+
+      const data = await r.json() as { ok: boolean; report?: string; error?: string }
+      if (!data.ok) throw new Error(data.error || 'AI failed')
+
+      // Render as plain text (safe). If you trust HTML, wrap it and it will auto-detect.
+      pushBotMessage(data.report || '(Empty report)')
+    } catch (err: any) {
+      pushBotMessage(
+        `<div style="color:#b91c1c"><strong>Oops:</strong> ${
+          err?.message || 'Failed to contact AI service.'
+        }</div>`
+      )
+    } finally {
+      setIsTyping(false)
+    }
+  }
+
+  const datasetPill = (key: DatasetKey, label: string) => {
+    const active = datasetOverride === key
+    return (
+      <Button
+        key={key}
+        type={active ? 'default' : 'button'}
+        variant={active ? 'default' : 'outline'}
+        size='sm'
+        onClick={() => setDatasetOverride(active ? '' : key)}
+      >
+        {label}
+      </Button>
+    )
+  }
+
   return (
     <Card className='h-full flex flex-col'>
       <CardHeader>
         <CardTitle className='flex items-center gap-2'>
           <Bot className='h-5 w-5' />
-          QuantChat - Your Data Assistant
+          QuantChat – Your Data Assistant
         </CardTitle>
       </CardHeader>
 
       <CardContent className='flex-1 flex flex-col space-y-4'>
+
+        {/* Dataset selector (optional override) */}
+        <div className='flex flex-wrap gap-2'>
+          <span className='text-xs opacity-70 pt-2 pr-1'>Dataset:</span>
+          {datasetPill('sales', 'Sales')}
+          {datasetPill('products', 'Products')}
+          {datasetPill('customers', 'Customers')}
+          {datasetPill('invoices', 'Invoices')}
+          {datasetPill('suppliers', 'Suppliers')}
+          {datasetPill('ledger', 'Ledger')}
+          {datasetPill('custom', 'Custom')}
+          {!!datasetOverride && (
+            <Button variant='ghost' size='sm' onClick={() => setDatasetOverride('')}>
+              Clear
+            </Button>
+          )}
+        </div>
+
+        {/* Transcript */}
         <ScrollArea className='flex-1 pr-4'>
           <div className='space-y-4'>
             {messages.map(message => (
@@ -191,9 +285,10 @@ export function ChatInterface () {
           </div>
         </ScrollArea>
 
+        {/* Chat composer */}
         <div className='flex gap-2'>
           <Input
-            placeholder='Ask me anything about your data... (tip: /dataset:sales, products, customers, invoices, suppliers, ledger)'
+            placeholder='Ask me about your data... (tip: /dataset:sales, products, customers, invoices, suppliers, ledger)'
             value={inputMessage}
             onChange={e => setInputMessage(e.target.value)}
             onKeyDown={handleKeyPress}
@@ -204,18 +299,57 @@ export function ChatInterface () {
           </Button>
         </div>
 
+        {/* Quick actions */}
         <div className='flex flex-wrap gap-2'>
           <Button variant='outline' size='sm' onClick={() => setInputMessage('/dataset:customers Show my top customers this month')}>
             Top Customers
           </Button>
           <Button variant='outline' size='sm' onClick={() => setInputMessage('/dataset:sales Generate a sales report for the last quarter')}>
-            Sales Report
+            Sales Report (Chat)
           </Button>
           <Button variant='outline' size='sm' onClick={() => setInputMessage('/dataset:products What are my profit margins by product?')}>
             Profit Analysis
+          </Button>
+        </div>
+
+        {/* Reports toolbar */}
+        <div className='flex flex-wrap gap-2 pt-1'>
+          <Button
+            variant='default'
+            size='sm'
+            onClick={() => runReportEndpoint('report', datasetOverride || 'sales')}
+            title='Comprehensive business report'
+          >
+            <FileText className='h-4 w-4 mr-1' /> Generate Report
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => runReportEndpoint('marketing', datasetOverride || 'sales')}
+            title='Marketing strategy'
+          >
+            <Megaphone className='h-4 w-4 mr-1' /> Marketing Strategy
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => runReportEndpoint('bplan', datasetOverride || 'sales')}
+            title='Business plan'
+          >
+            <ClipboardList className='h-4 w-4 mr-1' /> Business Plan
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => runReportEndpoint('notify', datasetOverride || 'sales')}
+            title='Brief analysis & tips'
+          >
+            <Lightbulb className='h-4 w-4 mr-1' /> Quick Tips
           </Button>
         </div>
       </CardContent>
     </Card>
   )
 }
+
+export default ChatInterface

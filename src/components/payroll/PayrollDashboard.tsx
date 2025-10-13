@@ -42,7 +42,12 @@ const PayrollDashboard: React.FC = () => {
   const { isAuthenticated } = useAuth();
   const roles = JSON.parse(localStorage.getItem('userRoles') || '[]') as string[];
   const isAdmin = roles.map(r => r.toLowerCase()).some(r => r === 'admin' || r === 'owner');
+  const rolesLower = roles.map(r => r.toLowerCase());
+const canSeeEmployeeManagement = rolesLower.some(r =>
+  ['payroll', 'owner', 'admin'].includes(r)
+);
 
+const defaultTab = canSeeEmployeeManagement ? 'employees' : 'leave';
   const token = localStorage.getItem('token');
 
   const getAuthHeaders = useCallback(() => {
@@ -224,51 +229,59 @@ const PayrollDashboard: React.FC = () => {
         </Row>
 
         {/* Tabs */}
-        <Tabs defaultValue='employees' className='w-full'>
-<TabsList className="grid w-full grid-cols-4 mb-6">
-  <TabsTrigger value="employees">Employee Management</TabsTrigger>
-  <TabsTrigger value="time-tracking">Time Tracking</TabsTrigger>
-  <TabsTrigger value="leave"><CalendarOutlined />Leave</TabsTrigger>
-  {isAdmin && (
-    <TabsTrigger value="leave-settings">
-      <CalendarOutlined /> Settings
+<Tabs defaultValue={defaultTab} className="w-full">
+  <TabsList className={`grid w-full ${canSeeEmployeeManagement ? 'grid-cols-4' : 'grid-cols-3'} mb-6`}>
+    {canSeeEmployeeManagement && (
+      <TabsTrigger value="employees">Employee Management</TabsTrigger>
+    )}
+    <TabsTrigger value="time-tracking">Time Tracking</TabsTrigger>
+    <TabsTrigger value="leave">
+      <CalendarOutlined />Leave
     </TabsTrigger>
-  )}
-</TabsList>
+    {isAdmin && (
+      <TabsTrigger value="leave-settings">
+        <CalendarOutlined /> Settings
+      </TabsTrigger>
+    )}
+  </TabsList>
 
 
 
 
 
-          <TabsContent value='employees'>
-            <div className='flex justify-between items-center mb-4'>
-              <h2 className='text-xl font-semibold'>Employees</h2>
-              <Button
-                type='primary'
-                onClick={() => {
-                  setEditingEmployee(null);
-                  setIsEditModalOpen(true);
-                }}
-              >
-                Add Employee
-              </Button>
-            </div>
 
-            <div className='grid grid-cols-1 lg:grid-cols-3 gap-6'>
-              <div className='lg:col-span-2'>
-                <EmployeeList
-                  employees={employees}
-                  onEmployeeActionSuccess={handleEmployeeActionSuccess}
-                  onSelectEmployee={setSelectedEmployee}
-                  selectedEmployee={selectedEmployee}
-                  onEditEmployee={handleEditEmployee}
-                />
-              </div>
-              <div className='lg:col-span-1'>
-                <PayslipGenerator employee={selectedEmployee} range={range} />
-              </div>
-            </div>
-          </TabsContent>
+{canSeeEmployeeManagement && (
+  <TabsContent value="employees">
+    <div className="flex justify-between items-center mb-4">
+      <h2 className="text-xl font-semibold">Employees</h2>
+      <Button
+        type="primary"
+        onClick={() => {
+          setEditingEmployee(null);
+          setIsEditModalOpen(true);
+        }}
+      >
+        Add Employee
+      </Button>
+    </div>
+
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="lg:col-span-2">
+        <EmployeeList
+          employees={employees}
+          onEmployeeActionSuccess={handleEmployeeActionSuccess}
+          onSelectEmployee={setSelectedEmployee}
+          selectedEmployee={selectedEmployee}
+          onEditEmployee={handleEditEmployee}
+        />
+      </div>
+      <div className="lg:col-span-1">
+        <PayslipGenerator employee={selectedEmployee} range={range} />
+      </div>
+    </div>
+  </TabsContent>
+)}
+
 
           <TabsContent value='time-tracking'>
             <TimeTracking

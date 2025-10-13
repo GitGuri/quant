@@ -1,5 +1,4 @@
-// TasksDashboard.tsx
-import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,13 +22,17 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DialogFooter,
 } from '@/components/ui/dialog';
 import { ProjectForm, type ProjectFormData } from './ProjectForm';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
+import { IntegrationsDialog } from './IntegrationsDialog';
 
 const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const NONE_VALUE = '__none__';
 
+/* ---------- Types ---------- */
 type Project = {
   id: string;
   name: string;
@@ -48,7 +51,7 @@ type Task = {
   priority: 'Low' | 'Medium' | 'High';
 };
 
-/* Small debounce util (keeps UI snappy when many events fire) */
+/* ---------- Utils ---------- */
 function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
   let t: ReturnType<typeof setTimeout> | null = null;
   return (...args: Parameters<T>) => {
@@ -56,6 +59,9 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
     t = setTimeout(() => fn(...args), ms);
   };
 }
+
+// Guard for SelectItem: Radix requires value !== ''
+const isValidId = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
 export default function TasksDashboard() {
   const { toast } = useToast();
@@ -77,11 +83,19 @@ export default function TasksDashboard() {
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [condensed, setCondensed] = useState(true);
 
-  // Demo “Read.ai” import loading
-  const [importingReadAi, setImportingReadAi] = useState(false);
-
   // Refresh state
   const [refreshing, setRefreshing] = useState(false);
+
+  // Import dialog state
+  const [importOpen, setImportOpen] = useState(false);
+  const [importProvider, setImportProvider] = useState<'fireflies' | 'readai'>('fireflies');
+  const [meetingInput, setMeetingInput] = useState(''); // URL or ID
+  const [importProjectId, setImportProjectId] = useState<string>(NONE_VALUE);
+  const [defaultAssigneeEmails, setDefaultAssigneeEmails] = useState('');
+  const [importing, setImporting] = useState(false);
+
+  // Integrations dialog state
+  const [integrationsOpen, setIntegrationsOpen] = useState(false);
 
   const authHeaders = () => {
     const token = localStorage.getItem('token');
@@ -139,7 +153,6 @@ export default function TasksDashboard() {
 
   /* ======================================================
      LIVE RELOAD: listen for app-wide custom events
-     (no extra context; just window events)
      ====================================================== */
   useEffect(() => {
     const refreshDebounced = debounce(async () => {
@@ -153,7 +166,7 @@ export default function TasksDashboard() {
       'tasks:created',
       'tasks:updated',
       'tasks:deleted',
-      'tasks:import', // demo imports into table
+      'tasks:import',
       'projects:refresh',
       'projects:created',
       'projects:updated',
@@ -215,7 +228,7 @@ export default function TasksDashboard() {
     const sums = new Map<string, { total: number; count: number }>();
     tasks.forEach((t) => {
       const pid = t.project_id || '';
-      if (!pid) return;
+      if (!isValidId(pid)) return;
       const entry = sums.get(pid) || { total: 0, count: 0 };
       entry.total += pctNum(t.progress_percentage);
       entry.count += 1;
@@ -245,9 +258,7 @@ export default function TasksDashboard() {
     return rows;
   }, [projectsWithProgress, projQuery, projSort]);
 
-  /* ===========================
-     Create project
-     =========================== */
+  // Create project
   const onProjectSaved = async (data: ProjectFormData) => {
     try {
       const r = await fetch(`${API_BASE}/api/projects`, {
@@ -265,8 +276,6 @@ export default function TasksDashboard() {
       toast({ title: `Project "${data.name}" created` });
       setProjectDialogOpen(false);
       await fetchProjects();
-
-      // Tell any open tables/boards to refresh
       window.dispatchEvent(new Event('projects:created'));
       window.dispatchEvent(new Event('projects:refresh'));
     } catch (e: any) {
@@ -276,61 +285,67 @@ export default function TasksDashboard() {
 
   const currentFilters = { search, projectId: projectFilter === 'all' ? undefined : projectFilter, tab: activeTab };
 
-  /** -------- DEMO: Import from Read.ai (emits tasks:import the table listens to) -------- */
-  const handleImportFromReadAi = async () => {
+  /* ===========================
+     Import from Notetaker
+     =========================== */
+  const openImportModal = useCallback(() => {
+    setImportProvider('fireflies'); // default
+    setMeetingInput('');
+    setImportProjectId(NONE_VALUE);
+    setDefaultAssigneeEmails('');
+    setImportOpen(true);
+  }, []);
+
+  const submitImport = useCallback(async () => {
     try {
-      setImportingReadAi(true);
+      if (!meetingInput.trim()) {
+        toast({ title: 'Meeting required', description: 'Paste a meeting URL or ID.', variant: 'destructive' });
+        return;
+      }
+      setImporting(true);
 
-      // small delay so the loading state is visible
-      await new Promise((r) => setTimeout(r, 650));
+      const emails = defaultAssigneeEmails
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
 
-      const today = new Date();
-      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      const endpoint =
+        importProvider === 'fireflies'
+          ? `${API_BASE}/api/integrations/fireflies/import`
+          : `${API_BASE}/api/integrations/readai/import`;
 
-      const t1 = new Date(today); t1.setDate(t1.getDate() + 2);
-      const t2 = new Date(today); t2.setDate(t2.getDate() - 1); // overdue
+      const body = {
+        meetingUrl: meetingInput,
+        project_id: importProjectId === NONE_VALUE ? null : importProjectId,
+        default_assignee_emails: emails,
+      };
 
-      const someUser = users[0];
-      const someProject = projects[0];
+      const r = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || 'Import failed');
 
-      const mockTasks = [
-        {
-          id: 'demo-readai-1',
-          title: 'Follow-ups from Read.ai: Branding sync',
-          status: 'To Do' as const,
-          progress_percentage: 0,
-          due_date: iso(t1),
-          assignee_name: someUser?.name || 'Auto-import',
-          project_id: someProject?.id ?? null,
-          project_name: someProject?.name ?? 'Read.ai Imports',
-          priority: 'High' as const,
-        },
-        {
-          id: 'demo-readai-2',
-          title: 'Compile actions: Supplier onboarding',
-          status: 'To Do' as const,
-          progress_percentage: 10,
-          due_date: iso(t2), // yesterday → Overdue in UI
-          assignee_name: someUser?.name || 'Auto-import',
-          project_id: someProject?.id ?? null,
-          project_name: someProject?.name ?? 'Read.ai Imports',
-          priority: 'Medium' as const,
-        },
-      ];
-
-      window.dispatchEvent(new CustomEvent('tasks:import', {
-        detail: { source: 'readai', tasks: mockTasks }
-      }));
-
-      // Also refresh KPI + projects progress
+      window.dispatchEvent(
+        new CustomEvent('tasks:import', { detail: { source: importProvider, tasks: j.created || [] } })
+      );
       window.dispatchEvent(new Event('tasks:refresh'));
-
-      toast({ title: 'Imported from Ai Notetaker', description: 'Added 2 tasks from the latest transcript.' });
+      toast({ title: 'Imported', description: `${(j.created || []).length} task(s) added` });
+      setImportOpen(false);
+    } catch (e: any) {
+      toast({ title: 'Import failed', description: e?.message ?? 'Error', variant: 'destructive' });
     } finally {
-      setImportingReadAi(false);
+      setImporting(false);
     }
-  };
-  /** ------------------------------------------ */
+  }, [meetingInput, importProvider, importProjectId, defaultAssigneeEmails, toast]);
+
+  /* ---------- Sanitized lists for Selects ---------- */
+  const sanitizedProjects = useMemo(
+    () => (projects || []).filter((p) => isValidId(p.id)),
+    [projects]
+  );
 
   return (
     <div className="space-y-6">
@@ -416,10 +431,15 @@ export default function TasksDashboard() {
               <FolderPlus className="h-4 w-4 mr-2" /> Add Project
             </Button>
 
-            {/* Demo Read.ai import */}
-            <Button onClick={handleImportFromReadAi} disabled={importingReadAi}>
+            {/* Import from Notetaker (Fireflies / Read.ai) */}
+            <Button onClick={openImportModal} disabled={importing}>
               <DownloadCloud className="h-4 w-4 mr-2" />
-              {importingReadAi ? 'Importing…' : 'Import from Ai Notetaker'}
+              Import from AI Notetaker
+            </Button>
+
+            {/* Integrations */}
+            <Button variant="outline" onClick={() => setIntegrationsOpen(true)}>
+              Integrations
             </Button>
 
             {/* Refresh */}
@@ -433,6 +453,7 @@ export default function TasksDashboard() {
             <div className="w-full max-w-[420px] relative">
               <Input placeholder="Search tasks…" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
+
             <Select value={projectFilter} onValueChange={(v) => setProjectFilter(v as any)}>
               <SelectTrigger className="w-[220px]">
                 <SelectValue placeholder="Filter by project" />
@@ -444,7 +465,7 @@ export default function TasksDashboard() {
                     All projects
                   </span>
                 </SelectItem>
-                {projectsWithProgress.map((p) => (
+                {sanitizedProjects.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     <div className="flex justify-between items-center w-full">
                       <span>{p.name}</span>
@@ -475,7 +496,6 @@ export default function TasksDashboard() {
             onChanged={async () => {
               await fetchTasks();
               await fetchProjects();
-              // echo to other parts of the app
               window.dispatchEvent(new Event('tasks:refresh'));
               window.dispatchEvent(new Event('projects:refresh'));
             }}
@@ -559,6 +579,82 @@ export default function TasksDashboard() {
           />
         </DialogContent>
       </Dialog>
+
+      {/* Import from Notetaker Dialog */}
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Import from AI Notetaker</DialogTitle>
+            <DialogDescription>Pull action items from a Fireflies or Read.ai meeting.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="grid grid-cols-4 items-center gap-3">
+              <label className="text-sm text-right">Provider</label>
+              <div className="col-span-3">
+                <Select value={importProvider} onValueChange={(v) => setImportProvider(v as any)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Choose provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="fireflies">Fireflies</SelectItem>
+                    <SelectItem value="readai">Read.ai</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-3">
+              <label className="text-sm text-right">Meeting URL or ID</label>
+              <Input
+                className="col-span-3"
+                placeholder="https://app.fireflies.ai/meetings/abc123 or abc123"
+                value={meetingInput}
+                onChange={(e) => setMeetingInput(e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-3">
+              <label className="text-sm text-right">Project (optional)</label>
+              <div className="col-span-3">
+                <Select value={importProjectId} onValueChange={(v) => setImportProjectId(v)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="— none —" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NONE_VALUE}>— none —</SelectItem>
+                    {sanitizedProjects.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-3">
+              <label className="text-sm text-right">Default assignees</label>
+              <Input
+                className="col-span-3"
+                placeholder="comma-separated emails (optional)"
+                value={defaultAssigneeEmails}
+                onChange={(e) => setDefaultAssigneeEmails(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importing}>
+              Cancel
+            </Button>
+            <Button onClick={submitImport} disabled={importing}>
+              {importing ? 'Importing…' : 'Import'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Integrations Dialog (mounted at root, not nested) */}
+      <IntegrationsDialog open={integrationsOpen} onOpenChange={setIntegrationsOpen} scope="user" />
     </div>
   );
 }
