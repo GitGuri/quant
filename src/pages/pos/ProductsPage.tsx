@@ -80,6 +80,7 @@ type ProductFormValues = {
   minQty?: number;
   maxQty?: number;
   availableValue?: number;
+  branch_id?: string | null; // <-- added
 };
 
 // Branch types
@@ -126,6 +127,14 @@ const ProductsPage = () => {
   // Branch state
   const [myBranches, setMyBranches] = useState<MyBranch[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+
+  // Convenience flags/helpers
+  const hasBranches = myBranches.length > 0;
+  const pickDefaultBranch = () =>
+    selectedBranchId ??
+    myBranches.find(b => b.is_primary)?.id ??
+    myBranches[0]?.id ??
+    null;
 
   // Optional status badge
   const [apiOk, setApiOk] = useState<boolean | null>(null);
@@ -249,15 +258,19 @@ const ProductsPage = () => {
           minQty: editingProduct.minQty,
           maxQty: editingProduct.maxQty,
           availableValue: editingProduct.availableValue,
+          branch_id: editingProduct.branch_id ?? pickDefaultBranch(), // <-- added
         });
         setFormType(editingProduct.type);
       } else {
         form.resetFields();
-        form.setFieldsValue({ type: 'product' });
+        form.setFieldsValue({
+          type: 'product',
+          branch_id: pickDefaultBranch(), // <-- default on create
+        });
         setFormType('product');
       }
     }
-  }, [modalVisible, manualDrawerOpen, editingProduct, form]);
+  }, [modalVisible, manualDrawerOpen, editingProduct, form, myBranches, selectedBranchId]);
 
   const closeForm = () => {
     setModalVisible(false);
@@ -273,6 +286,18 @@ const ProductsPage = () => {
       return;
     }
     setEditingProduct(record);
+    if (record) {
+      form.setFieldsValue({
+        branch_id: record.branch_id ?? pickDefaultBranch(),
+      });
+    } else {
+      form.resetFields();
+      form.setFieldsValue({
+        type: 'product',
+        branch_id: pickDefaultBranch(),
+      });
+      setFormType('product');
+    }
     if (isMobile) setManualDrawerOpen(true);
     else setModalVisible(true);
   };
@@ -301,7 +326,8 @@ const ProductsPage = () => {
       min_quantity: values.type === 'product' ? Number(values.minQty || 0) : null,
       max_quantity: values.type === 'product' ? Number(values.maxQty || 0) : null,
       available_value: values.type === 'service' ? Number(values.availableValue || 0) : null,
-      branch_id: selectedBranchId ?? null, // important
+      // IMPORTANT: when user has branches, take explicit form value; otherwise send null
+      branch_id: hasBranches ? (values.branch_id ?? selectedBranchId ?? null) : null,
     };
 
     const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
@@ -619,7 +645,7 @@ const ProductsPage = () => {
       form={form}
       layout="vertical"
       onFinish={handleSave}
-      initialValues={{ type: formType }}
+      initialValues={{ type: formType, branch_id: pickDefaultBranch() }}
       onValuesChange={(changed) => {
         if (changed.type) {
           setFormType(changed.type);
@@ -631,6 +657,23 @@ const ProductsPage = () => {
         }
       }}
     >
+      {/* Branch picker INSIDE the form when user has branches */}
+      {hasBranches && (
+        <Form.Item
+          name="branch_id"
+          label="Branch"
+          rules={[{ required: true, message: 'Please choose a branch' }]}
+        >
+          <Select placeholder="Select a branch">
+            {myBranches.map(b => (
+              <Select.Option key={b.id} value={b.id}>
+                {(b.code || b.name) + (b.is_primary ? ' • primary' : '')}
+              </Select.Option>
+            ))}
+          </Select>
+        </Form.Item>
+      )}
+
       <Form.Item
         name="type"
         label="Type"
@@ -765,7 +808,7 @@ const ProductsPage = () => {
 
               <div className={isMobile ? 'flex flex-col gap-2 w-full' : 'flex gap-2'}>
                 {/* Branch picker (only if user has branches) */}
-                {myBranches.length > 0 && (
+                {hasBranches && (
                   <Select
                     value={selectedBranchId ?? undefined}
                     placeholder="All branches"

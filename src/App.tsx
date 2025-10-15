@@ -37,6 +37,7 @@ import CreditPaymentsScreen from './pages/pos/CreditPaymentsScreen';
 import CashInScreen from './pages/pos/CashInScreen';
 import OAuthCallback from './pages/OAuthCallback';
 import VerifyEmail from './pages/VerifyEmail';
+import './lib/fetch-patch';
 
 // ✅ PrivateRoute wrapper
 const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {

@@ -9,7 +9,7 @@ export function SystemTabs () {
       <TabsList className='grid w-full grid-cols-2'>
         <TabsTrigger value='customers'>Customers</TabsTrigger>
         <TabsTrigger value='suppliers'>Suppliers</TabsTrigger>
-        //<TabsTrigger value='products'>Products</TabsTrigger>
+        
       </TabsList>
 
       <TabsContent value='customers' className='space-y-4'>
@@ -20,9 +20,7 @@ export function SystemTabs () {
         <SupplierManagement />
       </TabsContent>
 
-      <TabsContent value='products' className='space-y-4'>
-        <ProductManagement />
-      </TabsContent>
+
     </Tabs>
   )
 }

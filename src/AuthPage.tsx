@@ -65,7 +65,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsAuthenticated(false);
     setUserRoles([]);
     setUserName(null);
-    localStorage.clear();
+
+    // Remove our auth + company keys (scoped + legacy), without nuking other apps' keys
+    const keysToRemove = [
+      'token',
+      'isAuthenticated',
+      'userId',
+      'user_id',          // bridge
+      'currentUserId',    // fetch patch uses this
+      'userRoles',
+      'userName',
+      'companyId',        // legacy
+      'activeCompanyId',  // legacy
+      'compareCompanyId',
+      'companies',        // legacy
+    ];
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+
+    // Remove any *scoped* company keys
+    Object.keys(localStorage).forEach(k => {
+      if (
+        k.startsWith('activeCompanyId:') ||
+        k.startsWith('companies:') ||
+        k.startsWith('compareCompanyId:')
+      ) {
+        localStorage.removeItem(k);
+      }
+    });
   };
 
   return (
@@ -194,10 +220,27 @@ export function AuthPage() {
           ? [user.role]
           : [];
 
+        // Core auth
         localStorage.setItem('token', data.token);
         localStorage.setItem('isAuthenticated', 'true');
+
+        // Store user ids in a couple of shapes for compatibility
         localStorage.setItem('userId', user.user_id);
-        localStorage.setItem('companyId', companyId);
+        localStorage.setItem('user_id', user.user_id);       // bridge
+        localStorage.setItem('currentUserId', user.user_id);  // preferred by fetch patch
+
+        // Company (scoped first, then legacy mirrors)
+        localStorage.setItem(`activeCompanyId:${user.user_id}`, companyId);
+        localStorage.setItem('activeCompanyId', companyId); // legacy mirror
+        localStorage.setItem('companyId', companyId);       // legacy mirror
+
+        // Companies list (per-user)
+        const initialCompanies = [{ id: companyId, name: user.name || user.email || 'My Company' }];
+        localStorage.setItem(`companies:${user.user_id}`, JSON.stringify(initialCompanies));
+        // Remove legacy global list so it can’t bleed across users
+        localStorage.removeItem('companies');
+
+        // Roles + name
         localStorage.setItem('userRoles', JSON.stringify(roles));
         localStorage.setItem('userName', user.name || '');
 
@@ -233,7 +276,6 @@ export function AuthPage() {
     e.preventDefault();
     setIsLoading(true);
 
-    // Client-side validation for required fields
     if (
       !regName ||
       !regSurname ||
@@ -259,7 +301,6 @@ export function AuthPage() {
       return;
     }
 
-    // Passwords must match
     if (regPassword !== regConfirmPassword) {
       toast({
         title: '🔐 Passwords do not match',
@@ -306,7 +347,6 @@ export function AuthPage() {
           description: 'You can now log in with your new account.',
         });
         setMode('login');
-        // Prefill login
         setLoginEmail(regEmail);
 
         // Reset registration form
@@ -363,7 +403,7 @@ export function AuthPage() {
           description: 'If that address exists, we sent a reset link. It expires in 60 minutes.',
         });
         setMode('login');
-        setLoginEmail(forgotEmail); // convenient
+        setLoginEmail(forgotEmail);
         setForgotEmail('');
       } else {
         toast({
@@ -390,7 +430,6 @@ export function AuthPage() {
       <div className="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-fuchsia-600/20 blur-3xl" />
       <div className="pointer-events-none absolute -right-24 -bottom-24 h-72 w-72 rounded-full bg-indigo-600/20 blur-3xl" />
 
-      {/* Page shell */}
       <div className="mx-auto grid min-h-screen w-full max-w-6xl grid-cols-1 items-center gap-6 px-4 py-10 md:grid-cols-2">
         {/* Illustration / Brand panel */}
         <div className="hidden md:block">
@@ -410,7 +449,6 @@ export function AuthPage() {
               forecasts, and AI-powered insights.
             </p>
 
-            {/* Robot / hero image */}
             <div className="mt-8">
               <img
                 src="/src/quantlogin.jpg"
@@ -528,7 +566,6 @@ export function AuthPage() {
                     </div>
                   </div>
 
-                  {/* Submit (email/password) */}
                   <Button
                     type="submit"
                     className="h-11 w-full bg-gradient-to-r from-fuchsia-600 to-indigo-600 text-white hover:from-fuchsia-700 hover:to-indigo-700"
@@ -544,7 +581,6 @@ export function AuthPage() {
                     )}
                   </Button>
 
-                  {/* Divider */}
                   <div className="relative my-2">
                     <div className="absolute inset-0 flex items-center">
                       <span className="w-full border-t" />
@@ -554,7 +590,6 @@ export function AuthPage() {
                     </div>
                   </div>
 
-                  {/* Google OAuth button */}
                   <Button
                     type="button"
                     variant="outline"
