@@ -745,6 +745,13 @@ function multiAlignByItem(series: SimpleLine[][], orderHint?: string[]) {
     if (from && to) { setFromDate(from); setToDate(to); }
   }, [preset]);
 
+  useEffect(() => {
+  if (selectedDocumentType === 'vat') {
+    if (breakdown !== 'aggregate') setBreakdown('aggregate');
+    if (compareMode !== 'none') setCompareMode('none');
+  }
+}, [selectedDocumentType, breakdown, compareMode]);
+
   // ======= AGGREGATE FETCH =======
   const fetchServerStatement = useCallback(
     async (type: ReportId) => {
@@ -1091,6 +1098,36 @@ if (type === 'income-statement') {
       rows.push(['TOTAL EQUITY AND LIABILITIES ', csvAmount(balanceSheetData.totals.totalEquityAndLiabilities, { alwaysShow: true })]);
       return rows;
     }
+    if (type === 'vat') {
+  const rows: (string | number | null | undefined)[][] = [];
+  rows.push(['VAT Report (SARS summary)']);
+  rows.push([`For the period ${new Date(fromDate).toLocaleDateString('en-ZA')} to ${new Date(toDate).toLocaleDateString('en-ZA')}`]);
+  rows.push(['']);
+
+  if (!vatData) {
+    rows.push(['No VAT data for this period.']);
+    return rows;
+  }
+
+  rows.push(['Line', 'Amount (R)']);
+  rows.push(['Output VAT (Box 1A)', csvAmount(vatData.results.output_vat_1A, { alwaysShow: true })]);
+  rows.push(['Input VAT (Box 1B)',  csvAmount(vatData.results.input_vat_1B,  { alwaysShow: true })]);
+  rows.push(['Net VAT – Payable(+) / Refund(-) (Box 1C)', csvAmount(vatData.results.net_vat_1C, { alwaysShow: true })]);
+
+  rows.push(['']);
+  rows.push(['Supporting Figures']);
+  rows.push(['Taxable supplies (excl.)', csvAmount(vatData.results.taxable_supplies_excl, { alwaysShow: true })]);
+  rows.push(['Zero-rated supplies',       csvAmount(vatData.results.zero_rated_supplies,   { alwaysShow: true })]);
+  rows.push(['Exempt supplies',           csvAmount(vatData.results.exempt_supplies,       { alwaysShow: true })]);
+
+  rows.push(['']);
+  rows.push(['Accounts used']);
+  rows.push(['VAT Payable ID', vatData.accounts.vatPayableId ?? 'n/a']);
+  rows.push(['VAT Input ID',   vatData.accounts.vatInputId   ?? 'n/a']);
+  rows.push(['Sales Revenue ID', vatData.accounts.salesRevenueId ?? 'n/a']);
+
+  return rows;
+}
 
     if (type === 'cash-flow-statement') {
       rows.push(['Cash Flow Statement']);

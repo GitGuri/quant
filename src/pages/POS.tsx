@@ -1083,9 +1083,7 @@ export default function POSScreen() {
             <Tag color={isOnline ? 'green' : 'red'}>
               {isOnline ? 'Online' : 'Offline'}
             </Tag>
-            <Tag color={isVatRegistered ? 'green' : 'default'}>
-              {isVatRegistered ? 'VAT ON (15%)' : 'VAT OFF'}
-            </Tag>
+
 
             {hasBranches ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

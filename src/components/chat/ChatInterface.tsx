@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Send, Bot, User, Trash2, Download, Upload as UploadIcon } from 'lucide-react'
 import { motion } from 'framer-motion'
 
@@ -10,23 +9,21 @@ type DatasetKey = 'customers' | 'products' | 'sales' | 'invoices' | 'suppliers' 
 
 interface Message {
   id: string
-  content: string            // may be text OR html OR data:image
+  content: string
   sender: 'user' | 'bot'
-  timestamp: string          // store as ISO for persistence
+  timestamp: string
   isHtml?: boolean
   isImage?: boolean
 }
 
 const API_BASE = 'https://quantnow-sa1e.onrender.com'
 
-// -------- helpers
+// helpers
 const nowId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`
 const authHeaders = () => {
   const t = localStorage.getItem('token')
   return t ? { Authorization: `Bearer ${t}` } : {}
 }
-
-// very light intent guesser; runs silently — no UI pills
 function guessDataset(q: string): DatasetKey {
   const s = q.toLowerCase()
   if (s.includes('customer')) return 'customers'
@@ -37,12 +34,9 @@ function guessDataset(q: string): DatasetKey {
   if (s.includes('sale') || s.includes('revenue') || s.includes('profit')) return 'sales'
   return 'sales'
 }
-
-// key is scoped per user so different users don’t see each other’s thread
 const storageKeyForUser = (uid: string) => `quantchat:history:${uid || 'anon'}`
 
 export default function ChatInterface() {
-  // who’s logged in? (whatever you already save at login)
   const currentUserId =
     localStorage.getItem('currentUserId') ||
     localStorage.getItem('user_id') ||
@@ -53,9 +47,9 @@ export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([])
   const [inputMessage, setInputMessage] = useState('')
   const [isTyping, setIsTyping] = useState(false)
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
 
-  // ------- bootstrap from localStorage
+  // bootstrap from localStorage
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
@@ -67,33 +61,44 @@ export default function ChatInterface() {
         }
       }
     } catch {}
-    // default welcome on empty
-    setMessages([{
-      id: 'welcome',
-      sender: 'bot',
-      timestamp: new Date().toISOString(),
-      content: `Hey! I’m Qx Chat. Ask me anything about your data — sales, products, customers, invoices, suppliers, or the ledger. I’ll figure out which dataset to use.`,
-    }])
+    setMessages([
+      {
+        id: 'welcome',
+        sender: 'bot',
+        timestamp: new Date().toISOString(),
+        content:
+          `Hey! I’m Qx Chat. Ask me anything about your data — sales, products, customers, invoices, suppliers, or the ledger. I’ll figure out which dataset to use.`,
+      },
+    ])
   }, [STORAGE_KEY])
 
-  // ------- persist on every change (cap at 500 msgs)
+  // persist (cap 500)
   useEffect(() => {
-    const capped = messages.slice(-500)
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(capped)) } catch {}
+    try {
+      const capped = messages.slice(-500)
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(capped))
+    } catch {}
   }, [messages, STORAGE_KEY])
 
-  // ------- autoscroll to bottom
+  // autoscroll inside container
+  const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+    const sc = scrollContainerRef.current
+    if (!sc) return
+    sc.scrollTo({ top: sc.scrollHeight, behavior })
+  }
   useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
+    scrollToBottom('smooth')
   }, [messages, isTyping])
 
-  const pushMessage = (m: Omit<Message, 'id'|'timestamp'|'isHtml'|'isImage'> & { content: string }) => {
+  const pushMessage = (
+    m: Omit<Message, 'id' | 'timestamp' | 'isHtml' | 'isImage'> & { content: string }
+  ) => {
     const trimmed = m.content?.trim?.() || ''
     const isHtml = trimmed.startsWith('<')
     const isImage = trimmed.startsWith('data:image/')
     setMessages(prev => [
       ...prev,
-      { ...m, id: nowId(), timestamp: new Date().toISOString(), isHtml, isImage }
+      { ...m, id: nowId(), timestamp: new Date().toISOString(), isHtml, isImage },
     ])
   }
 
@@ -106,16 +111,14 @@ export default function ChatInterface() {
     setIsTyping(true)
 
     try {
-      // optional inline override: "/dataset:products ..."
       const dataset =
-        (qRaw.match(/\/dataset:(\w+)/i)?.[1]?.toLowerCase() as DatasetKey) ||
-        guessDataset(qRaw)
+        (qRaw.match(/\/dataset:(\w+)/i)?.[1]?.toLowerCase() as DatasetKey) || guessDataset(qRaw)
       const question = qRaw.replace(/\/dataset:\w+\s*/i, '')
 
       const r = await fetch(`${API_BASE}/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ question, dataset })
+        body: JSON.stringify({ question, dataset }),
       })
 
       if (!r.ok) {
@@ -128,7 +131,9 @@ export default function ChatInterface() {
     } catch (err: any) {
       pushMessage({
         sender: 'bot',
-        content: `<div style="color:#b91c1c"><strong>Oops:</strong> ${err?.message || 'Failed to contact AI service.'}</div>`
+        content: `<div style="color:#b91c1c"><strong>Oops:</strong> ${
+          err?.message || 'Failed to contact AI service.'
+        }</div>`,
       })
     } finally {
       setIsTyping(false)
@@ -142,14 +147,14 @@ export default function ChatInterface() {
     }
   }
 
-  // ------- utilities: clear, export, import
+  // utilities
   const clearChat = () => setMessages([])
   const exportChat = () => {
     const blob = new Blob([JSON.stringify(messages, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `quantchat-${new Date().toISOString().slice(0,19)}.json`
+    a.download = `quantchat-${new Date().toISOString().slice(0, 19)}.json`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -161,18 +166,27 @@ export default function ChatInterface() {
       const arr = JSON.parse(text)
       if (Array.isArray(arr)) setMessages(arr)
     } catch {
-      pushMessage({ sender: 'bot', content: `<div style="color:#b91c1c">Import failed: invalid file.</div>` })
+      pushMessage({
+        sender: 'bot',
+        content: `<div style="color:#b91c1c">Import failed: invalid file.</div>`,
+      })
     } finally {
       e.target.value = ''
     }
   }
 
+  // Bubble style helper
+  const bubbleClass = (sender: 'user' | 'bot') =>
+    sender === 'user'
+      ? 'bg-primary/10 text-foreground border border-primary/20'
+      : 'bg-muted text-foreground'
+
   return (
-    <Card className='h-full flex flex-col'>
+    <Card className="h-full flex flex-col bg-card">
       <CardHeader className="pb-3">
-        <CardTitle className='flex items-center justify-between gap-2'>
+        <CardTitle className="flex items-center justify-between gap-2">
           <span className="inline-flex items-center gap-2">
-            <Bot className='h-5 w-5' />
+            <Bot className="h-5 w-5" />
             Qx Chat
           </span>
 
@@ -183,7 +197,9 @@ export default function ChatInterface() {
             <label className="inline-flex items-center">
               <input type="file" accept="application/json" className="hidden" onChange={importChat} />
               <Button asChild variant="ghost" size="icon" title="Import chat (.json)">
-                <span><UploadIcon className="h-4 w-4" /></span>
+                <span>
+                  <UploadIcon className="h-4 w-4" />
+                </span>
               </Button>
             </label>
             <Button variant="ghost" size="icon" title="Clear chat" onClick={clearChat}>
@@ -193,10 +209,14 @@ export default function ChatInterface() {
         </CardTitle>
       </CardHeader>
 
-      <CardContent className='flex-1 flex flex-col space-y-4'>
-        {/* transcript */}
-        <ScrollArea className='flex-1 pr-4'>
-          <div className='space-y-4'>
+      <CardContent className="flex-1 min-h-0 flex flex-col gap-0 bg-card">
+        {/* Scrollable messages */}
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 min-h-0 overflow-y-auto pr-4 pb-24"
+          style={{ scrollBehavior: 'smooth' }}
+        >
+          <div className="space-y-4 py-1">
             {messages.map(m => (
               <motion.div
                 key={m.id}
@@ -206,21 +226,26 @@ export default function ChatInterface() {
                 className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`max-w-[80%] rounded-lg p-3 ${
-                    m.sender === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
-                  }`}
+                  className={`max-w-[80%] rounded-2xl px-3 py-2 shadow-sm ${bubbleClass(m.sender)}`}
                 >
-                  <div className='flex items-start gap-2'>
-                    {m.sender === 'bot' ? <Bot className='h-4 w-4 mt-1 flex-shrink-0' /> : <User className='h-4 w-4 mt-1 flex-shrink-0' />}
+                  <div className="flex items-start gap-2">
+                    {m.sender === 'bot' ? (
+                      <Bot className="h-4 w-4 mt-1 flex-shrink-0" />
+                    ) : (
+                      <User className="h-4 w-4 mt-1 flex-shrink-0" />
+                    )}
                     <div>
                       {m.isImage ? (
-                        <img src={m.content} alt='AI chart' className='max-w-full rounded' />
+                        <img src={m.content} alt="AI chart" className="max-w-full rounded" />
                       ) : m.isHtml ? (
-                        <div className='prose prose-sm max-w-none' dangerouslySetInnerHTML={{ __html: m.content }} />
+                        <div
+                          className="prose prose-sm max-w-none"
+                          dangerouslySetInnerHTML={{ __html: m.content }}
+                        />
                       ) : (
-                        <p className='text-sm whitespace-pre-wrap'>{m.content}</p>
+                        <p className="text-sm whitespace-pre-wrap">{m.content}</p>
                       )}
-                      <p className='text-[11px] opacity-60 mt-1'>
+                      <p className="text-[11px] text-muted-foreground mt-1">
                         {new Date(m.timestamp).toLocaleString()}
                       </p>
                     </div>
@@ -230,38 +255,51 @@ export default function ChatInterface() {
             ))}
 
             {isTyping && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className='flex justify-start'>
-                <div className='bg-muted rounded-lg p-3'>
-                  <div className='flex items-center gap-2'>
-                    <Bot className='h-4 w-4' />
-                    <div className='flex space-x-1'>
-                      <div className='w-2 h-2 bg-gray-400 rounded-full animate-bounce'></div>
-                      <div className='w-2 h-2 bg-gray-400 rounded-full animate-bounce' style={{ animationDelay: '0.1s' }}></div>
-                      <div className='w-2 h-2 bg-gray-400 rounded-full animate-bounce' style={{ animationDelay: '0.2s' }}></div>
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                <div className="bg-muted rounded-lg p-3">
+                  <div className="flex items-center gap-2">
+                    <Bot className="h-4 w-4" />
+                    <div className="flex space-x-1">
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                      <div
+                        className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                        style={{ animationDelay: '0.1s' }}
+                      />
+                      <div
+                        className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                        style={{ animationDelay: '0.2s' }}
+                      />
                     </div>
                   </div>
                 </div>
               </motion.div>
             )}
-            <div ref={scrollRef} />
           </div>
-        </ScrollArea>
+        </div>
 
-        {/* composer */}
-        <div className='flex gap-2'>
-          <Input
-            placeholder='Ask me about your data… (you can also prefix /dataset:products etc., but not required)'
-            value={inputMessage}
-            onChange={e => setInputMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className='flex-1'
-          />
-          <Button onClick={handleSend} disabled={!inputMessage.trim() || isTyping}>
-            <Send className='h-4 w-4' />
-          </Button>
+        {/* Sticky light composer */}
+        <div className="sticky bottom-0 left-0 right-0 bg-background border-t z-10">
+          <form
+            className="flex gap-2 p-2"
+            onSubmit={(e) => {
+              e.preventDefault()
+              handleSend()
+            }}
+          >
+            <Input
+              placeholder="Ask me about your data… (you can also prefix /dataset:products etc., but not required)"
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              onKeyDown={handleKeyDown}
+              className="flex-1"
+              autoComplete="off"
+            />
+            <Button type="submit" disabled={!inputMessage.trim() || isTyping}>
+              <Send className="h-4 w-4" />
+            </Button>
+          </form>
         </div>
       </CardContent>
     </Card>
   )
 }
-

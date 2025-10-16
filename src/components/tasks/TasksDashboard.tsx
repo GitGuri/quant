@@ -259,29 +259,41 @@ export default function TasksDashboard() {
   }, [projectsWithProgress, projQuery, projSort]);
 
   // Create project
-  const onProjectSaved = async (data: ProjectFormData) => {
-    try {
-      const r = await fetch(`${API_BASE}/api/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({
-          name: data.name,
-          description: data.description || '',
-          deadline: data.deadline || null,
-          status: data.status,
-          assignee_id: data.assignee_id ?? null,
-        }),
-      });
-      if (!r.ok) throw new Error('Failed to create project');
-      toast({ title: `Project "${data.name}" created` });
-      setProjectDialogOpen(false);
-      await fetchProjects();
-      window.dispatchEvent(new Event('projects:created'));
-      window.dispatchEvent(new Event('projects:refresh'));
-    } catch (e: any) {
-      toast({ title: 'Error', description: e.message || 'Failed to create project', variant: 'destructive' });
+// inside TasksDashboard.tsx
+
+// Create project
+const onProjectSaved = async (data: ProjectFormData) => {
+  try {
+    const r = await fetch(`${API_BASE}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        name: data.name,
+        description: data.description || '',
+        deadline: data.deadline || null,
+        status: data.status,
+
+        // ✅ server expects `assignee` (UUID), not `assignee_id`
+        assignee: data.assignee_id ?? undefined,
+
+        // ✅ if no assignee picked, tell the server to assign the creator
+        assignSelfAsLead: !data.assignee_id,
+      }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j?.error || 'Failed to create project');
     }
-  };
+    toast({ title: `Project "${data.name}" created` });
+    setProjectDialogOpen(false);
+    await fetchProjects();
+    window.dispatchEvent(new Event('projects:created'));
+    window.dispatchEvent(new Event('projects:refresh'));
+  } catch (e: any) {
+    toast({ title: 'Error', description: e.message || 'Failed to create project', variant: 'destructive' });
+  }
+};
+
 
   const currentFilters = { search, projectId: projectFilter === 'all' ? undefined : projectFilter, tab: activeTab };
 
