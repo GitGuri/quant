@@ -4,7 +4,7 @@ import { SaveOutlined, SettingOutlined } from '@ant-design/icons';
 import { motion } from 'framer-motion';
 
 const { Title, Text } = Typography;
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
 type LeaveType = 'annual' | 'sick' | 'family' | 'study' | 'unpaid';
 

@@ -21,7 +21,7 @@ import {
 import { useToast } from '@/components/ui/use-toast';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com'
 
 interface AuthContextType {
   isAuthenticated: boolean;

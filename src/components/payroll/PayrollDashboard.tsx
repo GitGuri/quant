@@ -25,7 +25,7 @@ import type { Employee } from '../../types/payroll';
 import LeaveManagement from './LeaveManagement';
 import { LeaveSettings } from './LeaveSettings';
 const { Title } = Typography;
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
 const PayrollDashboard: React.FC = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);

@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
 /** === Types === */
 type Employee = {

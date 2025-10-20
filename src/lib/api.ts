@@ -1,5 +1,5 @@
 // src/lib/api.ts
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
 function getActiveCompanyId() {
   const uid = localStorage.getItem('currentUserId') || localStorage.getItem('user_id') || '';

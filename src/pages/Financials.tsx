@@ -252,7 +252,7 @@ interface ApiVatResponse {
 }
 
 // Use your deployed backend
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
 const openBlobInNewTab = (blob: Blob, filename: string) => {
   const url = URL.createObjectURL(blob);
@@ -1888,11 +1888,11 @@ const handleDownloadPdf = async () => {
                       {/* Equality Check */}
                       <div className="mt-6 border-t pt-3 space-y-1">
                         <div className="flex justify-between">
-                          <span className="font-semibold">TOTAL ASSETS (control)</span>
+                          <span className="font-semibold">TOTAL ASSETS </span>
                           <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalAssets)}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="font-semibold">TOTAL EQUITY AND LIABILITIES (control)</span>
+                          <span className="font-semibold">TOTAL EQUITY AND LIABILITIES </span>
                           <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalEquityAndLiabilities)}</span>
                         </div>
                         {nonZero(balanceSheetData.totals.diff) && (

@@ -49,7 +49,6 @@ import { useToast } from '@/hooks/use-toast';
 // ⬇️ adjust the path if needed
 import { CustomerForm } from './CustomerForm';
 
-
 interface CustomField {
   id: number;
   name: string;
@@ -160,6 +159,24 @@ function applyTokens(text: string, tokens: TokenDict): string {
     const re = new RegExp(`{{\\s*${k}\\s*}}`, 'g');
     return acc.replace(re, String(v));
   }, text);
+}
+
+// --- NEW: client-side mail-merge & cleanup ---
+function personalize(
+  text: string,
+  customer: { name?: string },
+  ctx: { title?: string; discount?: number | string; count?: number | string } = {}
+) {
+  const safe = (v: any) => (v === undefined || v === null ? '' : String(v));
+  return text
+    .replace(/{{\s*name\s*}}/gi, safe(customer.name || 'there'))
+    .replace(/{{\s*title\s*}}/gi, safe(ctx.title))
+    .replace(/{{\s*discount\s*}}/gi, safe(ctx.discount))
+    .replace(/{{\s*count\s*}}/gi, safe(ctx.count));
+}
+
+function stripAllTokens(text: string) {
+  return text.replace(/{{[^}]+}}/g, '').replace(/[ \t]{2,}/g, ' ').trim();
 }
 
 function insertAtCursor(textarea: HTMLTextAreaElement, snippet: string) {
@@ -384,7 +401,7 @@ export function CustomerManagement() {
   };
 
   const tokensForSuggestion = (s: MarketingSuggestion): TokenDict => ({
-    name: 'there', // preview name; per-recipient will be handled server-side if supported
+    name: 'there',
     title: s.title,
     discount: s.discountPercent,
     count: s.targetCount,
@@ -396,7 +413,7 @@ export function CustomerManagement() {
         (s) =>
           `• ${s.title} — ${s.discountPercent}% OFF\n  ${applyTokens(s.promotionText, {
             ...tokensForSuggestion(s),
-            name: '{{name}}', // keep token so backend can personalize
+            name: '{{name}}',
           })}`
       )
       .join('\n\n');
@@ -410,12 +427,12 @@ export function CustomerManagement() {
     };
   };
 
+  // --- UPDATED: neutral defaults (no tokens) ---
   const openDetails = (s: MarketingSuggestion) => {
     setSelectedSuggestion(s);
     setEditorSubject(s.title);
-    // Keep tokens inside; backend can personalize {{name}} etc. If not, it will send literal tokens.
-    setEditorEmail(s.promotionText || `Hi {{name}}, ${s.title} — {{discount}}% off.`);
-    setEditorSms(`Hi {{name}}, ${s.title} — {{discount}}% off.`);
+    setEditorEmail(` ${s.promotionText || `${s.title} — ${s.discountPercent}% off.`}`);
+    setEditorSms(`Hi there, ${s.title} — ${s.discountPercent}% off.`);
     setDetailsOpen(true);
   };
 
@@ -433,12 +450,30 @@ export function CustomerManagement() {
   }) {
     const headers = getAuthHeaders();
 
+    // Build per-recipient messages (client-side mail-merge)
+    const expandedMessages = recipients
+      .filter((c) => !!c.email)
+      .map((c) => {
+        const subj = stripAllTokens(personalize(subject, c));
+        const body = stripAllTokens(
+          personalize(emailText, c, {
+            // provide context if needed later
+          })
+        );
+        return { to: c.email, name: c.name, subject: subj, text: body };
+      });
+
+    // Generic fallback (server that ignores expandedMessages)
+    const genericSubject = stripAllTokens(subject.replace(/{{\s*name\s*}}/gi, 'there'));
+    const genericEmailText = stripAllTokens(emailText.replace(/{{\s*name\s*}}/gi, 'there'));
+
     // EMAIL
     const emailRes = await fetch(`https://quantnow-sa1e.onrender.com/api/marketing/send-emails`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({
-        suggestion: { title: subject, promotionText: emailText, discountPercent: 0 },
+        suggestion: { title: genericSubject, promotionText: genericEmailText, discountPercent: 0 },
+        expandedMessages, // preferred path if backend supports
         customers: recipients.map((c) => ({
           id: c.id,
           name: c.name,
@@ -455,11 +490,20 @@ export function CustomerManagement() {
 
     // SMS (optional)
     if (alsoSendSms && smsText) {
+      const smsExpanded = recipients
+        .filter((c) => !!c.phone)
+        .map((c) => ({
+          to: c.phone!,
+          name: c.name,
+          text: stripAllTokens(personalize(smsText, c)),
+        }));
+
       const smsRes = await fetch(`https://quantnow-sa1e.onrender.com/api/marketing/send-sms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({
-          text: smsText,
+          text: stripAllTokens(smsText.replace(/{{\s*name\s*}}/gi, 'there')), // generic fallback
+          expandedMessages: smsExpanded, // preferred if supported
           customers: recipients
             .filter((c) => !!c.phone)
             .map((c) => ({ id: c.id, name: c.name, phone: c.phone })),
@@ -717,7 +761,7 @@ export function CustomerManagement() {
       toast({
         title: 'Error',
         description: `Failed to delete customer: ${
-          err instanceof Error ? err.message : String(err)
+          err instanceof Error ? err.message : err
         }`,
         variant: 'destructive',
       });
@@ -794,53 +838,50 @@ export function CustomerManagement() {
               onChange={(e) => setSearchTerm(e.target.value)}
               className="max-w-sm"
             />
-<Dialog
-  open={isFormDialogOpen}
-  onOpenChange={(open) => {
-    setIsFormDialogOpen(open);
-    if (!open) setCurrentCustomer(undefined); // clear when closing
-  }}
->
-  <DialogTrigger asChild>
-    <Button
-      onClick={() => {
-        setCurrentCustomer(undefined); // ensure it's a create
-        setIsFormDialogOpen(true);
-      }}
-      className="w-full sm:w-auto"
-    >
-      <Plus className="mr-2 h-4 w-4" /> New Customer
-    </Button>
-  </DialogTrigger>
+            <Dialog
+              open={isFormDialogOpen}
+              onOpenChange={(open) => {
+                setIsFormDialogOpen(open);
+                if (!open) setCurrentCustomer(undefined); // clear when closing
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button
+                  onClick={() => {
+                    setCurrentCustomer(undefined); // ensure it's a create
+                    setIsFormDialogOpen(true);
+                  }}
+                  className="w-full sm:w-auto"
+                >
+                  <Plus className="mr-2 h-4 w-4" /> New Customer
+                </Button>
+              </DialogTrigger>
 
-  <DialogContent className="sm:max-w-[540px]">
-    <DialogHeader>
-      <DialogTitle>
-        {currentCustomer ? 'Edit Customer' : 'Create New Customer'}
-      </DialogTitle>
-    </DialogHeader>
+              <DialogContent className="sm:max-w-[540px]">
+                <DialogHeader>
+                  <DialogTitle>
+                    {currentCustomer ? 'Edit Customer' : 'Create New Customer'}
+                  </DialogTitle>
+                </DialogHeader>
 
-    {/* ✅ Real form goes here */}
-    <CustomerForm
-      customer={currentCustomer ? {
-        id: currentCustomer.id,
-        name: currentCustomer.name || '',
-        email: currentCustomer.email || '',
-        phone: currentCustomer.phone || '',
-        address: currentCustomer.address || '',
-        vatNumber: currentCustomer.vatNumber || '',
-        // If you fetch customFields in your list, pass them through; otherwise an empty array is fine.
-        customFields: currentCustomer.customFields || [],
-      } : undefined}
-      onSave={(c) => {
-        // your existing save path expects a "Customer"-shaped object
-        handleFormSave(c as any);
-      }}
-      onCancel={handleFormCancel}
-    />
-  </DialogContent>
-</Dialog>
-
+                {/* ✅ Real form goes here */}
+                <CustomerForm
+                  customer={currentCustomer ? {
+                    id: currentCustomer.id,
+                    name: currentCustomer.name || '',
+                    email: currentCustomer.email || '',
+                    phone: currentCustomer.phone || '',
+                    address: currentCustomer.address || '',
+                    vatNumber: currentCustomer.vatNumber || '',
+                    customFields: currentCustomer.customFields || [],
+                  } : undefined}
+                  onSave={(c) => {
+                    handleFormSave(c as any);
+                  }}
+                  onCancel={handleFormCancel}
+                />
+              </DialogContent>
+            </Dialog>
           </div>
         </CardHeader>
         <CardContent>
@@ -914,9 +955,9 @@ export function CustomerManagement() {
                               </TableCell>
                               <TableCell className="text-right">
                                 <div className="flex justify-end space-x-2">
-<Button variant="ghost" size="sm" onClick={() => handleEditCustomer(customer)}>
-  <Edit className="h-4 w-4" />
-</Button>
+                                  <Button variant="ghost" size="sm" onClick={() => handleEditCustomer(customer)}>
+                                    <Edit className="h-4 w-4" />
+                                  </Button>
 
                                   <AlertDialog>
                                     <AlertDialogTrigger asChild>
@@ -1090,12 +1131,10 @@ export function CustomerManagement() {
                         <Button
                           size="sm"
                           onClick={() => {
-                            // Quick send using defaults (no editing)
                             setEditorSubject(suggestion.title);
                             setEditorEmail(suggestion.promotionText);
                             setEditorSms(`Hi {{name}}, ${suggestion.title} — {{discount}}% off.`);
                             setSelectedSuggestion(suggestion);
-                            // Send immediately
                             sendSingleWithOverrides(suggestion);
                           }}
                           disabled={sendingEmails}
@@ -1135,22 +1174,7 @@ export function CustomerManagement() {
           {selectedSuggestion && (
             <div className="space-y-4">
               {/* Tokens */}
-              <div className="flex flex-wrap gap-2 text-xs">
-                <span className="text-muted-foreground">Insert token:</span>
-                {['{{name}}', '{{title}}', '{{discount}}', '{{count}}'].map((t) => (
-                  <button
-                    key={t}
-                    className="px-2 py-1 rounded border hover:bg-accent"
-                    onClick={() => {
-                      const el = emailAreaRef.current;
-                      if (el) insertAtCursor(el, ` ${t} `);
-                    }}
-                    type="button"
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
+              
 
               {/* Subject */}
               <div className="space-y-1">
@@ -1179,7 +1203,7 @@ export function CustomerManagement() {
                   className="w-full h-40 border rounded p-2 text-sm"
                   value={editorEmail}
                   onChange={(e) => setEditorEmail(e.target.value)}
-                  placeholder='Use tokens like "Hi {{name}}", "{{discount}}%", "{{title}}", "{{count}}"'
+                  //placeholder='Use tokens like "Hi {{name}}", "{{discount}}%", "{{title}}", "{{count}}"'
                 />
               </div>
 
@@ -1227,15 +1251,15 @@ export function CustomerManagement() {
                     <p className="text-xs font-medium mb-1">Email preview</p>
                     <div className="text-sm whitespace-pre-wrap">
                       <div className="font-semibold mb-1">
-                        {applyTokens(editorSubject, tokensForSuggestion(selectedSuggestion))}
+                        {stripAllTokens(personalize(editorSubject, { name: 'there' }))}
                       </div>
-                      {applyTokens(editorEmail, tokensForSuggestion(selectedSuggestion))}
+                      {stripAllTokens(personalize(editorEmail, { name: 'there' }))}
                     </div>
                   </div>
                   <div className="bg-accent/40 p-3 rounded">
                     <p className="text-xs font-medium mb-1">SMS preview</p>
                     <div className="text-sm whitespace-pre-wrap">
-                      {applyTokens(editorSms, tokensForSuggestion(selectedSuggestion))}
+                      {stripAllTokens(personalize(editorSms, { name: 'there' }))}
                     </div>
                   </div>
                 </div>
@@ -1375,15 +1399,15 @@ export function CustomerManagement() {
                   <p className="text-xs font-medium mb-1">Email preview</p>
                   <div className="text-sm whitespace-pre-wrap">
                     <div className="font-semibold mb-1">
-                      {applyTokens(combinedSubject, { name: 'there' })}
+                      {stripAllTokens(personalize(combinedSubject, { name: 'there' }))}
                     </div>
-                    {applyTokens(combinedEmail, { name: 'there' })}
+                    {stripAllTokens(personalize(combinedEmail, { name: 'there' }))}
                   </div>
                 </div>
                 <div className="bg-accent/40 p-3 rounded">
                   <p className="text-xs font-medium mb-1">SMS preview</p>
                   <div className="text-sm whitespace-pre-wrap">
-                    {applyTokens(combinedSms, { name: 'there' })}
+                    {stripAllTokens(personalize(combinedSms, { name: 'there' }))}
                   </div>
                 </div>
               </div>

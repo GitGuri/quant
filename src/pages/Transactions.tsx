@@ -1,5 +1,5 @@
-// Transactions.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// src/pages/Transactions.tsx
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Header } from '../components/layout/Header';
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -15,9 +15,10 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Edit, Printer, FileText, Trash2, AlertTriangle } from 'lucide-react';
+import { Edit, Printer, FileText, Trash2, AlertTriangle, Loader2, Check } from 'lucide-react';
 import { useAuth } from '../AuthPage';
 import { Separator } from '@/components/ui/separator';
+import { useToast } from '@/components/ui/use-toast';
 
 // ---------------- Types ----------------
 interface Account {
@@ -26,18 +27,25 @@ interface Account {
   name: string;
   type: string;
 }
-interface JournalEntrySummary {
+
+interface JournalEntryListRow {
   id: number;
   entry_date: string;      // YYYY-MM-DD
   memo: string | null;
   total_debit: string | number;
   total_credit: string | number;
   line_count: number;
+  debit_account_id: number | null;
+  debit_account_name: string | null;
+  credit_account_id: number | null;
+  credit_account_name: string | null;
+  amount?: number;
 }
+
 interface JournalLine {
   id: number;
   account_id: number;
-  account_name?: string; // <-- NEW: backend now returns account_name
+  account_name?: string;
   debit: string | number;
   credit: string | number;
 }
@@ -67,8 +75,8 @@ interface UnifiedTxViewRow {
   amount: number;
   debitAccountId?: number;
   creditAccountId?: number;
-  debitAccountName?: string;   // <-- NEW
-  creditAccountName?: string;  // <-- NEW
+  debitAccountName?: string;
+  creditAccountName?: string;
   complex?: boolean;
   lineCount?: number;
   dupCount?: number;
@@ -83,14 +91,17 @@ const parseNumber = (v: string | number | null | undefined) => {
   const n = typeof v === 'number' ? v : parseFloat(String(v));
   return isNaN(n) ? 0 : n;
 };
-const biggestDebit = (lines: JournalLine[]) =>
-  lines
-    .filter(l => parseNumber(l.debit) > 0)
-    .sort((a, b) => parseNumber(b.debit) - parseNumber(a.debit))[0];
-const biggestCredit = (lines: JournalLine[]) =>
-  lines
-    .filter(l => parseNumber(l.credit) > 0)
-    .sort((a, b) => parseNumber(b.credit) - parseNumber(a.credit))[0];
+
+// Default month bounds (yyyy-mm-01 → yyyy-mm-last)
+function currentMonthBounds(): { from: string; to: string } {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth(); // 0..11
+  const first = new Date(y, m, 1);
+  const last = new Date(y, m + 1, 0);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  return { from: iso(first), to: iso(last) };
+}
 
 // duplicate helpers
 const normalize = (s?: string) =>
@@ -170,27 +181,10 @@ function pickSurvivor(group: UnifiedTxViewRow[]) {
   return sorted[0];
 }
 
-// limit concurrency
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  fn: (t: T) => Promise<R>,
-  limit = 10
-): Promise<R[]> {
-  const out: R[] = [];
-  let idx = 0;
-  const runners = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
-    while (idx < items.length) {
-      const myIndex = idx++;
-      out[myIndex] = await fn(items[myIndex]);
-    }
-  });
-  await Promise.all(runners);
-  return out;
-}
-
 // ---------------- Component ----------------
 const Transactions: React.FC = () => {
   const { isAuthenticated } = useAuth();
+  const { toast } = useToast();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const authHeaders = useMemo(
     () => (token ? { Authorization: `Bearer ${token}` } : {}),
@@ -199,69 +193,34 @@ const Transactions: React.FC = () => {
 
   // UI / filters
   const [searchTerm, setSearchTerm] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const [{ from: defaultFrom, to: defaultTo }] = useState(currentMonthBounds);
+  const [fromDate, setFromDate] = useState(defaultFrom);
+  const [toDate, setToDate] = useState(defaultTo);
   const [selectedAccountFilter, setSelectedAccountFilter] = useState<'all' | string>('all');
   const [showDupOnly, setShowDupOnly] = useState(false);
 
-  // default window (last 90 days) once
-  useEffect(() => {
-    if (!fromDate && !toDate) {
-      const end = new Date();
-      const start = new Date();
-      start.setDate(end.getDate() - 90);
-      setFromDate(start.toISOString().slice(0, 10));
-      setToDate(end.toISOString().slice(0, 10));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Data
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [summaries, setSummaries] = useState<JournalEntrySummary[]>([]);
   const [unifiedRows, setUnifiedRows] = useState<UnifiedTxViewRow[]>([]);
+
+  // Pagination
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [appending, setAppending] = useState(false);
 
   // Selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Loading
   const [loading, setLoading] = useState(false);
-  const [loadingDetails, setLoadingDetails] = useState(false);
   const [computingDups, setComputingDups] = useState(false);
   const [deleteDupBusy, setDeleteDupBusy] = useState(false);
   const [dupGroupsPreview, setDupGroupsPreview] = useState<
     { survivor: UnifiedTxViewRow; duplicates: UnifiedTxViewRow[] }[]
   >([]);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'success'>('idle');
 
-  // Edit modal
-  const [editOpen, setEditOpen] = useState(false);
-  const [editingSourceType, setEditingSourceType] = useState<TransactionSourceType | null>(null);
-  const [editJEDetail, setEditJEDetail] = useState<JournalEntryDetail | null>(null);
-  const [editJEDate, setEditJEDate] = useState('');
-  const [editJEMemo, setEditJEMemo] = useState('');
-  const [editJEDebitAccountId, setEditJEDebitAccountId] = useState<number | ''>('');
-  const [editJECreditAccountId, setEditJECreditAccountId] = useState<number | ''>('');
-  const [editJEAmount, setEditJEAmount] = useState<number | ''>('');
-
-  // JE details cache & caps
-  const detailsCache = useRef<Map<number, JournalEntryDetail>>(new Map());
-  const MAX_DETAILS = 200; // initial batch to hydrate
-
-  // Accounts map + resolver (prefer line name -> id map -> "#id")
-  const accountNameById = useMemo(() => {
-    const map = new Map<number, string>();
-    accounts.forEach(a => map.set(a.id, a.name));
-    return map;
-  }, [accounts]);
-
-  const resolveAccountLabel = useCallback(
-    (id?: number, nameFromLine?: string) => {
-      if (nameFromLine && nameFromLine.trim()) return nameFromLine;
-      if (id && accountNameById.has(id)) return accountNameById.get(id)!;
-      return id ? `#${id}` : '—';
-    },
-    [accountNameById]
-  );
+  // Optional: show monthly edits left in dialog
+  const [quota, setQuota] = useState<{ used: number; limit: number | null } | null>(null);
 
   // ---------- Fetch Accounts ----------
   useEffect(() => {
@@ -292,155 +251,76 @@ const Transactions: React.FC = () => {
     })();
   }, [isAuthenticated, token, authHeaders]);
 
-  // ---------- Fetch JE Summaries ----------
-  const fetchSummaries = useCallback(async () => {
+  // ---------- Map server row -> unified row ----------
+  const toUnified = useCallback((r: JournalEntryListRow): UnifiedTxViewRow => {
+    const amount = typeof r.amount === 'number' && !Number.isNaN(r.amount)
+      ? r.amount
+      : Math.max(parseNumber(r.total_debit), parseNumber(r.total_credit));
+    return {
+      id: `je-${r.id}`,
+      sourceType: 'journal_entry',
+      sourceId: r.id,
+      date: r.entry_date,
+      description: r.memo || '',
+      amount,
+      debitAccountId: r.debit_account_id ?? undefined,
+      creditAccountId: r.credit_account_id ?? undefined,
+      debitAccountName: r.debit_account_name ?? undefined,
+      creditAccountName: r.credit_account_name ?? undefined,
+      complex: (r.line_count || 0) > 2,
+      lineCount: r.line_count,
+    };
+  }, []);
+
+  // ---------- Fetch JE list (paginated) ----------
+  const fetchSummaries = useCallback(async (mode: 'reset' | 'append' = 'reset') => {
     if (!isAuthenticated || !token) {
-      setSummaries([]);
+      setUnifiedRows([]);
+      setNextCursor(null);
       return;
     }
-    setLoading(true);
-    try {
-      const qs = new URLSearchParams();
-      if (fromDate) qs.append('start', fromDate);
-      if (toDate) qs.append('end', toDate);
-      if (searchTerm) qs.append('q', searchTerm);
+    const qs = new URLSearchParams();
+    if (fromDate) qs.append('start', fromDate);
+    if (toDate)   qs.append('end', toDate);
+    if (searchTerm) qs.append('q', searchTerm);
+    qs.append('limit', '200');
+    if (mode === 'append' && nextCursor) qs.append('cursor', nextCursor);
 
+    mode === 'append' ? setAppending(true) : setLoading(true);
+    try {
       const res = await fetch(`${API_BASE_URL}/journal-entries?${qs.toString()}`, {
         headers: { 'Content-Type': 'application/json', ...authHeaders },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const items = (data?.items || []).map((r: any) => ({
-        id: Number(r.id),
-        entry_date: String(r.entry_date),
-        memo: r.memo ?? null,
-        total_debit: r.total_debit,
-        total_credit: r.total_credit,
-        line_count: Number(r.line_count || 0),
-      }));
-      setSummaries(items);
+      const items: JournalEntryListRow[] = data?.items || [];
+      const mapped = items.map(toUnified);
+
+      if (mode === 'append') {
+        setUnifiedRows(prev => [...prev, ...mapped]);
+      } else {
+        setUnifiedRows(mapped);
+        setSelectedIds(new Set());
+      }
+      setNextCursor(data?.next_cursor || null);
     } catch (e) {
       console.error('Failed to load journal-entries', e);
-      setSummaries([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [isAuthenticated, token, fromDate, toDate, searchTerm, authHeaders]);
-
-  useEffect(() => {
-    fetchSummaries();
-  }, [fetchSummaries]);
-
-  // helper: get detail with cache
-  const getDetail = useCallback(async (id: number): Promise<JournalEntryDetail> => {
-    const hit = detailsCache.current.get(id);
-    if (hit) return hit;
-    const res = await fetch(`${API_BASE_URL}/journal-entries/${id}`, {
-      headers: { 'Content-Type': 'application/json', ...authHeaders },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const detail: JournalEntryDetail = await res.json();
-    detailsCache.current.set(id, detail);
-    return detail;
-  }, [authHeaders]);
-
-  // ---------- Fetch details (capped first, then hydrate progressively) ----------
-  useEffect(() => {
-    if (!isAuthenticated || !token || summaries.length === 0) {
-      setUnifiedRows([]);
-      return;
-    }
-
-    let cancelled = false;
-
-    (async () => {
-      setLoadingDetails(true);
-      try {
-        const slice = summaries.slice(0, MAX_DETAILS);
-        const initial = await mapWithConcurrency(
-          slice,
-          async (s) => {
-            const detail = await getDetail(s.id);
-            const lines = detail.lines || [];
-            const bd = biggestDebit(lines);
-            const bc = biggestCredit(lines);
-            const amount = Math.max(parseNumber(s.total_debit), parseNumber(s.total_credit));
-            const row: UnifiedTxViewRow = {
-              id: `je-${s.id}`,
-              sourceType: 'journal_entry',
-              sourceId: s.id,
-              date: s.entry_date,
-              description: detail.entry.memo || '',
-              amount,
-              debitAccountId: bd?.account_id,
-              creditAccountId: bc?.account_id,
-              // include names if present from backend
-              debitAccountName: bd?.account_name,
-              creditAccountName: bc?.account_name,
-              complex: lines.length > 2,
-              lineCount: s.line_count,
-            };
-            return row;
-          },
-          8
-        );
-
-        if (!cancelled) {
-          setUnifiedRows(initial);
-          setSelectedIds(new Set());
-        }
-
-        // progressive hydration of the rest, without blocking UI
-        const rest = summaries.slice(MAX_DETAILS);
-        if (rest.length) {
-          setTimeout(async () => {
-            try {
-              const more = await mapWithConcurrency(
-                rest,
-                async (s) => {
-                  const detail = await getDetail(s.id);
-                  const lines = detail.lines || [];
-                  const bd = biggestDebit(lines);
-                  const bc = biggestCredit(lines);
-                  const amount = Math.max(parseNumber(s.total_debit), parseNumber(s.total_credit));
-                  const row: UnifiedTxViewRow = {
-                    id: `je-${s.id}`,
-                    sourceType: 'journal_entry',
-                    sourceId: s.id,
-                    date: s.entry_date,
-                    description: detail.entry.memo || '',
-                    amount,
-                    debitAccountId: bd?.account_id,
-                    creditAccountId: bc?.account_id,
-                    debitAccountName: bd?.account_name,
-                    creditAccountName: bc?.account_name,
-                    complex: lines.length > 2,
-                    lineCount: s.line_count,
-                  };
-                  return row;
-                },
-                6
-              );
-              if (!cancelled) {
-                setUnifiedRows(prev => [...prev, ...more]);
-              }
-            } catch (e) {
-              if (!cancelled) console.warn('Background hydrate failed', e);
-            }
-          }, 0);
-        }
-      } catch (e) {
-        console.error('Failed to load JE details', e);
-        if (!cancelled) setUnifiedRows([]);
-      } finally {
-        if (!cancelled) setLoadingDetails(false);
+      if (mode !== 'append') {
+        setUnifiedRows([]);
+        setNextCursor(null);
       }
-    })();
+    } finally {
+      mode === 'append' ? setAppending(false) : setLoading(false);
+    }
+  }, [isAuthenticated, token, fromDate, toDate, searchTerm, authHeaders, nextCursor, toUnified]);
 
-    return () => { cancelled = true; };
-  }, [summaries, isAuthenticated, token, authHeaders, getDetail]);
+  // Initial load (current month)
+  useEffect(() => {
+    fetchSummaries('reset');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ---------- On-demand duplicate computation (for "Duplicates Only" toggle) ----------
+  // ---------- On-demand duplicate computation ----------
   useEffect(() => {
     if (!showDupOnly || unifiedRows.length === 0) return;
 
@@ -449,7 +329,6 @@ const Transactions: React.FC = () => {
       try {
         setComputingDups(true);
 
-        // bucket by amount to avoid full O(n^2)
         const byAmount = new Map<number, UnifiedTxViewRow[]>();
         for (const r of unifiedRows) {
           const key = Number(r.amount.toFixed(2));
@@ -507,7 +386,7 @@ const Transactions: React.FC = () => {
     })();
 
     return () => { cancelled = true; };
-  }, [showDupOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showDupOnly, unifiedRows]);
 
   // ---------- Build / preview groups and delete dups (keep 1) ----------
   const previewDuplicateGroups = async () => {
@@ -519,7 +398,10 @@ const Transactions: React.FC = () => {
     }).filter(g => g.duplicates.length > 0);
     setDupGroupsPreview(preview);
     if (!preview.length) {
-      alert('No duplicate groups found with current settings.');
+      toast({
+        title: 'No duplicates found',
+        description: 'Try widening the date range or disabling filters.',
+      });
     }
   };
 
@@ -529,6 +411,7 @@ const Transactions: React.FC = () => {
       if (!dupGroupsPreview.length) return;
     }
     const totalDeletes = dupGroupsPreview.reduce((n, g) => n + g.duplicates.length, 0);
+    // native confirm kept for speed; swap to shadcn AlertDialog later if you want
     if (!confirm(`Delete ${totalDeletes} duplicate entr${totalDeletes === 1 ? 'y' : 'ies'} across ${dupGroupsPreview.length} group(s)? This cannot be undone.`)) {
       return;
     }
@@ -550,18 +433,27 @@ const Transactions: React.FC = () => {
           })
         );
       }
-      await fetchSummaries();
+      await fetchSummaries('reset');
       setDupGroupsPreview([]);
-      alert('Duplicate deletion complete.');
+      toast({ title: 'Duplicates removed', description: 'We kept one per group.' });
     } catch (e: any) {
       console.error('Delete duplicates failed', e);
-      alert(`Delete failed: ${e?.message || e}`);
+      toast({ variant: 'destructive', title: 'Delete failed', description: e?.message || String(e) });
     } finally {
       setDeleteDupBusy(false);
     }
   };
 
   // ---------- Filter in UI by account / dup / search ----------
+  const resolveAccountLabel = useCallback(
+    (id?: number, nameFromLine?: string) => {
+      if (nameFromLine && nameFromLine.trim()) return nameFromLine;
+      const f = accounts.find(a => a.id === id);
+      return f ? f.name : (id ? `#${id}` : '—');
+    },
+    [accounts]
+  );
+
   const filteredRows = useMemo(() => {
     let r = unifiedRows;
 
@@ -597,42 +489,25 @@ const Transactions: React.FC = () => {
   const allVisibleSelected =
     filteredRows.length > 0 &&
     filteredRows.every(r => selectedIds.has(r.id));
-  const someVisibleSelected =
-    !allVisibleSelected &&
-    filteredRows.some(r => selectedIds.has(r.id));
-  const toggleSelectAll = () => {
-    if (allVisibleSelected) {
-      const visibleIds = new Set(filteredRows.map(r => r.id));
-      setSelectedIds(prev => {
-        const n = new Set(prev);
-        visibleIds.forEach(id => n.delete(id));
-        return n;
-      });
-    } else {
-      setSelectedIds(prev => {
-        const n = new Set(prev);
-        filteredRows.forEach(r => n.add(r.id));
-        return n;
-      });
-    }
-  };
 
   // ---------- Delete ----------
   const deleteOne = async (unifiedId: string, _sourceType: TransactionSourceType) => {
-    if (!token) return alert('Not authenticated.');
+    if (!token) { toast({ variant: 'destructive', title: 'Not authenticated' }); return; }
     if (!confirm('Delete this journal entry? This cannot be undone.')) return;
     try {
       const url = `${API_BASE_URL}/journal-entries/${unifiedId.split('-')[1]}`;
       const res = await fetch(url, { method: 'DELETE', headers: { ...authHeaders } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      fetchSummaries();
+      await fetchSummaries('reset');
+      toast({ title: 'Entry deleted' });
     } catch (e: any) {
       console.error('Delete failed', e);
-      alert(`Delete failed: ${e?.message || e}`);
+      toast({ variant: 'destructive', title: 'Delete failed', description: e?.message || String(e) });
     }
   };
+
   const deleteSelected = async () => {
-    if (!token) return alert('Not authenticated.');
+    if (!token) { toast({ variant: 'destructive', title: 'Not authenticated' }); return; }
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
     if (!confirm(`Delete ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'}? This cannot be undone.`)) return;
@@ -647,19 +522,29 @@ const Transactions: React.FC = () => {
           throw new Error(`Delete ${unifiedId} failed: ${res.status} ${errText}`);
         }
       }
-      fetchSummaries();
+      await fetchSummaries('reset');
       setSelectedIds(new Set());
+      toast({ title: 'Deleted selected entries' });
     } catch (e: any) {
       console.error('Bulk delete failed', e);
-      alert(e?.message || String(e));
+      toast({ variant: 'destructive', title: 'Bulk delete failed', description: e?.message || String(e) });
     } finally {
       setLoading(false);
     }
   };
 
   // ---------- Edit ----------
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingSourceType, setEditingSourceType] = useState<TransactionSourceType | null>(null);
+  const [editJEDetail, setEditJEDetail] = useState<JournalEntryDetail | null>(null);
+  const [editJEDate, setEditJEDate] = useState('');
+  const [editJEMemo, setEditJEMemo] = useState('');
+  const [editJEDebitAccountId, setEditJEDebitAccountId] = useState<number | ''>('');
+  const [editJECreditAccountId, setEditJECreditAccountId] = useState<number | ''>('');
+  const [editJEAmount, setEditJEAmount] = useState<number | ''>('');
+
   const openEdit = async (unifiedId: string, _sourceType: TransactionSourceType) => {
-    if (!token) return alert('Not authenticated.');
+    if (!token) { toast({ variant: 'destructive', title: 'Not authenticated' }); return; }
     try {
       const actualId = unifiedId.split('-').slice(1).join('-');
       const url = `${API_BASE_URL}/journal-entries/${actualId}`;
@@ -685,25 +570,45 @@ const Transactions: React.FC = () => {
       }
       setEditingSourceType('journal_entry');
       setEditOpen(true);
+
+      // pull quota when opening editor
+      try {
+        const r = await fetch(`${API_BASE_URL}/quota/journal_edit`, { headers: { ...authHeaders } });
+        if (r.ok) {
+          const j = await r.json();
+          setQuota({ used: Number(j.used || 0), limit: j.limit == null ? null : Number(j.limit || 0) });
+        }
+      } catch {}
     } catch (e: any) {
       console.error('Load detail failed', e);
-      alert(`Failed to open editor: ${e?.message || String(e)}`);
+      toast({ variant: 'destructive', title: 'Failed to open editor', description: e?.message || String(e) });
     }
   };
 
   const saveEdit = async () => {
-    if (!token) return alert('Not authenticated.');
-    if (editingSourceType === 'journal_entry' && editJEDetail) {
-      try {
+    if (!token) { toast({ variant: 'destructive', title: 'Not authenticated' }); return; }
+    setSaveState('saving');
+
+    try {
+      if (editingSourceType === 'journal_entry' && editJEDetail) {
         let payload: any = {
           entryDate: editJEDate,
           memo: editJEMemo || null,
           lines: [] as Array<{ accountId: number; debit: number; credit: number }>,
         };
+
         if (editJEDetail.lines.length === 2) {
-          const amt = typeof editJEAmount === 'number' ? editJEAmount : parseFloat(String(editJEAmount || 0));
+          const amt =
+            typeof editJEAmount === 'number'
+              ? editJEAmount
+              : parseFloat(String(editJEAmount || 0));
           if (!amt || !editJEDebitAccountId || !editJECreditAccountId) {
-            alert('Please provide debit account, credit account, and a non-zero amount.');
+            toast({
+              variant: 'destructive',
+              title: 'Missing info',
+              description: 'Please pick debit account, credit account, and a non-zero amount.',
+            });
+            setSaveState('idle');
             return;
           }
           payload.lines = [
@@ -711,37 +616,72 @@ const Transactions: React.FC = () => {
             { accountId: Number(editJECreditAccountId), debit: 0, credit: amt },
           ];
         } else {
-          payload.lines = editJEDetail.lines.map(l => ({
+          payload.lines = editJEDetail.lines.map((l) => ({
             accountId: l.account_id,
             debit: parseNumber(l.debit),
             credit: parseNumber(l.credit),
           }));
         }
+
         const res = await fetch(`${API_BASE_URL}/journal-entries/${editJEDetail.entry.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', ...authHeaders },
           body: JSON.stringify(payload),
         });
+
         if (!res.ok) {
-          const err = await res.json().catch(() => null);
-          throw new Error(err?.error || `HTTP ${res.status}`);
+          const data = await res.json().catch(() => null);
+
+          if (res.status === 402 && data?.code === 'plan_limit_reached') {
+            const used  = Number(data.used ?? 0);
+            const limit = Number(data.limit ?? 0);
+            toast({
+              variant: 'destructive',
+              title: 'Monthly limit reached',
+              description: `You've used ${used}/${limit} journal edits this month.`,
+              action: <Button size="sm" onClick={() => window.open('/pricing','_blank')}>Upgrade</Button>,
+            });
+          } else {
+            toast({
+              variant: 'destructive',
+              title: 'Save failed',
+              description: data?.error || `HTTP ${res.status}`,
+            });
+          }
+          throw new Error('handled');
         }
-      } catch (e: any) {
-        console.error('Save JE failed', e);
-        alert(`Save failed: ${e?.message || String(e)}`);
-        return;
       }
+
+      await fetchSummaries('reset');
+      setSaveState('success');
+
+      setTimeout(() => {
+        setSaveState('idle');
+        setEditOpen(false);
+        setEditJEDetail(null);
+        setEditingSourceType(null);
+      }, 600);
+    } catch (e: any) {
+      if (e?.message !== 'handled') {
+        toast({ variant: 'destructive', title: 'Save failed', description: e?.message || 'Unexpected error' });
+      }
+      setSaveState('idle');
     }
-    setEditOpen(false);
-    setEditJEDetail(null);
-    setEditingSourceType(null);
-    fetchSummaries();
   };
+
+  const finishSaveAndClose = useCallback(() => {
+    setTimeout(() => {
+      setSaveState('idle');
+      setEditOpen(false);
+      setEditJEDetail(null);
+      setEditingSourceType(null);
+    }, 600);
+  }, [setEditOpen]);
 
   // ---------- Export / Print ----------
   const exportCsv = () => {
     if (!filteredRows.length) {
-      alert('No rows to export.');
+      toast({ title: 'Nothing to export', description: 'Adjust filters and try again.' });
       return;
     }
     const headers = ['ID','Date','Description','Accounts','Amount','Source','Dup Count'];
@@ -764,6 +704,7 @@ const Transactions: React.FC = () => {
     a.href = url; a.download = 'transactions.csv';
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
+    toast({ title: 'CSV exported' });
   };
   const printPage = () => window.print();
 
@@ -821,7 +762,7 @@ const Transactions: React.FC = () => {
                   variant={showDupOnly ? 'default' : 'outline'}
                   onClick={() => setShowDupOnly(v => !v)}
                   className="w-full"
-                  disabled={loading || loadingDetails}
+                  disabled={loading}
                   title={computingDups ? 'Finding duplicates…' : undefined}
                 >
                   {computingDups ? 'Finding dups…' : (showDupOnly ? 'Showing Duplicates' : 'Duplicates Only')}
@@ -829,31 +770,31 @@ const Transactions: React.FC = () => {
               </div>
             </div>
             <div className="mt-4 flex gap-2 flex-wrap">
-              <Button variant="outline" onClick={() => { fetchSummaries(); }} disabled={loading}>
+              <Button variant="outline" onClick={() => fetchSummaries('reset')} disabled={loading}>
                 Apply
               </Button>
               <Button
                 variant="ghost"
                 onClick={() => {
                   setSearchTerm('');
-                  const end = new Date();
-                  const start = new Date();
-                  start.setDate(end.getDate() - 90);
-                  setFromDate(start.toISOString().slice(0, 10));
-                  setToDate(end.toISOString().slice(0, 10));
+                  const { from, to } = currentMonthBounds();
+                  setFromDate(from);
+                  setToDate(to);
                   setSelectedAccountFilter('all');
                   setShowDupOnly(false);
                   setDupGroupsPreview([]);
+                  setNextCursor(null);
+                  fetchSummaries('reset');
                 }}
               >
-                Reset
+                Reset (This Month)
               </Button>
 
-              {/* NEW: dedupe buttons */}
+              {/* Dedupe */}
               <Button
                 variant="outline"
                 onClick={previewDuplicateGroups}
-                disabled={loading || loadingDetails || computingDups || deleteDupBusy}
+                disabled={loading || computingDups || deleteDupBusy}
                 title="Preview duplicate groups (keep 1 per group)"
               >
                 Preview dups
@@ -861,14 +802,13 @@ const Transactions: React.FC = () => {
               <Button
                 variant="destructive"
                 onClick={deleteDuplicatesKeepOne}
-                disabled={loading || loadingDetails || computingDups || deleteDupBusy || !unifiedRows.length}
+                disabled={loading || computingDups || deleteDupBusy || !unifiedRows.length}
                 title="Delete duplicates and keep one per group"
               >
                 {deleteDupBusy ? 'Deleting…' : 'Delete dups (keep 1)'}
               </Button>
             </div>
 
-            {/* Optional: small preview summary */}
             {dupGroupsPreview.length > 0 && (
               <div className="mt-3 text-sm text-muted-foreground">
                 {dupGroupsPreview.length} group(s) found — will delete{' '}
@@ -883,12 +823,14 @@ const Transactions: React.FC = () => {
         {/* Top actions */}
         <div className="flex flex-wrap gap-2 items-center justify-between">
           <div className="text-sm text-muted-foreground">
-            {loading || loadingDetails ? 'Loading…'
-              : `${filteredRows.length} transaction(s)`}{computingDups ? ' (scanning dups…)': ''}
+            {loading ? 'Loading…' : `${filteredRows.length} transaction(s)`}{computingDups ? ' (scanning dups…)': ''}
           </div>
           <div className="flex gap-2 items-center">
             {selectedIds.size > 0 && (
-              <Button variant="destructive" onClick={deleteSelected} disabled={loading || loadingDetails}>
+              <Button variant="destructive" onClick={async () => {
+                await deleteSelected();
+                setSelectedIds(new Set());
+              }} disabled={loading}>
                 <Trash2 className="h-4 w-4 mr-2" />
                 Delete Selected ({selectedIds.size})
               </Button>
@@ -946,7 +888,7 @@ const Transactions: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {(loading || loadingDetails) ? (
+                  {loading ? (
                     <tr><td colSpan={6} className="text-center py-12">Loading…</td></tr>
                   ) : filteredRows.length === 0 ? (
                     <tr><td colSpan={6} className="text-center py-12 text-muted-foreground">No transactions found</td></tr>
@@ -957,7 +899,11 @@ const Transactions: React.FC = () => {
                           <input
                             type="checkbox"
                             checked={selectedIds.has(r.id)}
-                            onChange={() => toggleSelect(r.id)}
+                            onChange={() => setSelectedIds(prev => {
+                              const n = new Set(prev);
+                              if (n.has(r.id)) n.delete(r.id); else n.add(r.id);
+                              return n;
+                            })}
                             aria-label={`Select transaction ${r.id}`}
                           />
                         </td>
@@ -1023,6 +969,15 @@ const Transactions: React.FC = () => {
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination */}
+            {nextCursor && (
+              <div className="flex justify-center mt-4">
+                <Button onClick={() => fetchSummaries('append')} disabled={appending || loading}>
+                  {appending ? 'Loading…' : 'Load more'}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       </motion.div>
@@ -1150,7 +1105,7 @@ const Transactions: React.FC = () => {
                           <div className="font-medium text-amber-900">Multi-line journal</div>
                           <div className="text-amber-900/90">
                             This entry has {editJEDetail.lines.length} lines. You can change the date & memo
-                            here. 
+                            here.
                           </div>
                         </div>
                       </div>
@@ -1162,10 +1117,36 @@ const Transactions: React.FC = () => {
           </div>
           {/* Footer */}
           <div className="px-6 py-4 bg-muted/30 border-t flex items-center justify-end gap-2">
+            {quota && quota.limit != null && (
+              <span className="mr-auto text-xs text-muted-foreground">
+                {Math.max(0, quota.limit - quota.used)} edits left this month
+              </span>
+            )}
             <Button variant="outline" onClick={() => setEditOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={saveEdit}>Save</Button>
+            <motion.button
+              whileTap={{ scale: 0.97 }}
+              onClick={saveEdit}
+              disabled={saveState === 'saving'}
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition disabled:opacity-60"
+            >
+              {saveState === 'saving' && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              {saveState === 'success' && (
+                <motion.span
+                  className="inline-flex items-center gap-1"
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 20 }}
+                >
+                  <Check className="h-4 w-4" />
+                  Saved
+                </motion.span>
+              )}
+              {saveState === 'idle' && 'Save'}
+            </motion.button>
           </div>
         </DialogContent>
       </Dialog>

@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label';
 import { useToast } from '@/components/ui/use-toast';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com'
 
 export default function ResetPassword() {
   const [params] = useSearchParams();

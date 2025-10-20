@@ -35,7 +35,7 @@ import {
 } from '../../offline';
 
 // ---- Config / helpers ----
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com'
 const api = {
   // if branchId is provided → filter; else get all
   list: (branchId?: string | null) =>

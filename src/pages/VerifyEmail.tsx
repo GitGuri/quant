@@ -8,7 +8,7 @@ import { Loader2, CheckCircle2, XCircle } from 'lucide-react';
 const API_BASE =
   (import.meta as any)?.env?.VITE_API_BASE_URL ||
   (import.meta as any)?.env?.VITE_API_BASE ||
-  'https://quantnow-sa1e.onrender.com';
+  'https://quantnow-sa1e.onrender.com'
 
 export default function VerifyEmail() {
   const [status, setStatus] = useState<'checking' | 'success' | 'error'>('checking');

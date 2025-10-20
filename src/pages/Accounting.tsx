@@ -13,15 +13,15 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
-// top of file, with the other imports
 import LoansTab from './LoansTab';
 
 import { motion } from 'framer-motion';
-import { Plus, Edit, Trash2, Building, CreditCard, Calculator,Download , Play, Link as LinkIcon } from 'lucide-react';
+import { Plus, Edit, Trash2, Building, CreditCard, Calculator, Download, Play, Link as LinkIcon } from 'lucide-react';
 import { useAuth } from '../AuthPage';
 import axios from 'axios';
+import { useToast } from '@/components/ui/use-toast';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com'
 
 // ---- Types
 interface Asset {
@@ -96,6 +96,7 @@ const looksLikeBankOrCash = (acc: Account) =>
 type FundingMethod = 'none' | 'cash' | 'liability';
 
 const Accounting = () => {
+  const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<'assets'|'expenses'|'accounts'|'opening'|'loans'>('assets');
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [modalType, setModalType] = useState<'asset'|'expense'|'account'|''>('');
@@ -117,6 +118,9 @@ const Accounting = () => {
   const [openingDraft, setOpeningDraft] = useState<Record<string, number>>({});
   const [isSavingOpening, setIsSavingOpening] = useState(false);
   const [isLoadingOpening, setIsLoadingOpening] = useState(false);
+
+  // 🔄 Modal submit loading (for rotating indicator)
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
@@ -274,17 +278,17 @@ const Accounting = () => {
     try {
       const r = await fetch(url, { method: 'DELETE', headers: authHeaders });
       if (r.status === 204 || r.ok) {
-        alert(success);
+        toast({ title: success, duration: 2000 });
         if (type === 'asset') await fetchAssets();
         if (type === 'expense') await fetchExpenses();
         if (type === 'account') await fetchAccounts();
       } else {
         const err = await r.json().catch(() => ({}));
-        alert(`${failure} ${err.detail || err.error || ''}`);
+        toast({ title: failure, description: err.detail || err.error || '', variant: 'destructive' });
       }
     } catch (e) {
       console.error(`Error deleting ${type}:`, e);
-      alert(`${failure} Check console for details.`);
+      toast({ title: failure, description: 'Check console for details.', variant: 'destructive' });
     } finally {
       setShowDeleteConfirm(false);
       setItemToDelete(null);
@@ -314,9 +318,11 @@ const Accounting = () => {
   };
 
   const handleSubmit = async () => {
-    if (!token) { alert('You are not authenticated. Please log in.'); return; }
+    if (!token) { toast({ title: 'You are not authenticated. Please log in.', variant: 'destructive' }); return; }
 
     try {
+      setIsSubmitting(true);
+
       let url = '';
       let method: 'POST' | 'PUT' = 'POST';
       let payload: any = {};
@@ -324,7 +330,7 @@ const Accounting = () => {
       if (modalType === 'asset') {
         const cost = Number(formData.cost);
         if (!formData.name || isNaN(cost) || !formData.dateReceived || !formData.account_id) {
-          alert('Please fill in all asset fields correctly (Name, Cost, Date Received, Account)');
+          toast({ title: 'Missing or invalid fields', description: 'Name, Cost, Date Received, Account are required.', variant: 'destructive' });
           return;
         }
 
@@ -355,14 +361,14 @@ const Accounting = () => {
         if (!formData.id) {
           if (fm === 'cash') {
             if (!formData.paid_from_account_id) {
-              alert('Please choose a Bank/Cash account for payment.');
+              toast({ title: 'Select Bank/Cash account', variant: 'destructive' });
               return;
             }
             payload.paid_from_account_id = Number(formData.paid_from_account_id);
           }
           if (fm === 'liability') {
             if (!formData.financed_liability_account_id) {
-              alert('Please choose a Liability account for financing.');
+              toast({ title: 'Select Liability account', variant: 'destructive' });
               return;
             }
             payload.financed_liability_account_id = Number(formData.financed_liability_account_id);
@@ -376,7 +382,7 @@ const Accounting = () => {
       if (modalType === 'expense') {
         const amount = Number(formData.amount);
         if (!formData.name || isNaN(amount) || !formData.date || !formData.account_id) {
-          alert('Please fill in all expense fields correctly (Name, Amount, Date, Account)');
+          toast({ title: 'Missing or invalid fields', description: 'Name, Amount, Date, Account are required.', variant: 'destructive' });
           return;
         }
         payload = {
@@ -393,7 +399,7 @@ const Accounting = () => {
 
       if (modalType === 'account') {
         if (!formData.type || !formData.name || !formData.code) {
-          alert('Please fill in all account fields correctly (Type, Name, Code)');
+          toast({ title: 'Missing fields', description: 'Type, Name, and Code are required.', variant: 'destructive' });
           return;
         }
         payload = { type: formData.type, name: formData.name, code: formData.code };
@@ -408,20 +414,32 @@ const Accounting = () => {
         if (modalType === 'asset') await fetchAssets();
         if (modalType === 'expense') await fetchExpenses();
         if (modalType === 'account') await fetchAccounts();
-        alert(`${modalType} ${formData.id ? 'updated' : 'added'} successfully!`);
+
+        // ✅ Auto-hide success toast (2s) & close modal
+        const verb = formData.id ? 'updated' : 'added';
+        toast({
+          title: `${modalType.charAt(0).toUpperCase() + modalType.slice(1)} ${verb} successfully`,
+          duration: 2000,
+        });
         setIsModalVisible(false);
         clearForm();
       } else {
-        alert(`Failed to ${formData.id ? 'update' : 'add'} ${modalType}: ${result.detail || result.error || r.status}`);
+        toast({
+          title: `Failed to ${formData.id ? 'update' : 'add'} ${modalType}`,
+          description: result.detail || result.error || r.statusText,
+          variant: 'destructive',
+        });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Submit error:', error);
-      alert('Failed to submit data, please try again.');
+      toast({ title: 'Failed to submit', description: error?.message || 'Please try again.', variant: 'destructive' });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleRunDepreciation = async () => {
-    if (!token) { alert('You are not authenticated. Please log in.'); return; }
+    if (!token) { toast({ title: 'Please log in.', variant: 'destructive' }); return; }
     setIsDepreciating(true);
     try {
       const r = await fetch(`${API_BASE}/api/depreciation/run`, {
@@ -435,83 +453,75 @@ const Accounting = () => {
           depBook === 'both'
             ? (+(data?.accounting?.total || 0) + +(data?.tax?.total || 0))
             : +(data?.accounting?.total || data?.tax?.total || 0);
-        alert(`Depreciation run ok (${depBook}). Total: R${(total || 0).toFixed(2)}`);
+        toast({ title: `Depreciation run ok (${depBook})`, description: `Total: R${(total || 0).toFixed(2)}`, duration: 2500 });
         fetchAssets();
       } else {
-        alert(`Failed to run depreciation: ${data.detail || data.error}`);
+        toast({ title: 'Failed to run depreciation', description: data.detail || data.error, variant: 'destructive' });
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Error running depreciation:', e);
-      alert('Failed to run depreciation.');
+      toast({ title: 'Failed to run depreciation.', description: e?.message, variant: 'destructive' });
     } finally {
       setIsDepreciating(false);
     }
   };
-// helper: download a Blob
-const downloadBlob = (blob: Blob, filename: string) => {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-};
 
-// handler: download asset register CSV
-// PDF
-const handleDownloadAssetRegisterPDF = useCallback(async () => {
-  if (!token) { alert('Please log in.'); return; }
-  const asOf = depreciationEndDate;                 // reuse your date picker
-  const book = depBook;                             // 'accounting' | 'tax' | 'both'
-  try {
-    const response = await axios.get(
-      `${API_BASE}/reports/asset-register-pdf?asOf=${asOf}&book=${book}`,
-      { headers: { Authorization: `Bearer ${token}` }, responseType: 'blob' }
-    );
-    const url = URL.createObjectURL(new Blob([response.data]));
+  // helper: download a Blob
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `SARS_Asset_Register_${asOf}_${book}.pdf`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
-  } catch (err) {
-    console.error('PDF download failed', err);
-    alert('Failed to download PDF');
-  }
-}, [token, depreciationEndDate, depBook]);
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
 
-// CSV
-const handleDownloadAssetRegisterCSV = useCallback(async () => {
-  if (!token) { alert('Please log in.'); return; }
-  const asOf = depreciationEndDate;
-  const book = depBook;
-  const url = `${API_BASE}/reports/asset-register?asOf=${asOf}&book=${book}&format=csv`;
-  try {
-    const r = await fetch(url, { headers: authHeaders });
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-    const blob = await r.blob();
-    const aurl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = aurl;
-    a.download = `asset_register_${asOf}_${book}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(aurl);
-  } catch (e:any) {
-    console.error('CSV download failed', e);
-    alert(`Download failed: ${e?.message || e}`);
-  }
-}, [token, depreciationEndDate, depBook, authHeaders]);
+  // PDF
+  const handleDownloadAssetRegisterPDF = useCallback(async () => {
+    if (!token) { toast({ title: 'Please log in.', variant: 'destructive' }); return; }
+    const asOf = depreciationEndDate;
+    const book = depBook;
+    try {
+      const response = await axios.get(
+        `${API_BASE}/reports/asset-register-pdf?asOf=${asOf}&book=${book}`,
+        { headers: { Authorization: `Bearer ${token}` }, responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(new Blob([response.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SARS_Asset_Register_${asOf}_${book}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('PDF download failed', err);
+      toast({ title: 'Failed to download PDF', description: err?.message, variant: 'destructive' });
+    }
+  }, [token, depreciationEndDate, depBook, toast]);
 
+  // CSV
+  const handleDownloadAssetRegisterCSV = useCallback(async () => {
+    if (!token) { toast({ title: 'Please log in.', variant: 'destructive' }); return; }
+    const asOf = depreciationEndDate;
+    const book = depBook;
+    const url = `${API_BASE}/reports/asset-register?asOf=${asOf}&book=${book}&format=csv`;
+    try {
+      const r = await fetch(url, { headers: authHeaders });
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      const blob = await r.blob();
+      downloadBlob(blob, `asset_register_${asOf}_${book}.csv`);
+    } catch (e:any) {
+      console.error('CSV download failed', e);
+      toast({ title: 'CSV download failed', description: e?.message || String(e), variant: 'destructive' });
+    }
+  }, [token, depreciationEndDate, depBook, authHeaders, toast]);
 
   // ---- Save Opening Balances ----
   const saveOpeningBalances = async () => {
-    if (!token) { alert('Please log in.'); return; }
+    if (!token) { toast({ title: 'Please log in.', variant: 'destructive' }); return; }
     setIsSavingOpening(true);
     try {
       const balances = Object.entries(openingDraft)
@@ -519,7 +529,7 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
         .filter(b => Number.isFinite(b.amount) && b.amount !== 0);
 
       if (balances.length === 0) {
-        alert('Enter at least one non-zero opening amount.');
+        toast({ title: 'Enter at least one non-zero opening amount.', variant: 'destructive' });
         setIsSavingOpening(false);
         return;
       }
@@ -532,11 +542,11 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
 
-      alert('Opening balances saved.');
+      toast({ title: 'Opening balances saved.', duration: 2000 });
       await fetchOpeningBalances(openingAsOf);
     } catch (e:any) {
       console.error('Opening save error', e);
-      alert(`Failed to save opening balances: ${e?.message || e}`);
+      toast({ title: 'Failed to save opening balances', description: e?.message || String(e), variant: 'destructive' });
     } finally {
       setIsSavingOpening(false);
     }
@@ -550,7 +560,7 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
     if (m === 'cash') return `Cash/Bank • ${a.acquisition_credit_account_name || '—'}`;
     if (m === 'liability') return `Liability • ${a.acquisition_credit_account_name || '—'}`;
     return 'No initial funding JE';
-    };
+  };
 
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
@@ -563,7 +573,6 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
             <TabsTrigger value='accounts'>Accounts</TabsTrigger>
             <TabsTrigger value='opening'>Opening Balances</TabsTrigger>
             <TabsTrigger value='loans'>Loans</TabsTrigger>
-
           </TabsList>
 
           {/* Assets */}
@@ -586,16 +595,16 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
                     <Input type='date' value={depreciationEndDate}
                       onChange={(e) => setDepreciationEndDate(e.target.value)} className='w-auto' />
 
-<Button variant="outline" onClick={handleDownloadAssetRegisterCSV}>
-  <Download className="h-4 w-4 mr-2" /> CSV
-</Button>
+                    <Button variant="outline" onClick={handleDownloadAssetRegisterCSV}>
+                      <Download className="h-4 w-4 mr-2" /> CSV
+                    </Button>
 
-<Button onClick={handleDownloadAssetRegisterPDF} className="flex items-center gap-2">
-  <Download className="h-4 w-4" /> PDF
-</Button>
+                    <Button onClick={handleDownloadAssetRegisterPDF} className="flex items-center gap-2">
+                      <Download className="h-4 w-4" /> PDF
+                    </Button>
 
                     <Button onClick={handleRunDepreciation} disabled={isDepreciating} className='bg-green-600 hover:bg-green-700'>
-                      {isDepreciating ? 'Running...' : <><Play className='h-4 w-4 mr-2' /> Run Depreciation</>}
+                      {isDepreciating ? 'Running...' : <><Play className='h-4 w-4 mr-2' /> Run Depreciation</> }
                     </Button>
                     <Button onClick={() => {
                       clearForm();
@@ -637,7 +646,7 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
                       <TableHead>Cost</TableHead>
                       <TableHead>Date Received</TableHead>
                       <TableHead>Account</TableHead>
-                      <TableHead>Acquired via</TableHead> {/* NEW */}
+                      <TableHead>Acquired via</TableHead>
                       <TableHead>Method</TableHead>
                       <TableHead>Life (Y)</TableHead>
                       <TableHead>Salvage</TableHead>
@@ -658,7 +667,7 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
                           <TableCell>R{(+asset.cost || 0).toFixed(2)}</TableCell>
                           <TableCell>{new Date(asset.date_received).toLocaleDateString()}</TableCell>
                           <TableCell>{asset.account_name}</TableCell>
-                          <TableCell>{acquisitionLabel(asset)}</TableCell> {/* NEW */}
+                          <TableCell>{acquisitionLabel(asset)}</TableCell>
                           <TableCell>{asset.depreciation_method || '—'}</TableCell>
                           <TableCell>{asset.useful_life_years ?? '—'}</TableCell>
                           <TableCell>R{(+asset.salvage_value || 0).toFixed(2)}</TableCell>
@@ -784,20 +793,19 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
               </CardContent>
             </Card>
           </TabsContent>
-<TabsContent value='loans'>
-  <Card>
-    <CardHeader>
-      <CardTitle className='flex items-center gap-2'>
-        <CreditCard className='h-5 w-5' /> Loans
-      </CardTitle>
-    </CardHeader>
-    <CardContent>
-      {/* Pass the SAME lists you already fetched with authHeaders */}
-      <LoansTab assets={assets} accounts={accounts} />
-    </CardContent>
-  </Card>
-</TabsContent>
 
+          <TabsContent value='loans'>
+            <Card>
+              <CardHeader>
+                <CardTitle className='flex items-center gap-2'>
+                  <CreditCard className='h-5 w-5' /> Loans
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <LoansTab assets={assets} accounts={accounts} />
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           {/* Opening Balances */}
           <TabsContent value='opening'>
@@ -1158,7 +1166,25 @@ const handleDownloadAssetRegisterCSV = useCallback(async () => {
             )}
 
             <div className='flex justify-end'>
-              <Button onClick={handleSubmit}>{formData.id ? 'Save Changes' : 'Add'}</Button>
+              <Button
+                onClick={handleSubmit}
+                disabled={isSubmitting}
+                className='relative'
+              >
+                {isSubmitting ? (
+                  <span className='flex items-center'>
+                    {/* subtle rotating loader */}
+                    <motion.span
+                      className='mr-2 inline-block h-4 w-4 rounded-full border-2 border-current border-t-transparent'
+                      animate={{ rotate: 360 }}
+                      transition={{ repeat: Infinity, duration: 0.8, ease: 'linear' }}
+                    />
+                    {formData.id ? 'Saving…' : 'Adding…'}
+                  </span>
+                ) : (
+                  <>{formData.id ? 'Save Changes' : 'Add'}</>
+                )}
+              </Button>
             </div>
           </div>
         </DialogContent>

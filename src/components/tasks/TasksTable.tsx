@@ -12,7 +12,7 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com'
 
 /* ---------- Types ---------- */
 type BaseTask = {
@@ -1327,13 +1327,19 @@ export function TasksTable({
   const filtered = useMemo(() => {
     let rows = tasks;
 
+    // 🚫 Hide archived in every view except the "archived" tab
+    if (mode !== 'archived') {
+      rows = rows.filter((t) => t.status !== 'Archived');
+    }
+
+    // Tab-specific filters
     if (mode !== 'all') {
       if (mode === 'inprogress') {
         rows = rows.filter(
-          (t) => t.status !== 'Archived' && (t.progress_percentage ?? 0) >= 1 && (t.progress_percentage ?? 0) < 100
+          (t) => (t.progress_percentage ?? 0) >= 1 && (t.progress_percentage ?? 0) < 100
         );
       } else if (mode === 'completed') {
-        rows = rows.filter((t) => t.status !== 'Archived' && (t.progress_percentage ?? 0) >= 100);
+        rows = rows.filter((t) => (t.progress_percentage ?? 0) >= 100);
       } else if (mode === 'overdue') {
         rows = rows.filter((t) => t.status === 'Overdue');
       } else if (mode === 'archived') {
@@ -1341,6 +1347,7 @@ export function TasksTable({
       }
     }
 
+    // External filters
     if (filters?.projectId) rows = rows.filter((t) => t.project_id === filters.projectId);
     if (filters?.search) {
       const q = filters.search.toLowerCase();
@@ -1348,7 +1355,6 @@ export function TasksTable({
         const names = Array.isArray(t.assignees)
           ? t.assignees.map((u) => (u.name || '').toLowerCase()).join(' ')
           : (t.assignee_name || '').toLowerCase();
-
         return (
           t.title.toLowerCase().includes(q) ||
           (t.project_name || '').toLowerCase().includes(q) ||
@@ -1357,9 +1363,11 @@ export function TasksTable({
       });
     }
 
+    // Sort
     const comparator = makeComparator(sortKey, sortDir);
     return [...rows].sort(comparator);
   }, [tasks, mode, filters?.projectId, filters?.search, makeComparator, sortKey, sortDir]);
+
 
   /* ---------- NEW: reminder senders ---------- */
   const sendReminder = useCallback(async (taskId: string, note?: string) => {

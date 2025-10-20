@@ -124,7 +124,7 @@ interface CreditScoreInfo {
 const MIN_SCORE = 60;
 
 // ---- ENV / API ----
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 const BRANCH_PICK_KEY = 'pos.selected_branch_id';
 
 // ===== Credit score helpers =====
@@ -632,15 +632,11 @@ export default function POSScreen() {
               }
 
               // Keep modal open, reset for next custom item
-              customProductForm.resetFields();
-              customProductForm.setFieldsValue({
-                isService: false,
-                customProductTaxRate: '0',
-                customProductQty: 1,
-              });
-              messageApi.success(
-                `"${itemToAdd.name}" (x${qty}) added to cart.`
-              );
+setSelectedProduct(null);
+setProductQty(1);
+setProductModal(false);           // 👈 auto-close modal
+setShowCustomProductForm(false);  // 👈 go back to list on next open
+messageApi.success(`"${itemToAdd.name}" (x${qty}) added to cart.`);
             }
           } catch (err: any) {
             messageApi.error(err.message || 'Failed to process custom product.');
@@ -1063,27 +1059,17 @@ export default function POSScreen() {
     }
   };
 
-  return (
-    <>
-      {contextHolder}
-      <div style={{ padding: 18, maxWidth: 650, margin: '0 auto' }}>
-        <Header title="POS" />
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 8,
-          }}
-        >
-          <Title level={3} style={{ margin: 0 }}>
-           Point of  Sale
-          </Title>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+return (
+  <>
+    {contextHolder}
+    <div style={{ padding: 18, maxWidth: 650, margin: '0 auto' }}>
+      <Header
+        title="POS"
+        rightExtra={
+          <>
             <Tag color={isOnline ? 'green' : 'red'}>
               {isOnline ? 'Online' : 'Offline'}
             </Tag>
-
 
             {hasBranches ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1108,8 +1094,11 @@ export default function POSScreen() {
             ) : (
               <Tag color="default">No Branch</Tag>
             )}
-          </div>
-        </div>
+          </>
+        }
+      />
+
+
 
         {/* Customer Select */}
         <Card

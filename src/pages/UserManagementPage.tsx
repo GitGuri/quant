@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Pencil, Trash2, Plus } from 'lucide-react';
+import { Pencil, Trash2, Plus, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../AuthPage';
 import { Header } from '../components/layout/Header';
@@ -13,7 +13,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/components/ui/use-toast';
 import { Badge } from '@/components/ui/badge';
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
 // Define an interface for the user data
 interface User {
@@ -56,6 +56,10 @@ export default function UserManagementPage() {
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newUserData, setNewUserData] = useState({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
+
+  // 🔹 NEW: loading states for the action buttons
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [isSavingAdd, setIsSavingAdd] = useState(false);
 
   // A predefined list of roles for the select dropdowns
   const allRoles = [
@@ -247,10 +251,10 @@ export default function UserManagementPage() {
     setPrimaryBranchId(branchId);
   };
 
-  // optimistic edit
+  // ✅ Branch is NOT compulsory anymore
   const saveUserEdit = async () => {
     if (!userToEdit || !token) return;
-    setLoading(true);
+    setIsSavingEdit(true); // 🔹 start loading
     try {
       const uniqueRoles = Array.from(new Set(editUserRoles));
 
@@ -286,33 +290,40 @@ export default function UserManagementPage() {
         throw new Error(errorData.error || `HTTP ${updateRolesResponse.status}`);
       }
 
-      // 3) branches
-      if (!primaryBranchId) throw new Error('Please select a primary branch for this user.');
-      if (!selectedBranchIds.includes(primaryBranchId)) throw new Error('Primary branch must be in the selected branches list.');
+      // 3) branches (OPTIONAL NOW)
+      if (selectedBranchIds.length > 0) {
+        const effectivePrimary =
+          primaryBranchId && selectedBranchIds.includes(primaryBranchId)
+            ? primaryBranchId
+            : selectedBranchIds[0];
 
-      const memberships = selectedBranchIds.map(id => ({ branchId: id, isPrimary: id === primaryBranchId }));
-      const r = await fetch(`${API_BASE_URL}/api/users/${userToEdit.id}/branches`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ memberships }),
-        cache: 'no-store',
-      });
-      if (!r.ok) {
-        const errorData = await r.json().catch(() => ({}));
-        throw new Error(errorData.error || `Failed to update branch memberships (${r.status})`);
+        const memberships = selectedBranchIds.map(id => ({
+          branchId: id,
+          isPrimary: id === effectivePrimary,
+        }));
+
+        const r = await fetch(`${API_BASE_URL}/api/users/${userToEdit.id}/branches`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ memberships }),
+          cache: 'no-store',
+        });
+        if (!r.ok) {
+          const errorData = await r.json().catch(() => ({}));
+          throw new Error(errorData.error || `Failed to update branch memberships (${r.status})`);
+        }
       }
 
-      toast({ title: "User Updated", description: `User ${editFormData.displayName} has been successfully updated.` });
-      // Reconcile with server
+      toast({ title: "User Updated", description: `User ${editFormData.displayName || userToEdit.displayName} has been successfully updated.` });
       await fetchUsers();
     } catch (e: any) {
       console.error("Error updating user:", e);
       toast({ title: "Update Failed", description: e.message, variant: "destructive" });
-      await fetchUsers(); // roll back to server truth
+      await fetchUsers();
     } finally {
+      setIsSavingEdit(false); // 🔹 stop loading
       setIsEditModalOpen(false);
       setUserToEdit(null);
-      setLoading(false);
     }
   };
 
@@ -324,7 +335,7 @@ export default function UserManagementPage() {
   // optimistic add
   const addNewUser = async () => {
     if (!token) return;
-    setLoading(true);
+    setIsSavingAdd(true); // 🔹 start loading
 
     const tempId = makeTempId();
     const tempUser: User = {
@@ -373,7 +384,6 @@ export default function UserManagementPage() {
         throw new Error(msg);
       }
 
-      // If API returns created user, merge it; otherwise refetch
       const created: User | undefined = body?.user || body;
       if (created?.id) {
         setUsers(prev =>
@@ -391,7 +401,6 @@ export default function UserManagementPage() {
       setNewUserData({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
     } catch (e: any) {
       console.error("Error adding new user:", e);
-      // rollback optimistic
       removeUser(tempId);
       toast({
         title: "Add User Failed",
@@ -399,7 +408,7 @@ export default function UserManagementPage() {
         variant: "destructive"
       });
     } finally {
-      setLoading(false);
+      setIsSavingAdd(false); // 🔹 stop loading
     }
   };
 
@@ -551,7 +560,7 @@ export default function UserManagementPage() {
 
               {/* Branch assignments */}
               <div className="space-y-2">
-                <Label>Branches (select one primary)</Label>
+                <Label>Branches (optional)</Label>
                 <div className="border rounded-md p-2 max-h-60 overflow-y-auto">
                   {branches.length === 0 ? (
                     <div className="text-sm text-muted-foreground px-1 py-2">No branches yet. Create branches in Profile &gt; Branches.</div>
@@ -584,7 +593,7 @@ export default function UserManagementPage() {
                   })}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  Tip: You can select multiple branches, but exactly one must be primary.
+                  You can select multiple branches. If none are selected, we’ll simply leave memberships unchanged.
                 </div>
               </div>
 
@@ -592,7 +601,10 @@ export default function UserManagementPage() {
                 <Button variant='outline' onClick={() => setIsEditModalOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={saveUserEdit}>Save Changes</Button>
+                <Button onClick={saveUserEdit} disabled={isSavingEdit}>
+                  {isSavingEdit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Save Changes
+                </Button>
               </div>
             </div>
           )}
@@ -682,7 +694,10 @@ export default function UserManagementPage() {
               >
                 Cancel
               </Button>
-              <Button onClick={addNewUser}>Add User</Button>
+              <Button onClick={addNewUser} disabled={isSavingAdd}>
+                {isSavingAdd && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Add User
+              </Button>
             </div>
           </div>
         </DialogContent>

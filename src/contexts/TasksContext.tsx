@@ -17,7 +17,7 @@ type Ctx = {
 const TasksCtx = createContext<Ctx | null>(null);
 export const useTasks = () => useContext(TasksCtx)!;
 
-const API = 'https://quantnow-sa1e.onrender.com';
+const API = 'https://quantnow-sa1e.onrender.com'
 const noStore: RequestInit = { cache: 'no-store' };
 
 export function TasksProvider({children}:{children: React.ReactNode}) {

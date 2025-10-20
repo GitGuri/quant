@@ -14,7 +14,7 @@ const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
 const { RangePicker } = DatePicker;
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
 interface Teller {
   id: string;           // users.user_id

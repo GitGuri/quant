@@ -134,9 +134,23 @@ async function stageSelected(API_BASE_URL: string, authHeaders: any, rows: Array
     headers: { 'Content-Type': 'application/json', ...authHeaders },
     body: JSON.stringify({ source: 'bank_csv', rows }),
   });
-  if (!res.ok) throw new Error(await res.text());
+
+  if (!res.ok) {
+    let detail = '';
+    try { const j = await res.json(); detail = j.error || j.message || ''; } catch {}
+    if (res.status === 402) {
+      const j = await res.json().catch(() => ({}));
+      const remaining = j?.remaining ?? 0;
+      throw new Error(
+        `You’ve hit your monthly import limit. Remaining this month: ${remaining}. ` +
+        (j?.upgrade_suggestion || 'Please upgrade your plan for more imports.')
+      );
+    }
+    throw new Error(detail || `HTTP ${res.status}`);
+  }
   return await res.json() as { batchId: number; inserted: number; duplicates: number };
 }
+
 
 async function loadPreview(API_BASE_URL: string, authHeaders: any, batchId: number) {
   const res = await fetch(`${API_BASE_URL}/imports/${batchId}/preview`, {
@@ -756,16 +770,7 @@ const handleConfirmOnce = () => {
 
       {/* Table with sticky top & bottom horizontal scrollbars */}
       <div className="relative">
-        {/* TOP sticky scrollbar */}
-        <div
-          ref={topStripRef}
-          className="sticky top-0 left-0 right-0 h-5 overflow-x-auto overflow-y-hidden bg-white/90 backdrop-blur border-b border-gray-200 z-10"
-          style={{ scrollbarGutter: 'stable both-edges' }}
-          aria-label="Horizontal scroll (top)"
-        >
-          <div style={{ width: contentWidth, height: 1 }} />
-        </div>
-
+        
         {/* Scrollable table area */}
         <div
           ref={scrollAreaRef}
@@ -1028,10 +1033,11 @@ const handleConfirmOnce = () => {
   );
 };
 
+
 // ------------ Main ------------
 const ChatInterface = () => {
   const RAIRO_API_BASE_URL = 'https://rairo-stmt-api.hf.space';
-  const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+  const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
   const [forceCash, setForceCash] = useState(false);
   const [messages, setMessages] = useState<Array<{ id: string; sender: string; content: string | JSX.Element }>>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -1185,15 +1191,7 @@ function saleToPreviewRow(
   };
 }
 
-  
 
-  // ImportScreen.tsx
-
-// Inside the ChatInterface component...
-
-  // ... after the useEffect that fetches accounts ...
-
-  // NEW: Add a useEffect to fetch products
   useEffect(() => {
     const fetchProducts = async () => {
       if (!isAuthenticated || !token) {
@@ -1354,127 +1352,150 @@ const submitSale = async (sale: {
 };
 
   // Helpers for files
-  const isExcelFile = (f: File | null) => {
-    if (!f) return false;
-    const name = f.name.toLowerCase();
-    const type = (f.type || '').toLowerCase();
-    return (
-      name.endsWith('.xlsx') ||
-      name.endsWith('.xls') ||
-      type.includes('spreadsheet') ||
-      type === 'application/vnd.ms-excel' ||
-      type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
-  };
+// helpers for file kind
+const isExcelFile = (f: File | null) => {
+  if (!f) return false;
+  const name = f.name.toLowerCase();
+  const type = (f.type || '').toLowerCase();
+  return (
+    name.endsWith('.xlsx') ||
+    name.endsWith('.xls') ||
+    type.includes('spreadsheet') ||
+    type === 'application/vnd.ms-excel' ||
+    type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+};
+
+const isPdfFile = (f: File | null) =>
+  !!f && (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+
+const isImageFile = (f: File | null) => {
+  if (!f) return false;
+  const t = (f.type || '').toLowerCase();
+  const n = f.name.toLowerCase();
+  return (
+    t.startsWith('image/') ||
+    n.endsWith('.jpg') || n.endsWith('.jpeg') || n.endsWith('.png') ||
+    n.endsWith('.gif') || n.endsWith('.bmp') || n.endsWith('.webp')
+  );
+};
+
 
   // File change (PDF & Excel)
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0] || null;
-    if (!selectedFile) { addAssistantMessage('No file selected.'); return; }
+const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const selectedFile = e.target.files?.[0] || null;
+  if (!selectedFile) { addAssistantMessage('No file selected.'); return; }
 
-    const isPdf = selectedFile.type === 'application/pdf' || selectedFile.name.toLowerCase().endsWith('.pdf');
-    const isXl = isExcelFile(selectedFile);
-
-    if (!isPdf && !isXl) {
-      addAssistantMessage('Only PDF or Excel files are supported.');
-      e.target.value = '';
-      return;
-    }
-
-    setFile(selectedFile);
-    setTypedDescription(`File: ${selectedFile.name}`);
+  if (!isPdfFile(selectedFile) && !isExcelFile(selectedFile) && !isImageFile(selectedFile)) {
+    addAssistantMessage('Only PDF, Excel, or image files are supported.');
     e.target.value = '';
-  };
+    return;
+  }
+
+  setFile(selectedFile);
+  setTypedDescription(`File: ${selectedFile.name}`);
+  e.target.value = '';
+};
+
 
   // PDF upload
-  const handleFileUpload = async () => {
-    if (!file) { addAssistantMessage('No file selected for upload.'); return; }
-    if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to upload files.'); return; }
+const handleFileUpload = async () => {
+  if (!file) { addAssistantMessage('No file selected for upload.'); return; }
+  if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to upload files.'); return; }
 
-    if (isExcelFile(file)) {
-      await handleExcelUpload();
-      return;
+  // Excel goes through the existing Excel path
+  if (isExcelFile(file)) {
+    await handleExcelUpload();
+    return;
+  }
+
+  // Image/PDF → RAIRO endpoints
+  if (!isPdfFile(file) && !isImageFile(file)) {
+    addAssistantMessage('Only PDF, Excel, or supported image files are allowed.');
+    setFile(null); setTypedDescription(''); return;
+  }
+
+  const isPdf = isPdfFile(file);
+  const endpoint = `${RAIRO_API_BASE_URL}/${isPdf ? 'process-pdf' : 'process-image'}`;
+  addUserMessage(`Uploading ${isPdf ? 'PDF' : 'Image'}: ${file.name}…`);
+  addAssistantMessage(
+    <TableLoading message={`Extracting transactions from ${isPdf ? 'PDF' : 'image'}…`} />
+  );
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(endpoint, { method: 'POST', body: formData });
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result?.error || 'Upload failed');
     }
 
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      addAssistantMessage('Only PDF files are supported for processing.');
-      setFile(null); setTypedDescription(''); return;
-    }
+    addAssistantMessage(`${isPdf ? 'PDF' : 'Image'} processed successfully! Building preview…`);
 
-    addUserMessage(`Initiating PDF upload: ${file.name}...`);
-    addAssistantMessage(<TableLoading message="Extracting transactions from PDF…" />);
+    const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
+      const transactionType = (tx.Type || 'expense').toLowerCase();
 
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const response = await fetch(`${RAIRO_API_BASE_URL}/process-pdf`, { method: 'POST', body: formData });
-      const result = await response.json();
-
-      if (response.ok) {
-        addAssistantMessage('PDF processed successfully! Building preview…');
-
-        const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
-          const transactionType = tx.Type?.toLowerCase() || 'expense';
-
-          let transactionCategory = tx.Destination_of_funds || 'Uncategorized';
-          if (transactionType === 'income' && ['income','general income'].includes((transactionCategory || '').toLowerCase())) {
-            transactionCategory = 'Sales Revenue';
-          }
-
-          let transactionDate: string;
-          try {
-            transactionDate = tx.Date
-              ? new Date(tx.Date.split('/').reverse().join('-')).toISOString().split('T')[0]
-              : new Date().toISOString().split('T')[0];
-          } catch { transactionDate = new Date().toISOString().split('T')[0]; }
-
-          const { accountId, confidence } = suggestAccountForUpload(
-            { type: transactionType, category: transactionCategory, description: tx.Description },
-            accounts
-          );
-
-          return {
-            _tempId: crypto.randomUUID(),
-            type: transactionType as 'income' | 'expense' | 'debt',
-            amount: tx.Amount ? parseFloat(tx.Amount) : 0,
-            description: tx.Description || 'Imported Transaction',
-            date: transactionDate,
-            category: transactionCategory,
-            account_id: accountId || '',
-            original_text: tx.Original_Text || (tx.Description || 'Imported Transaction'),
-            source: 'pdf-upload',
-            is_verified: true,
-            confidenceScore: confidence,
-          };
-        });
-
-        const flagged = markDuplicates(transformed, existingTxs);
-
-        addAssistantMessage(
-          <EditableTransactionTable
-            transactions={flagged}
-            accounts={accounts}
-            categories={categories}
-            onConfirm={handleConfirmProcessedTransaction}
-            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-            forceCash={forceCash}
-            onToggleForceCash={setForceCash}
-            isBusy={importBusy}
-
-          />
-        );
-
-      } else {
-        addAssistantMessage(`Error processing file: ${result.error || 'Unknown error'}`);
+      let transactionCategory = tx.Destination_of_funds || 'Uncategorized';
+      if (transactionType === 'income' &&
+          ['income','general income'].includes((transactionCategory || '').toLowerCase())) {
+        transactionCategory = 'Sales Revenue';
       }
-    } catch (error: any) {
-      console.error('Network error during file upload:', error);
-      addAssistantMessage(`Network error during file upload: ${error.message || 'API is unavailable.'}`);
-    } finally {
-      setFile(null);
-      setTypedDescription('');
-    }
-  };
+
+      let transactionDate: string;
+      try {
+        transactionDate = tx.Date
+          ? new Date(tx.Date.split('/').reverse().join('-')).toISOString().split('T')[0]
+          : new Date().toISOString().split('T')[0];
+      } catch { transactionDate = new Date().toISOString().split('T')[0]; }
+
+      const { accountId, confidence } = suggestAccountForUpload(
+        { type: transactionType, category: transactionCategory, description: tx.Description },
+        accounts
+      );
+
+      return {
+        _tempId: crypto.randomUUID(),
+        type: transactionType as 'income' | 'expense' | 'debt',
+        amount: tx.Amount ? parseFloat(tx.Amount) : 0,
+        description: tx.Description || 'Imported Transaction',
+        date: transactionDate,
+        category: transactionCategory,
+        account_id: accountId || '',
+        original_text: tx.Original_Text || (tx.Description || 'Imported Transaction'),
+        source: isPdf ? 'pdf-upload' : 'image-upload',
+        is_verified: true,
+        confidenceScore: confidence,
+        includeInImport: true,
+      };
+    });
+
+    const flagged = markDuplicates(transformed, existingTxs);
+
+    addAssistantMessage(
+      <EditableTransactionTable
+        transactions={flagged}
+        accounts={accounts}
+        categories={categories}
+        onConfirm={handleConfirmProcessedTransaction}
+        onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+        forceCash={forceCash}
+        onToggleForceCash={setForceCash}
+        isBusy={importBusy}
+      />
+    );
+    openEvidenceFor(flagged, isPdf ? 'pdf' : 'image');
+
+  } catch (error: any) {
+    console.error('Upload error:', error);
+    addAssistantMessage(`Error processing ${isPdf ? 'PDF' : 'image'}: ${error.message || 'Unknown error'}`);
+  } finally {
+    setFile(null);
+    setTypedDescription('');
+  }
+};
 
   const handleExcelUpload = async () => {
     if (!file) { addAssistantMessage('No file selected for upload.'); return; }
@@ -2083,7 +2104,7 @@ if (journalRows.length) {
 // -------------- Save Selected --------------
 // PIPELINE: stage -> preview -> (PATCH) -> commit
 const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
-  const API_BASE_URL_REAL = 'https://quantnow-sa1e.onrender.com';
+  const API_BASE_URL_REAL = 'https://quantnow-sa1e.onrender.com'
   const authHeaders = getAuthHeaders();
 
   if (importBusy) return;
@@ -2462,8 +2483,9 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
   type="file"
   className="hidden"
   onChange={handleFileChange}
-  accept=".pdf,.xlsx,.xls,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png,.gif,.bmp,.webp,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*"
 />
+
         </label>
 {/* Paperclip button that triggers the hidden input */}
 <Button

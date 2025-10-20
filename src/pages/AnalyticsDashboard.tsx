@@ -158,7 +158,7 @@ interface PurchaseSale {
 }
 
 // ---------- API base ----------
-const API = 'https://quantnow-sa1e.onrender.com';
+const API = 'https://quantnow-sa1e.onrender.com'
 
 export default function AnalyticsDashboard() {
   const { dashKey } = useParams<{ dashKey: DashboardKey }>();

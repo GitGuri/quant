@@ -45,7 +45,7 @@ export interface LeaveRequest {
 
 type Balances = Partial<Record<LeaveType, number>>;
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
 const DEFAULT_ENTITLEMENTS: Required<Balances> = {
   annual: 15, sick: 10, family: 3, study: 5, unpaid: Number.POSITIVE_INFINITY

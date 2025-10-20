@@ -12,7 +12,7 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '../../AuthPage';
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'; // Ensure this matches your backend URL
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'//this matches your backend URL
 
 interface StatResponse {
     count?: number;

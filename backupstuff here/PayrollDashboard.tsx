@@ -26,7 +26,7 @@ import LeaveManagement from './LeaveManagement'; // Import Employee from the con
 
 const { Title } = Typography;
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'; // Define your API base URL
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'your API base URL
 
 const PayrollDashboard: React.FC = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);

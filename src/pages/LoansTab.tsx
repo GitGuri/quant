@@ -25,7 +25,7 @@ import dayjs from 'dayjs';
 const { Title, Text } = Typography;
 
 // ---------------- API base + dynamic auth headers ----------------
-const API_BASE = 'https://quantnow-sa1e.onrender.com';
+const API_BASE = 'https://quantnow-sa1e.onrender.com'
 
 function getAuthHeaders() {
   const tk = typeof window !== 'undefined' ? localStorage.getItem('token') : null;

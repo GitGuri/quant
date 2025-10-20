@@ -1,11 +1,16 @@
+// src/pages/reports/ChatInterface.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Send, Bot, User, Trash2, Download, Upload as UploadIcon } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Label } from '@/components/ui/label'
+import { CalendarIcon, Bot, User, Trash2, Download, Upload as UploadIcon, Send, SlidersHorizontal } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 type DatasetKey = 'customers' | 'products' | 'sales' | 'invoices' | 'suppliers' | 'ledger' | 'custom'
+type ModeKey = 'chat' | 'report' | 'marketing' | 'bplan' | 'notify'
 
 interface Message {
   id: string
@@ -16,6 +21,12 @@ interface Message {
   isImage?: boolean
 }
 
+type Filters = {
+  dateFrom?: string
+  dateTo?: string
+  // you can add branchId/status/limit later; backend already supports them
+}
+
 const API_BASE = 'https://quantnow-sa1e.onrender.com'
 
 // helpers
@@ -24,17 +35,17 @@ const authHeaders = () => {
   const t = localStorage.getItem('token')
   return t ? { Authorization: `Bearer ${t}` } : {}
 }
-function guessDataset(q: string): DatasetKey {
-  const s = q.toLowerCase()
-  if (s.includes('customer')) return 'customers'
-  if (s.includes('invoice')) return 'invoices'
-  if (s.includes('supplier') || s.includes('ap')) return 'suppliers'
-  if (s.includes('ledger') || s.includes('journal') || s.includes('account')) return 'ledger'
-  if (s.includes('product') || s.includes('sku') || s.includes('stock')) return 'products'
-  if (s.includes('sale') || s.includes('revenue') || s.includes('profit')) return 'sales'
-  return 'sales'
-}
 const storageKeyForUser = (uid: string) => `quantchat:history:${uid || 'anon'}`
+const prefsKeyForUser = (uid: string) => `quantchat:prefs:${uid || 'anon'}`
+
+const DATASET_OPTIONS: DatasetKey[] = ['customers', 'products', 'sales', 'invoices', 'suppliers', 'ledger', 'custom']
+const MODE_OPTIONS: { value: ModeKey; label: string }[] = [
+  { value: 'chat', label: 'Chat' },
+  { value: 'report', label: 'Report' },
+  { value: 'marketing', label: 'Marketing' },
+  { value: 'bplan', label: 'Business Plan' },
+  { value: 'notify', label: 'Notify' },
+]
 
 export default function ChatInterface() {
   const currentUserId =
@@ -43,13 +54,21 @@ export default function ChatInterface() {
     ''
 
   const STORAGE_KEY = useMemo(() => storageKeyForUser(currentUserId), [currentUserId])
+  const PREFS_KEY = useMemo(() => prefsKeyForUser(currentUserId), [currentUserId])
 
   const [messages, setMessages] = useState<Message[]>([])
   const [inputMessage, setInputMessage] = useState('')
   const [isTyping, setIsTyping] = useState(false)
+
+  // user prefs
+  const [dataset, setDataset] = useState<DatasetKey>('sales')
+  const [mode, setMode] = useState<ModeKey>('chat')
+  const [filters, setFilters] = useState<Filters>({})
+  const [filtersOpen, setFiltersOpen] = useState(false)
+
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
-  // bootstrap from localStorage
+  // bootstrap messages + prefs from localStorage
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
@@ -57,22 +76,29 @@ export default function ChatInterface() {
         const parsed = JSON.parse(raw) as Message[]
         if (Array.isArray(parsed) && parsed.length) {
           setMessages(parsed)
-          return
+        } else {
+          setMessages(getWelcome())
         }
+      } else {
+        setMessages(getWelcome())
+      }
+    } catch {
+      setMessages(getWelcome())
+    }
+
+    try {
+      const rawPrefs = localStorage.getItem(PREFS_KEY)
+      if (rawPrefs) {
+        const prefs = JSON.parse(rawPrefs) as { dataset?: DatasetKey; mode?: ModeKey; filters?: Filters }
+        if (prefs.dataset) setDataset(prefs.dataset)
+        if (prefs.mode) setMode(prefs.mode)
+        if (prefs.filters) setFilters(prefs.filters)
       }
     } catch {}
-    setMessages([
-      {
-        id: 'welcome',
-        sender: 'bot',
-        timestamp: new Date().toISOString(),
-        content:
-          `Hey! I’m Qx Chat. Ask me anything about your data — sales, products, customers, invoices, suppliers, or the ledger. I’ll figure out which dataset to use.`,
-      },
-    ])
-  }, [STORAGE_KEY])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [STORAGE_KEY, PREFS_KEY])
 
-  // persist (cap 500)
+  // persist chat (cap 500) + prefs
   useEffect(() => {
     try {
       const capped = messages.slice(-500)
@@ -80,7 +106,13 @@ export default function ChatInterface() {
     } catch {}
   }, [messages, STORAGE_KEY])
 
-  // autoscroll inside container
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ dataset, mode, filters }))
+    } catch {}
+  }, [dataset, mode, filters, PREFS_KEY])
+
+  // autoscroll
   const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
     const sc = scrollContainerRef.current
     if (!sc) return
@@ -94,7 +126,7 @@ export default function ChatInterface() {
     m: Omit<Message, 'id' | 'timestamp' | 'isHtml' | 'isImage'> & { content: string }
   ) => {
     const trimmed = m.content?.trim?.() || ''
-    const isHtml = trimmed.startsWith('<')
+    const isHtml = /^<(?!!)/.test(trimmed) // starts with "<" but not "<!"
     const isImage = trimmed.startsWith('data:image/')
     setMessages(prev => [
       ...prev,
@@ -104,21 +136,38 @@ export default function ChatInterface() {
 
   const handleSend = async () => {
     const qRaw = inputMessage.trim()
-    if (!qRaw || isTyping) return
+    if (mode === 'chat' && !qRaw) return
+    if (isTyping) return
 
-    pushMessage({ sender: 'user', content: qRaw })
+    if (qRaw) pushMessage({ sender: 'user', content: qRaw })
     setInputMessage('')
     setIsTyping(true)
 
     try {
-      const dataset =
-        (qRaw.match(/\/dataset:(\w+)/i)?.[1]?.toLowerCase() as DatasetKey) || guessDataset(qRaw)
-      const question = qRaw.replace(/\/dataset:\w+\s*/i, '')
+      // Switch by mode: /ai/chat vs /ai/report|/ai/marketing|/ai/bplan|/ai/notify
+      let endpoint = '/ai/chat'
+      let body: any = {}
 
-      const r = await fetch(`${API_BASE}/ai/chat`, {
+      if (mode === 'chat') {
+        body = { question: qRaw, dataset, filters }
+      } else if (mode === 'report') {
+        endpoint = '/ai/report'
+        body = { dataset, filters } // server builds json_data
+      } else if (mode === 'marketing') {
+        endpoint = '/ai/marketing'
+        body = { dataset, filters }
+      } else if (mode === 'bplan') {
+        endpoint = '/ai/bplan'
+        body = { dataset, filters }
+      } else if (mode === 'notify') {
+        endpoint = '/ai/notify'
+        body = { dataset, filters }
+      }
+
+      const r = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ question, dataset }),
+        body: JSON.stringify(body),
       })
 
       if (!r.ok) {
@@ -126,8 +175,26 @@ export default function ChatInterface() {
         throw new Error(errText || `AI error ${r.status}`)
       }
 
-      const data = (await r.json()) as { ok: boolean; answer?: string; error?: string }
-      pushMessage({ sender: 'bot', content: data.answer ?? 'No answer returned.' })
+      const data = await r.json()
+
+      // Normalize different shapes from your endpoints
+      const answer =
+        data.answer ||
+        data.report ||
+        data.plan ||
+        data.insights ||
+        data?.kpis ||
+        data?.ok === true
+          ? (data.answer || data.report || data.plan || data.insights || 'Done.')
+          : data?.error || 'No answer returned.'
+
+      pushMessage({
+        sender: 'bot',
+        content:
+          typeof answer === 'string'
+            ? answer
+            : `<pre class="whitespace-pre-wrap text-xs">${escapeHtml(JSON.stringify(answer, null, 2))}</pre>`,
+      })
     } catch (err: any) {
       pushMessage({
         sender: 'bot',
@@ -175,7 +242,7 @@ export default function ChatInterface() {
     }
   }
 
-  // Bubble style helper
+  // UI bits
   const bubbleClass = (sender: 'user' | 'bot') =>
     sender === 'user'
       ? 'bg-primary/10 text-foreground border border-primary/20'
@@ -187,10 +254,85 @@ export default function ChatInterface() {
         <CardTitle className="flex items-center justify-between gap-2">
           <span className="inline-flex items-center gap-2">
             <Bot className="h-5 w-5" />
-            Qx Chat
+            QX Chat & Reports
           </span>
 
           <div className="flex items-center gap-2">
+            {/* MODE selector */}
+            <div className="hidden md:flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">Mode</Label>
+              <Select
+                value={mode}
+                onValueChange={(v: ModeKey) => setMode(v)}
+              >
+                <SelectTrigger className="w-[150px] h-8">
+                  <SelectValue placeholder="Mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  {MODE_OPTIONS.map(m => (
+                    <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* DATASET selector */}
+            <div className="hidden md:flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">Dataset</Label>
+              <Select
+                value={dataset}
+                onValueChange={(v: DatasetKey) => setDataset(v)}
+              >
+                <SelectTrigger className="w-[170px] h-8">
+                  <SelectValue placeholder="Dataset" />
+                </SelectTrigger>
+                <SelectContent>
+                  {DATASET_OPTIONS.map(d => (
+                    <SelectItem key={d} value={d}>{cap(d)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Filters popover */}
+            <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="icon" title="Filters">
+                  <SlidersHorizontal className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-80">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <CalendarIcon className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm font-medium">Date range</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">From (YYYY-MM-DD)</Label>
+                      <Input
+                        placeholder="2025-01-01"
+                        value={filters.dateFrom || ''}
+                        onChange={(e) => setFilters(f => ({ ...f, dateFrom: e.target.value || undefined }))}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">To (YYYY-MM-DD)</Label>
+                      <Input
+                        placeholder="2025-12-31"
+                        value={filters.dateTo || ''}
+                        onChange={(e) => setFilters(f => ({ ...f, dateTo: e.target.value || undefined }))}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button variant="secondary" onClick={() => setFiltersOpen(false)}>Done</Button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            {/* Import / Export / Clear */}
             <Button variant="ghost" size="icon" title="Export chat" onClick={exportChat}>
               <Download className="h-4 w-4" />
             </Button>
@@ -207,6 +349,36 @@ export default function ChatInterface() {
             </Button>
           </div>
         </CardTitle>
+
+        {/* Compact selectors for mobile */}
+        <div className="mt-3 grid grid-cols-2 gap-2 md:hidden">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Mode</Label>
+            <Select value={mode} onValueChange={(v: ModeKey) => setMode(v)}>
+              <SelectTrigger className="h-8">
+                <SelectValue placeholder="Mode" />
+              </SelectTrigger>
+              <SelectContent>
+                {MODE_OPTIONS.map(m => (
+                  <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Dataset</Label>
+            <Select value={dataset} onValueChange={(v: DatasetKey) => setDataset(v)}>
+              <SelectTrigger className="h-8">
+                <SelectValue placeholder="Dataset" />
+              </SelectTrigger>
+              <SelectContent>
+                {DATASET_OPTIONS.map(d => (
+                  <SelectItem key={d} value={d}>{cap(d)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
       </CardHeader>
 
       <CardContent className="flex-1 min-h-0 flex flex-col gap-0 bg-card">
@@ -225,9 +397,7 @@ export default function ChatInterface() {
                 transition={{ duration: 0.2 }}
                 className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}
               >
-                <div
-                  className={`max-w-[80%] rounded-2xl px-3 py-2 shadow-sm ${bubbleClass(m.sender)}`}
-                >
+                <div className={`max-w-[80%] rounded-2xl px-3 py-2 shadow-sm ${bubbleClass(m.sender)}`}>
                   <div className="flex items-start gap-2">
                     {m.sender === 'bot' ? (
                       <Bot className="h-4 w-4 mt-1 flex-shrink-0" />
@@ -236,7 +406,7 @@ export default function ChatInterface() {
                     )}
                     <div>
                       {m.isImage ? (
-                        <img src={m.content} alt="AI chart" className="max-w-full rounded" />
+                        <img src={m.content} alt="AI output" className="max-w-full rounded" />
                       ) : m.isHtml ? (
                         <div
                           className="prose prose-sm max-w-none"
@@ -261,14 +431,8 @@ export default function ChatInterface() {
                     <Bot className="h-4 w-4" />
                     <div className="flex space-x-1">
                       <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
-                      <div
-                        className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                        style={{ animationDelay: '0.1s' }}
-                      />
-                      <div
-                        className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                        style={{ animationDelay: '0.2s' }}
-                      />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }} />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
                     </div>
                   </div>
                 </div>
@@ -277,7 +441,7 @@ export default function ChatInterface() {
           </div>
         </div>
 
-        {/* Sticky light composer */}
+        {/* Sticky composer */}
         <div className="sticky bottom-0 left-0 right-0 bg-background border-t z-10">
           <form
             className="flex gap-2 p-2"
@@ -287,14 +451,18 @@ export default function ChatInterface() {
             }}
           >
             <Input
-              placeholder="Ask me about your data… (you can also prefix /dataset:products etc., but not required)"
+              placeholder={
+                mode === 'chat'
+                  ? `Ask a question about ${cap(dataset)}…`
+                  : `Optional note… (${cap(mode)} runs on selected dataset)`
+              }
               value={inputMessage}
               onChange={(e) => setInputMessage(e.target.value)}
               onKeyDown={handleKeyDown}
               className="flex-1"
               autoComplete="off"
             />
-            <Button type="submit" disabled={!inputMessage.trim() || isTyping}>
+            <Button type="submit" disabled={mode === 'chat' ? !inputMessage.trim() || isTyping : isTyping}>
               <Send className="h-4 w-4" />
             </Button>
           </form>
@@ -302,4 +470,45 @@ export default function ChatInterface() {
       </CardContent>
     </Card>
   )
+}
+
+// ---- small helpers
+function cap(s: string) {
+  return s.slice(0,1).toUpperCase() + s.slice(1)
+}
+function escapeHtml(s: string) {
+  return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m] as string))
+}
+function getWelcome(): Message[] {
+  return [
+    {
+      id: 'welcome',
+      sender: 'bot',
+      timestamp: new Date().toISOString(),
+      content: `Welcome to QX 👋
+
+**How to start**
+1) Pick a **Dataset** (top-right).  
+2) Pick a **Mode**.  
+3) Type a message (only needed for *Chat*), or just hit **Send**.
+
+**What each mode does**
+- **Chat** — Ask free-form questions about the selected dataset.  
+  _Examples:_ “Top 10 products by revenue this month”, “Customers with overdue invoices”, “Sales by region vs last year”.
+- **Report** — Generates a data summary + KPIs for the chosen dataset. Ignores the prompt (your note is optional).
+- **Marketing** — Drafts campaign ideas/copy using your data. Ignores the prompt (note optional).
+- **Business Plan** — Outlines a high-level plan from your data. Ignores the prompt (note optional).
+- **Notify** — Creates alerts/notifications based on the dataset. Ignores the prompt (note optional).
+
+**Filters**
+Click the **sliders** icon to set a **From/To** date. Leave blank to use all available dates.
+
+**Tips**
+- Press **Enter** to send.  
+- Use the **download/upload** icons to export/import chats.  
+- **Clear** wipes the current conversation (doesn’t affect your data).
+
+You’re set—choose a dataset and mode to begin.`,
+    },
+  ];
 }
