@@ -26,6 +26,7 @@ import EditOutlined from '@ant-design/icons/lib/icons/EditOutlined';
 import DeleteOutlined from '@ant-design/icons/lib/icons/DeleteOutlined';
 import UploadOutlined from '@ant-design/icons/lib/icons/UploadOutlined';
 import ReceiptProductUploader from './ProductReceiptUpload';
+import { useCurrency } from '../../contexts/CurrencyContext';
 
 // 🔌 offline helpers
 import {
@@ -35,7 +36,7 @@ import {
 } from '../../offline';
 
 // ---- Config / helpers ----
-const API_BASE = 'https://quantnow-sa1e.onrender.com'
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 const api = {
   // if branchId is provided → filter; else get all
   list: (branchId?: string | null) =>
@@ -52,6 +53,14 @@ const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('to
 const getAuthHeaders = () => {
   const t = getToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
+};
+// format qty: integers show with no decimals; otherwise up to 2
+const formatQty = (q: number | string | null | undefined) => {
+  if (q == null) return '0';
+  const n = Number(q);
+  if (!Number.isFinite(n)) return String(q);
+  if (Math.abs(n - Math.round(n)) < 1e-9) return Math.round(n).toLocaleString();
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 };
 
 // --- network helpers: only queue on true network failures ---
@@ -80,7 +89,13 @@ type ProductFormValues = {
   minQty?: number;
   maxQty?: number;
   availableValue?: number;
-  branch_id?: string | null; // <-- added
+  branch_id?: string | null;
+  // Initial stock receipt fields
+  initHasVat?: boolean;
+  initVatRate?: number;
+  initPaymentSource?: 'AP' | 'BANK' | 'CASH';
+  initUnitCostIncl?: number;
+  initSupplierName?: string;
 };
 
 // Branch types
@@ -111,7 +126,7 @@ const ProductsPage = () => {
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [manualDrawerOpen, setManualDrawerOpen] = useState(false);
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<ProductFormValues>();
   const [editingProduct, setEditingProduct] = useState<ProductWithBranch | null>(null);
   const [search, setSearch] = useState('');
   const [tabKey, setTabKey] = useState('list');
@@ -127,6 +142,7 @@ const ProductsPage = () => {
   // Branch state
   const [myBranches, setMyBranches] = useState<MyBranch[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+  const { fmt, formatter: moneyFormatter, parser: moneyParser } = useCurrency();
 
   // Convenience flags/helpers
   const hasBranches = myBranches.length > 0;
@@ -258,14 +274,25 @@ const ProductsPage = () => {
           minQty: editingProduct.minQty,
           maxQty: editingProduct.maxQty,
           availableValue: editingProduct.availableValue,
-          branch_id: editingProduct.branch_id ?? pickDefaultBranch(), // <-- added
+          branch_id: editingProduct.branch_id ?? pickDefaultBranch(),
+          // initial stock section defaults (won't be used on edit, but safe)
+          initHasVat: true,
+          initVatRate: 15,
+          initPaymentSource: 'AP',
+          initUnitCostIncl: editingProduct.purchasePrice ?? editingProduct.unitPurchasePrice ?? 0,
+          initSupplierName: '',
         });
         setFormType(editingProduct.type);
       } else {
         form.resetFields();
         form.setFieldsValue({
           type: 'product',
-          branch_id: pickDefaultBranch(), // <-- default on create
+          branch_id: pickDefaultBranch(),
+          initHasVat: true,
+          initVatRate: 15,
+          initPaymentSource: 'AP',
+          initUnitCostIncl: 0,
+          initSupplierName: '',
         });
         setFormType('product');
       }
@@ -295,6 +322,10 @@ const ProductsPage = () => {
       form.setFieldsValue({
         type: 'product',
         branch_id: pickDefaultBranch(),
+        initHasVat: true,
+        initVatRate: 15,
+        initPaymentSource: 'AP',
+        initUnitCostIncl: 0,
       });
       setFormType('product');
     }
@@ -314,21 +345,37 @@ const ProductsPage = () => {
     const endpoint = isNew ? api.list() : api.byId(editingProduct!.id);
     const method = (isNew ? 'POST' : 'PUT') as 'POST' | 'PUT';
 
-    const body = {
+    const initialQty = values.type === 'product' ? Number(values.qty || 0) : 0;
+
+    const body: any = {
       name: values.name,
       description: '',
       unit_price: Number(values.sellingPrice),
       cost_price: values.type === 'product' ? Number(values.purchasePrice || 0) : null,
       is_service: values.type === 'service',
-      stock_quantity: values.type === 'product' ? Number(values.qty || 0) : null,
+      // IMPORTANT: server will set stock via receipt; keep product row at 0 on create
+      stock_quantity: values.type === 'product' ? 0 : null,
       unit: values.type === 'product' ? (values.unit || 'item') : null,
       sku: null,
       min_quantity: values.type === 'product' ? Number(values.minQty || 0) : null,
       max_quantity: values.type === 'product' ? Number(values.maxQty || 0) : null,
       available_value: values.type === 'service' ? Number(values.availableValue || 0) : null,
-      // IMPORTANT: when user has branches, take explicit form value; otherwise send null
       branch_id: hasBranches ? (values.branch_id ?? selectedBranchId ?? null) : null,
     };
+
+    // Include initial_stock only when creating a PRODUCT with initial quantity
+    if (isNew && values.type === 'product' && initialQty > 0) {
+      body.initial_stock = {
+        qty: initialQty,
+        unit_cost_incl: Number(
+          values.initUnitCostIncl ?? values.purchasePrice ?? 0
+        ),
+        vat_applicable: values.initHasVat ?? true,
+        vat_rate: Number(values.initVatRate ?? 15),
+        payment_source: values.initPaymentSource || 'AP', // 'AP' | 'BANK' | 'CASH'
+        supplier_name: values.initSupplierName || null,
+      };
+    }
 
     const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
 
@@ -339,7 +386,7 @@ const ProductsPage = () => {
 
     const optimisticFallback = () => {
       if (isNew) {
-        const temp = mapBackendToProduct({ ...body, id: `tmp-${Date.now()}` });
+        const temp = mapBackendToProduct({ ...body, id: `tmp-${Date.now()}`, stock_quantity: initialQty });
         setProducts(prev => [temp, ...prev]);
       } else if (editingProduct) {
         const local = mapBackendToProduct({ ...body, id: editingProduct.id });
@@ -435,14 +482,22 @@ const ProductsPage = () => {
     restockForm.setFieldsValue({
       qty: 1,
       unitCostIncl: product.unitPurchasePrice ?? 0,
+      vatApplicable: true,
       vatRate: 15,
-      paidFromBank: false,
+      paymentSource: 'AP',
       supplierName: '',
     });
     setRestockModalVisible(true);
   };
 
-  const handleRestock = async (values: { qty: number; unitCostIncl: number; vatRate?: number; paidFromBank?: boolean; supplierName?: string }) => {
+  const handleRestock = async (values: {
+    qty: number;
+    unitCostIncl: number;
+    vatRate?: number;
+    vatApplicable?: boolean;
+    paymentSource?: 'AP' | 'BANK' | 'CASH';
+    supplierName?: string;
+  }) => {
     if (!isUserAuthenticated || !restockProduct) {
       messageApi.error('Authentication or product information missing for restock.');
       return;
@@ -453,7 +508,8 @@ const ProductsPage = () => {
       qty: Number(values.qty),
       unit_cost_incl: Number(values.unitCostIncl),
       vat_rate: values.vatRate ?? 15,
-      paid_from_bank: !!values.paidFromBank,         // false => AP, true => Bank
+      vat_applicable: !!values.vatApplicable,
+      payment_source: values.paymentSource || 'AP', // AP | BANK | CASH
       supplier_name: values.supplierName || null,
       branch_id: restockProduct.branch_id ?? selectedBranchId ?? null,
     };
@@ -489,7 +545,6 @@ const ProductsPage = () => {
           const j = await res.json();
           detail = j?.error || j?.detail || detail;
         } catch {}
-        // DO NOT queue on server errors; show the reason
         messageApi.error(`Restock failed: ${detail}`);
         return;
       }
@@ -524,11 +579,6 @@ const ProductsPage = () => {
     p.name?.toLowerCase().includes(search.toLowerCase())
   );
 
-  const currencyFormatter = (value: number | string | undefined) =>
-    `R ${value ?? 0}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  const currencyParser = (value: string | undefined) =>
-    value ? value.replace(/^R\s?/, '').replace(/,/g, '') : '';
-
   const productColumns = [
     { title: 'Name', dataIndex: 'name', key: 'name' },
     { title: 'Type', dataIndex: 'type', key: 'type' },
@@ -538,12 +588,14 @@ const ProductsPage = () => {
       render: (_: any, r: ProductWithBranch) =>
         r.branch_name ? r.branch_name : (r.branch_id ? `#${String(r.branch_id).slice(0, 6)}` : '—'),
     },
-    {
-      title: 'Quantity',
-      dataIndex: 'qty',
-      key: 'qty',
-      render: (qty: any, rec: ProductWithBranch) => (rec.unit ? `${qty ?? 0} ${rec.unit}` : qty ?? 0),
-    },
+{
+  title: 'Quantity',
+  dataIndex: 'qty',
+  key: 'qty',
+  render: (qty: any, rec: ProductWithBranch) =>
+    rec.unit ? `${formatQty(qty)} ${rec.unit}` : formatQty(qty),
+},
+
     {
       title: 'Min Qty',
       dataIndex: 'minQty',
@@ -560,13 +612,13 @@ const ProductsPage = () => {
       title: 'Price',
       dataIndex: 'price',
       key: 'price',
-      render: (_: any, r: ProductWithBranch) => `R${r.unitPrice ?? r.price ?? 0}`,
+      render: (_: any, r: ProductWithBranch) => fmt(r.unitPrice ?? r.price ?? 0),
     },
     {
       title: 'Unit Purchase Price (Avg)',
       dataIndex: 'unitPurchasePrice',
       key: 'unitPurchasePrice',
-      render: (val: any) => (val ? `R${val}` : '-'),
+      render: (val: any) => (val ? fmt(val) : '-'),
     },
     {
       title: 'Actions',
@@ -608,7 +660,7 @@ const ProductsPage = () => {
       title: 'Price',
       dataIndex: 'price',
       key: 'price',
-      render: (_: any, r: ProductWithBranch) => `R${r.unitPrice ?? r.price ?? 0}`,
+      render: (_: any, r: ProductWithBranch) => fmt(r.unitPrice ?? r.price ?? 0),
     },
     {
       title: 'Available Value',
@@ -641,7 +693,7 @@ const ProductsPage = () => {
   ];
 
   const renderForm = () => (
-    <Form
+    <Form<ProductFormValues>
       form={form}
       layout="vertical"
       onFinish={handleSave}
@@ -652,7 +704,18 @@ const ProductsPage = () => {
           if (changed.type === 'product') {
             form.setFieldsValue({ availableValue: undefined });
           } else if (changed.type === 'service') {
-            form.setFieldsValue({ qty: undefined, unit: undefined, purchasePrice: undefined, minQty: undefined, maxQty: undefined });
+            form.setFieldsValue({
+              qty: undefined,
+              unit: undefined,
+              purchasePrice: undefined,
+              minQty: undefined,
+              maxQty: undefined,
+              initHasVat: undefined,
+              initVatRate: undefined,
+              initPaymentSource: undefined,
+              initUnitCostIncl: undefined,
+              initSupplierName: undefined,
+            });
           }
         }
       }}
@@ -703,17 +766,18 @@ const ProductsPage = () => {
                 rules={[{ required: true }]}
                 style={{ marginBottom: 0 }}
               >
-                <InputNumber min={0} style={{ width: '100%' }} formatter={currencyFormatter} parser={currencyParser} />
+                <InputNumber min={0} style={{ width: '100%' }} formatter={moneyFormatter} parser={moneyParser} />
               </Form.Item>
             </Col>
             <Col span={12}>
               <Form.Item
                 name="purchasePrice"
-                label="Purchase Price"
+                label="Purchase Price (Net)"
+                tooltip="A reference cost. Stock valuation will use the Initial Stock Receipt values below."
                 rules={[{ required: true }]}
                 style={{ marginBottom: 0 }}
               >
-                <InputNumber min={0} style={{ width: '100%' }} formatter={currencyFormatter} parser={currencyParser} />
+                <InputNumber min={0} style={{ width: '100%' }} formatter={moneyFormatter} parser={moneyParser} />
               </Form.Item>
             </Col>
           </Row>
@@ -724,7 +788,7 @@ const ProductsPage = () => {
           label="Selling Price"
           rules={[{ required: true }]}
         >
-          <InputNumber min={0} style={{ width: '100%' }} formatter={currencyFormatter} parser={currencyParser} />
+          <InputNumber min={0} style={{ width: '100%' }} formatter={moneyFormatter} parser={moneyParser} />
         </Form.Item>
       )}
 
@@ -737,6 +801,7 @@ const ProductsPage = () => {
           >
             <Input placeholder="e.g. kg, litre, box" />
           </Form.Item>
+
           <Form.Item
             name="qty"
             label="Quantity (Initial Stock)"
@@ -744,6 +809,7 @@ const ProductsPage = () => {
           >
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
+
           <Form.Item required style={{ marginBottom: 0 }}>
             <Row gutter={12}>
               <Col span={12}>
@@ -768,6 +834,68 @@ const ProductsPage = () => {
               </Col>
             </Row>
           </Form.Item>
+
+          {/* Initial Stock Receipt */}
+          <Card size="small" style={{ borderRadius: 10, marginTop: 12 }} title="Initial Stock Receipt">
+            <Row gutter={12}>
+              <Col span={12}>
+                <Form.Item
+                  name="initHasVat"
+                  label="Has VAT?"
+                  initialValue={true}
+                  rules={[{ required: true }]}
+                >
+                  <Select
+                    options={[
+                      { value: true, label: 'Yes (apply VAT)' },
+                      { value: false, label: 'No (zero-rate)' },
+                    ]}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item name="initVatRate" label="VAT Rate (%)" initialValue={15}>
+                  <InputNumber min={0} max={100} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Row gutter={12}>
+              <Col span={12}>
+                <Form.Item
+                  name="initPaymentSource"
+                  label="Payment Source"
+                  initialValue="AP"
+                  rules={[{ required: true }]}
+                >
+                  <Select
+                    options={[
+                      { value: 'AP', label: 'On Account (Accounts Payable)' },
+                      { value: 'BANK', label: 'Paid from Bank' },
+                      { value: 'CASH', label: 'Paid from Cash' },
+                    ]}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  name="initUnitCostIncl"
+                  label="Unit Cost"
+                  tooltip="Per unit incl VAT used to value the initial stock receipt"
+                  rules={[{ required: true, message: 'Enter unit cost incl VAT for initial stock' }]}
+                >
+                  <InputNumber min={0} style={{ width: '100%' }} formatter={moneyFormatter} parser={moneyParser} />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Form.Item name="initSupplierName" label="Supplier (optional)">
+              <Input placeholder="e.g. ABC Wholesalers" />
+            </Form.Item>
+            <p style={{ fontSize: 12, color: '#666', marginTop: -8 }}>
+              When you create this product, we’ll post a proper stock receipt so Inventory, VAT, and AP/Bank/Cash are recorded correctly.
+            </p>
+          </Card>
         </>
       )}
 
@@ -896,19 +1024,20 @@ const ProductsPage = () => {
                       }
                     >
                       <p>Type: {product.type}</p>
-                      <p>Price: R{product.price || product.unitPrice}</p>
+                      <p>Price: {fmt(product.price ?? product.unitPrice)}</p>
                       <p>
                         <strong>Branch:</strong>{' '}
                         {product.branch_name ?? (product.branch_id ? `#${String(product.branch_id).slice(0,6)}` : '—')}
                       </p>
                       <p>
                         <strong>Unit Purchase Price (Avg):</strong>{' '}
-                        {product.unitPurchasePrice ? `R${product.unitPurchasePrice}` : '-'}
+                        {product.unitPurchasePrice ? fmt(product.unitPurchasePrice) : '-'}
                       </p>
-                      <p>
-                        <strong>Current Quantity: {product.qty ?? 0}</strong>
-                        {product.unit ? ` ${product.unit}` : ''}
-                      </p>
+  <p>
+  <strong>Current Quantity: {formatQty(product.qty)}</strong>
+  {product.unit ? ` ${product.unit}` : ''}
+</p>
+
                       <p><strong>Min Quantity:</strong> {product.minQty ?? '-'}</p>
                       <p><strong>Max Quantity:</strong> {product.maxQty ?? '-'}</p>
                     </Card>
@@ -985,7 +1114,7 @@ const ProductsPage = () => {
                       }
                     >
                       <p>Type: {service.type}</p>
-                      <p>Price: R{service.price || service.unitPrice}</p>
+                      <p>Price: {fmt(service.price ?? service.unitPrice)}</p>
                       <p>
                         <strong>Branch:</strong>{' '}
                         {service.branch_name ?? (service.branch_id ? `#${String(service.branch_id).slice(0,6)}` : '—')}
@@ -1077,18 +1206,37 @@ const ProductsPage = () => {
             label="Unit Cost (Incl VAT)"
             rules={[{ required: true, message: 'Please enter unit cost incl VAT' }]}
           >
-            <InputNumber min={0} style={{ width: '100%' }} formatter={currencyFormatter} parser={currencyParser} />
+            <InputNumber min={0} style={{ width: '100%' }} formatter={moneyFormatter} parser={moneyParser} />
+          </Form.Item>
+
+          <Form.Item
+            name="vatApplicable"
+            label="Has VAT?"
+            initialValue={true}
+          >
+            <Select
+              options={[
+                { value: true, label: 'Yes (apply VAT)' },
+                { value: false, label: 'No (zero-rate this receipt)' },
+              ]}
+            />
           </Form.Item>
 
           <Form.Item name="vatRate" label="VAT Rate (%)" initialValue={15}>
             <InputNumber min={0} max={100} style={{ width: '100%' }} />
           </Form.Item>
 
-          <Form.Item name="paidFromBank" label="Payment Method" initialValue={false}>
+          <Form.Item
+            name="paymentSource"
+            label="Payment Source"
+            initialValue="AP"
+            rules={[{ required: true }]}
+          >
             <Select
               options={[
-                { value: false, label: 'On Account (Accounts Payable)' },
-                { value: true,  label: 'Paid from Bank now' },
+                { value: 'AP', label: 'On Account (Accounts Payable)' },
+                { value: 'BANK', label: 'Paid from Bank' },
+                { value: 'CASH', label: 'Paid from Cash' },
               ]}
             />
           </Form.Item>

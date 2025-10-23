@@ -35,30 +35,30 @@ interface NavigationItem {
   allowedRoles?: string[];
 }
 const navigationItems: NavigationItem[] = [
-  { title: 'Dashboard', url: '/', icon: Home, allowedRoles: ['admin', 'ceo', 'manager', 'dashboard','cashier', 'user'] },
-  { title: 'POS Transact', url: '/pos', icon: CreditCard, allowedRoles: ['cashier', 'user', 'pos-transact', 'admin'] },
+  { title: 'Dashboard', url: '/', icon: Home, allowedRoles: ['admin', 'ceo', 'manager', 'dashboard','cashier','accountant', 'user'] },
+  { title: 'POS Transact', url: '/pos', icon: CreditCard, allowedRoles: ['cashier', 'user', 'pos-transact','accountant', 'admin'] },
   { title: 'Import', url: '/import', icon: Upload, allowedRoles: ['manager', 'import', 'user', 'admin'] },
   { title: 'Tasks', url: '/tasks', icon: ListStartIcon, allowedRoles: ['manager', 'user', 'tasks', 'admin'] },
-  { title: 'Transactions', url: '/transactions', icon: CreditCard, allowedRoles: ['manager', 'user', 'transactions', 'admin'] },
-  { title: 'Financials', url: '/financials', icon: BarChart3, allowedRoles: ['admin', 'manager', 'financials', 'user'] },
-  { title: 'CRM', url: '/personel-setup', icon: Users, allowedRoles: ['admin', 'manager', 'personel-setup', 'user', 'ceo'] },
-  { title: 'Data Analytics', url: '/analytics', icon: TrendingUp, allowedRoles: ['admin', 'manager', 'data-analytics', 'user'] },
+  { title: 'Transactions', url: '/transactions', icon: CreditCard, allowedRoles: ['manager', 'user','accountant', 'transactions', 'admin'] },
+  { title: 'Financials', url: '/financials', icon: BarChart3, allowedRoles: ['admin', 'manager','accountant', 'financials', 'user'] },
+  { title: 'CRM', url: '/personel-setup', icon: Users, allowedRoles: ['admin', 'manager','accountant', 'personel-setup', 'user', 'ceo'] },
+  { title: 'Data Analytics', url: '/analytics', icon: TrendingUp, allowedRoles: ['admin', 'manager','accountant', 'data-analytics', 'user'] },
 ];
 const businessItems: NavigationItem[] = [
-  { title: 'Invoice/Quote', url: '/invoice-quote', icon: FileText, allowedRoles: ['manager', 'user', 'invoice', 'admin'] },
-  { title: 'Payroll', url: '/payroll', icon: Calculator, allowedRoles: ['manager', 'payroll', 'user', 'admin'] },
+  { title: 'Invoice/Quote', url: '/invoice-quote', icon: FileText, allowedRoles: ['manager', 'user','accountant', 'invoice', 'admin'] },
+  { title: 'Payroll', url: '/payroll', icon: Calculator, allowedRoles: ['manager', 'payroll','accountant', 'user', 'admin'] },
   {
     title: 'POS Admin',
     url: '/pos/products',
     icon: CreditCard,
-    allowedRoles: ['manager', 'pos-admin', 'user', 'admin', 'ceo'],
+    allowedRoles: ['manager', 'pos-admin', 'user','accountant', 'admin', 'ceo'],
     children: [
-      { title: 'Products and Services', url: '/pos/products', icon: Package, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
-      { title: 'Credit Payments', url: '/pos/credits', icon: DollarSign, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
-      { title: 'Cash In', url: '/pos/cash', icon: Wallet, allowedRoles: ['manager', 'pos-admin', 'user', 'admin'] },
+      { title: 'Products and Services', url: '/pos/products', icon: Package, allowedRoles: ['manager', 'pos-admin','accountant', 'user', 'admin'] },
+      { title: 'Credit Payments', url: '/pos/credits', icon: DollarSign, allowedRoles: ['manager', 'pos-admin','accountant', 'user', 'admin'] },
+      { title: 'Cash In', url: '/pos/cash', icon: Wallet, allowedRoles: ['manager', 'pos-admin','accountant', 'user', 'admin'] },
     ],
   },
-  { title: 'Projections', url: '/projections', icon: TrendingUp, allowedRoles: ['admin', 'manager', 'projections', 'user'] },
+  { title: 'Projections', url: '/projections', icon: TrendingUp, allowedRoles: ['admin', 'manager','accountant', 'projections', 'user'] },
   { title: 'Accounting Setup', url: '/accounting', icon: Calculator, allowedRoles: ['admin', 'accountant', 'accounting', 'user', 'ceo'] },
   { title: 'Document Management', url: '/documents', icon: FolderOpen, allowedRoles: ['admin', 'manager', 'user', 'cashier', 'accountant', 'ceo', 'documents'] },
   { title: 'Qx Chat', url: '/quant-chat', icon: MessageSquare, allowedRoles: ['admin', 'manager', 'user', 'cashier', 'accountant', 'ceo', 'chat'] },
@@ -83,6 +83,122 @@ export function AppSidebar() {
 
   const [isPosSubMenuOpen, setIsPosSubMenuOpen] = useState(false);
   const [isPosAdminSubMenuOpen, setIsPosAdminSubMenuOpen] = useState(false);
+  // ---------- Profile completion progress ----------
+// ---------- Profile completion (ignores branches, VAT, LinkedIn, Website) ----------
+const [profileCompletion, setProfileCompletion] = useState<number>(0);
+
+useEffect(() => {
+  (async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+
+      // Fetch profile + logo in parallel
+      const [profR, logoR] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/profile`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API_BASE_URL}/logo`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+
+      const profile = profR.ok ? await profR.json() : {};
+      const logoData = logoR.ok ? await logoR.json().catch(() => ({})) : {};
+
+      // Count only essential fields (NO: branches, VAT, website, LinkedIn)
+      const checks = [
+        !!profile?.name,
+        !!profile?.company,
+        !!profile?.email,
+        !!profile?.phone,
+        !!profile?.address,
+        !!profile?.city,
+        !!profile?.province,
+        !!profile?.country,
+        !!logoData?.url, // company logo
+      ];
+
+      const done = checks.filter(Boolean).length;
+      const percent = Math.round((done / checks.length) * 100);
+      setProfileCompletion(percent);
+      localStorage.setItem('qx:profile:completion', String(percent));
+    } catch {
+      // leave as 0 if something fails
+    }
+  })();
+}, []);
+
+
+// Small SVG progress ring that wraps children in the center
+const ProgressRing: React.FC<{
+  percent: number;
+  size?: number;     // outer square px
+  stroke?: number;   // stroke width px
+  className?: string;
+  title?: string;
+  onClick?: () => void;
+  children?: React.ReactNode;
+}> = ({ percent, size = 28, stroke = 3, className = '', title, onClick, children }) => {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const p = Math.min(100, Math.max(0, percent || 0));
+  const dash = (p / 100) * c;
+
+  return (
+    <div
+      className={`relative inline-flex items-center justify-center ${className}`}
+      style={{ width: size, height: size }}
+      title={title}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+    >
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        className="block"
+        style={{ transform: 'rotate(-90deg)' }}  // start at top
+      >
+        {/* track */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="currentColor"
+          strokeWidth={stroke}
+          className="text-gray-200 dark:text-gray-800"
+          fill="none"
+        />
+        {/* progress */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="url(#qxgrad)"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          fill="none"
+          strokeDasharray={`${dash} ${c - dash}`}
+          style={{ transition: 'stroke-dasharray 400ms ease' }}
+        />
+        {/* gradient defs */}
+        <defs>
+          <linearGradient id="qxgrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#a21caf" />   {/* fuchsia-700 */}
+            <stop offset="100%" stopColor="#4f46e5" /> {/* indigo-600 */}
+          </linearGradient>
+        </defs>
+      </svg>
+
+      {/* Inner badge (your Q) */}
+      <div
+        className="absolute inset-0 m-[4px] rounded-lg flex items-center justify-center
+                   bg-gradient-to-br from-purple-500 to-pink-500 text-white font-bold text-xs select-none"
+      >
+        {children}
+      </div>
+    </div>
+  );
+};
+
+
 
   // Current logged in user id (set by your Auth flow on login)
   const currentUserId =
@@ -461,9 +577,17 @@ export function AppSidebar() {
         <SidebarHeader className='p-3 border-b border-gray-200 dark:border-gray-700'>
           <motion.div className='w-full' initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.3 }}>
             <div className='flex items-center gap-2'>
-              <div className='w-7 h-7 bg-gradient-to-br from-purple-500 to-pink-500 rounded-lg flex items-center justify-center'>
-                <span className='text-white font-bold text-xs'>Q</span>
-              </div>
+<ProgressRing
+  percent={profileCompletion}
+  size={28}          // tweak if you want a bigger ring
+  stroke={3}
+  className="cursor-pointer"
+  title={`Profile ${profileCompletion}% complete`}
+  onClick={() => navigate('/profile-setup')}
+>
+  <span>Q</span>
+</ProgressRing>
+
               {state === 'expanded' && (
                 <div className='flex-1 min-w-0'>
                   <div className="flex items-center justify-between">
@@ -651,6 +775,7 @@ export function AppSidebar() {
               </button>
             )}
           </div>
+          
 
           <SidebarMenuItem>
             <SidebarMenuButton onClick={handleLogout} className='w-full justify-start text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'>

@@ -121,6 +121,8 @@ export function ProfileForm() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [logoBusy, setLogoBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [saving, setSaving] = useState(false);
+
 
   // ===== Branches state =====
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -184,7 +186,7 @@ export function ProfileForm() {
   linkedin: data.linkedin || '',
   timezone: data.timezone || '',
   language: data.language || '',
-  currency: data.currency || '',
+  currency: (data.currency || 'ZAR').toUpperCase(),
   userId: data.user_id || '',
 
   // NEW (reads from backend fields you already return)
@@ -244,80 +246,76 @@ export function ProfileForm() {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleSave = async () => {
-    if (!isAuthenticated || !token) {
-      alert('You are not authenticated.');
-      return;
-    }
-    try {
-      const fullName = `${formData.firstName} ${formData.lastName}`.trim();
-      const payload = {
-        name: fullName,
-        contact_person: fullName,
-        email: formData.email,
-        phone: formData.phone,
-        address: formData.address,
-        company: formData.company,
-        position: formData.position,
-        city: formData.city,
-        province: formData.province,
-        postal_code: formData.postalCode,
-        country: formData.country,
-        bio: formData.bio,
-        website: formData.website,
-        linkedin: formData.linkedin,
-        timezone: formData.timezone,
-        language: formData.language,
-        currency: formData.currency,
-        is_vat_registered: formData.isVatRegistered,
-        vat_number: formData.vatNumber || null,
-      };
+const handleSave = async () => {
+  if (!isAuthenticated || !token) {
+    alert('You are not authenticated.');
+    return;
+  }
 
-      const res = await fetch(`${API_BASE_URL}/api/profile`, {
+  setSaving(true);
+  try {
+    const fullName = `${formData.firstName} ${formData.lastName}`.trim();
+    const payload = {
+      name: fullName,
+      contact_person: fullName,
+      email: formData.email,
+      phone: formData.phone,
+      address: formData.address,
+      company: formData.company,
+      position: formData.position,
+      city: formData.city,
+      province: formData.province,
+      postal_code: formData.postalCode,
+      country: formData.country,
+      bio: formData.bio,
+      website: formData.website,
+      linkedin: formData.linkedin,
+      timezone: formData.timezone,
+      language: formData.language,
+      currency: (formData.currency || 'ZAR').toUpperCase(),
+      is_vat_registered: formData.isVatRegistered,
+      vat_number: formData.vatNumber || null,
+    };
+
+    const res = await fetch(`${API_BASE_URL}/api/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Profile update failed.');
+    }
+
+    if (changePassword) {
+      if (!newPassword || newPassword !== confirmPassword) {
+        alert('Passwords do not match.');
+        return;
+      }
+      if (newPassword.length < 6) {
+        alert('Password must be at least 6 characters long.');
+        return;
+      }
+      const passRes = await fetch(`${API_BASE_URL}/api/profile/password`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ password: newPassword }),
       });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Profile update failed.');
+      if (!passRes.ok) {
+        const errorData = await passRes.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Password update failed.');
       }
-
-      if (changePassword) {
-        if (!newPassword || newPassword !== confirmPassword) {
-          alert('Passwords do not match.');
-          return;
-        }
-        if (newPassword.length < 6) {
-          alert('Password must be at least 6 characters long.');
-          return;
-        }
-
-        const passRes = await fetch(`${API_BASE_URL}/api/profile/password`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ password: newPassword }),
-        });
-
-        if (!passRes.ok) {
-          const errorData = await passRes.json().catch(() => ({}));
-          throw new Error(errorData.error || 'Password update failed.');
-        }
-      }
-
-      alert('Profile saved successfully!');
-    } catch (err: any) {
-      console.error('Failed to save profile:', err);
-      alertErr(`Failed to save profile: ${err?.message || 'Unknown error'}`);
     }
-  };
+
+    alert('Profile saved successfully!');
+  } catch (err: any) {
+    console.error('Failed to save profile:', err);
+    alertErr(`Failed to save profile: ${err?.message || 'Unknown error'}`);
+  } finally {
+    setSaving(false);
+  }
+};
+
 
   // ===== Self-downgrade handler =====
   const handleSelfDowngrade = async () => {
@@ -577,6 +575,23 @@ export function ProfileForm() {
             <Label htmlFor="linkedin">LinkedIn</Label>
             <Input id="linkedin" type="url" placeholder="https://linkedin.com/in/username" value={formData.linkedin} onChange={e => handleChange('linkedin', e.target.value)} />
           </div>
+
+          <div className="space-y-2">
+  <Label htmlFor="currency">Currency</Label>
+  <Select
+    value={formData.currency || 'ZAR'}
+    onValueChange={(value) => handleChange('currency', value)}
+  >
+    <SelectTrigger id="currency">
+      <SelectValue placeholder="Select currency" />
+    </SelectTrigger>
+    <SelectContent>
+      <SelectItem value="ZAR">ZAR — South African Rand (R)</SelectItem>
+      <SelectItem value="USD">USD — US Dollar ($)</SelectItem>
+    </SelectContent>
+  </Select>
+</div>
+
         </CardContent>
       </Card>
 
@@ -840,12 +855,13 @@ export function ProfileForm() {
       </Card>
 
       {/* Save Button */}
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={!isAuthenticated}>
-          <Loader2 className="h-4 w-4 mr-2 hidden group-aria-[busy=true]:inline-block animate-spin" />
-          Save Profile
-        </Button>
-      </div>
+<div className="flex justify-end">
+  <Button onClick={handleSave} disabled={!isAuthenticated || saving} aria-busy={saving}>
+    {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+    {saving ? 'Saving…' : 'Save Profile'}
+  </Button>
+</div>
+
 
       {/* Create/Edit Branch Modal */}
       <Dialog open={branchModalOpen} onOpenChange={setBranchModalOpen}>

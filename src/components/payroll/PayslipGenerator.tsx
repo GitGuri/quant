@@ -1,5 +1,5 @@
 // PayslipGenerator.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Card,
   Button,
@@ -8,7 +8,11 @@ import {
   Typography,
   Divider,
   Alert,
-  message
+  message,
+  Switch,
+  Row,
+  Col,
+  Tag
 } from 'antd';
 import { DownloadOutlined, FileTextOutlined } from '@ant-design/icons';
 import { motion } from 'framer-motion';
@@ -16,9 +20,12 @@ import jsPDF from 'jspdf';
 import { type Employee } from '../../types/payroll';
 import { useAuth } from '../../AuthPage';
 
+import { useCurrency } from '../../contexts/CurrencyContext';
+
+
 const { Title, Text } = Typography;
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 interface PayrollCalculation {
   grossSalary: number;
@@ -42,6 +49,22 @@ interface CompanyProfile {
   companyLogoUrl?: string | null;
 }
 
+type DeductionPrefs = {
+  includePAYE: boolean;
+  includeUIF: boolean;
+  includeSDL: boolean;
+};
+
+const DED_PREFS_KEY = 'payslip:deduction_prefs:v1';
+
+const defaultDeductionPrefs: DeductionPrefs = {
+  includePAYE: true,
+  includeUIF: true,
+  includeSDL: true,
+};
+
+
+
 const calculatePayroll = (employee: Employee): PayrollCalculation => {
   let grossSalary = 0;
   const baseSalary = parseFloat(employee.base_salary as any) ?? 0;
@@ -54,10 +77,12 @@ const calculatePayroll = (employee: Employee): PayrollCalculation => {
     grossSalary = hoursWorkedTotal * hourlyRate;
   }
 
+  // Base calculations (South Africa typical placeholders)
   const paye = grossSalary * 0.18;
   const uif = Math.min(grossSalary * 0.01, 177.12);
   const sdl = grossSalary * 0.01;
 
+  // Historical code had SDL excluded from total; keep "base" but we will override with prefs below
   const totalDeductions = paye + uif;
   const netSalary = grossSalary - totalDeductions;
 
@@ -68,7 +93,7 @@ interface PayslipGeneratorProps {
   employee: Employee | null;
 }
 
-/** ---------- small helpers for nicer banking section ---------- */
+/** ---------- helpers ---------- */
 const maskAccountNumber = (acct?: string | null, showLast = 4) => {
   if (!acct) return 'N/A';
   const digits = acct.replace(/\s+/g, '');
@@ -76,7 +101,6 @@ const maskAccountNumber = (acct?: string | null, showLast = 4) => {
     .split('')
     .map((ch, i) => (i < Math.max(0, digits.length - showLast) ? '•' : ch))
     .join('');
-  // group in 4s for readability
   return masked.replace(/(.{4})/g, '$1 ').trim();
 };
 
@@ -96,16 +120,52 @@ const addKeyValue = (
   return y + 12;
 };
 
+/** Compute effective totals based on toggle prefs */
+const applyPrefs = (base: PayrollCalculation, prefs: DeductionPrefs) => {
+  const { grossSalary, paye, uif, sdl } = base;
+  let total = 0;
+  if (prefs.includePAYE) total += paye;
+  if (prefs.includeUIF) total += uif;
+  if (prefs.includeSDL) total += sdl;
+  const net = grossSalary - total;
+  return {
+    effectiveTotalDeductions: total,
+    effectiveNetSalary: net,
+  };
+};
+
 /** --------------------------- component --------------------------- */
 const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
   const [loadingCompany, setLoadingCompany] = useState<boolean>(false);
+  const { symbol, fmt } = useCurrency();
+  const [prefs, setPrefs] = useState<DeductionPrefs>(() => {
+    try {
+      const saved = localStorage.getItem(DED_PREFS_KEY);
+      return saved ? { ...defaultDeductionPrefs, ...JSON.parse(saved) } : defaultDeductionPrefs;
+    } catch {
+      return defaultDeductionPrefs;
+    }
+  });
 
-  const payrollData: PayrollCalculation | null = employee
-    ? calculatePayroll(employee)
-    : null;
+  // persist prefs
+  useEffect(() => {
+    try {
+      localStorage.setItem(DED_PREFS_KEY, JSON.stringify(prefs));
+    } catch {}
+  }, [prefs]);
+
+  const payrollData: PayrollCalculation | null = useMemo(
+    () => (employee ? calculatePayroll(employee) : null),
+    [employee]
+  );
+
+  const effective = useMemo(() => {
+    if (!payrollData) return null;
+    return applyPrefs(payrollData, prefs);
+  }, [payrollData, prefs]);
 
   useEffect(() => {
     const fetchCompanyProfile = async () => {
@@ -191,9 +251,9 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
     );
   }
 
-  /** ---------------- PDF generator with improved Banking Details ---------------- */
+  /** ---------------- PDF generator (respects toggles) ---------------- */
   const generatePDF = async () => {
-    if (!employee || !payrollData || !companyProfile) {
+    if (!employee || !payrollData || !companyProfile || !effective) {
       message.error('Missing data to generate payslip.');
       return;
     }
@@ -223,7 +283,9 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
       } catch (e) {
         console.warn('Logo add failed', e);
       }
-    }
+    } 
+    const F = (n: number) => fmt(Number(n || 0));
+
 
     // Company name (center)
     pdf.setFont('helvetica', 'bold');
@@ -267,10 +329,10 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
     pdf.setFontSize(12);
     pdf.text(`Pay Period: ${currentDate}`, pageWidth - margin, y, { align: 'right' });
 
-    // top of details (for aligning the banking box)
+    // top of details
     const detailsTopY = y + 8;
 
-    /** Left column coordinates (employee/earnings/deductions) */
+    /** Left column coordinates */
     const leftX = margin;
     let leftY = detailsTopY;
 
@@ -295,59 +357,57 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
 
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(11);
-    pdf.text(`Total Hours Worked: ${employee.hours_worked_total ?? 0}h`, leftX, leftY); leftY += 6.5;
-    const isHourly = employee.payment_type === 'hourly';
-    pdf.text(
-      `${isHourly ? 'Hourly Rate' : 'Base Salary'}: R${
-        (isHourly ? parseFloat(employee.hourly_rate as any) ?? 0 : parseFloat(employee.base_salary as any) ?? 0).toFixed(2)
-      }`, leftX, leftY
-    ); leftY += 6.5;
-    pdf.text(`Gross Salary: R${payrollData.grossSalary.toFixed(2)}`, leftX, leftY); leftY += 12;
+pdf.text(`Total Hours Worked: ${employee.hours_worked_total ?? 0}h`, leftX, leftY); leftY += 6.5;
+const isHourly = employee.payment_type === 'hourly';
+pdf.text(
+  `${isHourly ? 'Hourly Rate' : 'Base Salary'}: ${F(isHourly ? Number(employee.hourly_rate || 0) : Number(employee.base_salary || 0))}`,
+  leftX,
+  leftY
+); leftY += 6.5;
+pdf.text(`Gross Salary: ${F(payrollData.grossSalary)}`, leftX, leftY); leftY += 12;
 
-    // Deductions
+
+    // Deductions (respect toggles)
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(14);
     pdf.text('Deductions', leftX, leftY);
     leftY += 9;
 
     pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(11);
-    pdf.text(`PAYE: R${payrollData.paye.toFixed(2)}`, leftX, leftY); leftY += 6.5;
-    pdf.text(`UIF: R${payrollData.uif.toFixed(2)}`, leftX, leftY); leftY += 6.5;
-    pdf.text(`SDL: R${payrollData.sdl.toFixed(2)}`, leftX, leftY); leftY += 6.5;
+pdf.setFont('helvetica', 'normal'); pdf.setFontSize(11);
+if (prefs.includePAYE) pdf.text(`PAYE: ${F(payrollData.paye)}`, leftX, leftY); else pdf.text(`PAYE: Excluded`, leftX, leftY); leftY += 6.5;
+if (prefs.includeUIF) pdf.text(`UIF: ${F(payrollData.uif)}`, leftX, leftY); else pdf.text(`UIF: Excluded`, leftX, leftY); leftY += 6.5;
+if (prefs.includeSDL) pdf.text(`SDL: ${F(payrollData.sdl)}`, leftX, leftY); else pdf.text(`SDL: Excluded`, leftX, leftY); leftY += 6.5;
 
-    pdf.setFont('helvetica', 'bold');
-    pdf.text(`Total Deductions: R${payrollData.totalDeductions.toFixed(2)}`, leftX, leftY);
-    leftY += 14;
+pdf.setFont('helvetica', 'bold');
+pdf.text(`Total Deductions: ${F(effective.effectiveTotalDeductions)}`, leftX, leftY);
+leftY += 14;
 
-    // Net Salary (center emphasis)
+
+    // Net Salary
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(18);
     pdf.setTextColor(0, 100, 0);
-    const net = `Net Salary: R${payrollData.netSalary.toFixed(2)}`;
+    const net = `Net Salary: ${F(effective.effectiveNetSalary)}`;
     pdf.text(net, pageWidth / 2, Math.max(leftY, detailsTopY) + 4, { align: 'center' });
     pdf.setTextColor(0, 0, 0);
 
     /** Right column: Banking Details card */
-    const rightX = pageWidth * 0.58; // start the right column a bit past middle
+    const rightX = pageWidth * 0.58;
     const cardW = pageWidth - rightX - margin;
     let cardY = detailsTopY;
 
-    // Card background
-    pdf.setFillColor(245, 245, 245); // light gray
-    // @ts-ignore - roundedRect exists in jsPDF typings
+    pdf.setFillColor(245, 245, 245);
+    // @ts-ignore
     pdf.roundedRect(rightX, cardY, cardW, 68, 3, 3, 'F');
 
-    // Card title
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(13);
     pdf.text('Banking Details', rightX + 6, cardY + 10);
 
-    // Divider inside card
     pdf.setDrawColor(210, 210, 210);
     pdf.line(rightX + 6, cardY + 14, rightX + cardW - 6, cardY + 14);
 
-    // Key/values
     let kvY = cardY + 22;
     kvY = addKeyValue(pdf, 'Bank', employee.bank_name || 'N/A', rightX + 6, kvY);
     kvY = addKeyValue(pdf, 'Account Holder', employee.account_holder || 'N/A', rightX + 6, kvY);
@@ -386,7 +446,7 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
     );
   }
 
-  if (!payrollData) {
+  if (!payrollData || !effective) {
     return (
       <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.3 }}>
         <Card
@@ -410,27 +470,6 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
     );
   }
 
-  if (loadingCompany) {
-    return (
-      <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.3 }}>
-        <Card
-          className='shadow-lg border-0 bg-white/80 backdrop-blur-sm'
-          headStyle={{
-            background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-            color: 'white',
-            fontSize: '18px',
-            fontWeight: 'bold'
-          }}
-          title='Payslip Generator'
-        >
-          <div className='text-center py-8'>
-            <Text className='text-gray-500'>Loading company information...</Text>
-          </div>
-        </Card>
-      </motion.div>
-    );
-  }
-
   const employeeItems = [
     { key: 'name', label: 'Employee Name', children: employee.name },
     { key: 'position', label: 'Position', children: employee.position || 'N/A' },
@@ -438,34 +477,52 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
     { key: 'email', label: 'Email', children: employee.email }
   ];
 
-  const earningsItems = [
-    { key: 'hours', label: 'Total Hours Worked', children: `${employee.hours_worked_total ?? 0}h` },
-    {
-      key: 'rate',
-      label: employee.payment_type === 'hourly' ? 'Hourly Rate' : 'Base Salary',
-      children: `R${
-        (employee.payment_type === 'hourly'
-          ? (parseFloat(employee.hourly_rate as any) ?? 0)
-          : (parseFloat(employee.base_salary as any) ?? 0)
-        ).toFixed(2)}`
-    },
-    {
-      key: 'gross',
-      label: 'Gross Salary',
-      children: <Text strong className='text-green-600'>R{payrollData.grossSalary.toFixed(2)}</Text>
-    }
-  ];
+ const earningsItems = [
+  { key: 'hours', label: 'Total Hours Worked', children: `${employee.hours_worked_total ?? 0}h` },
+  {
+    key: 'rate',
+    label: employee.payment_type === 'hourly' ? 'Hourly Rate' : 'Base Salary',
+    children: fmt(
+      employee.payment_type === 'hourly'
+        ? Number(employee.hourly_rate || 0)
+        : Number(employee.base_salary || 0)
+    ),
+  },
+  {
+    key: 'gross',
+    label: 'Gross Salary',
+    children: <Text strong className="text-green-600">{fmt(payrollData.grossSalary)}</Text>,
+  },
+];
 
-  const deductionItems = [
-    { key: 'paye', label: 'PAYE', children: `R${payrollData.paye.toFixed(2)}` },
-    { key: 'uif', label: 'UIF', children: `R${payrollData.uif.toFixed(2)}` },
-    { key: 'sdl', label: 'SDL', children: `R${payrollData.sdl.toFixed(2)}` },
-    {
-      key: 'total',
-      label: 'Total Deductions',
-      children: <Text strong className='text-red-600'>R{payrollData.totalDeductions.toFixed(2)}</Text>
-    }
-  ];
+
+const deductionItems = [
+  {
+    key: 'paye',
+    label: 'PAYE',
+    children: prefs.includePAYE ? fmt(payrollData.paye) : <Tag color="default">Excluded</Tag>,
+  },
+  {
+    key: 'uif',
+    label: 'UIF',
+    children: prefs.includeUIF ? fmt(payrollData.uif) : <Tag color="default">Excluded</Tag>,
+  },
+  {
+    key: 'sdl',
+    label: 'SDL',
+    children: prefs.includeSDL ? fmt(payrollData.sdl) : <Tag color="default">Excluded</Tag>,
+  },
+  {
+    key: 'total',
+    label: 'Total Deductions',
+    children: (
+      <Text strong className="text-red-600">
+        {fmt(effective.effectiveTotalDeductions)}
+      </Text>
+    ),
+  },
+];
+
 
   const bankItems = [
     { key: 'bank', label: 'Bank', children: employee.bank_name || 'N/A' },
@@ -488,8 +545,8 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
       >
         <Space direction='vertical' size='large' className='w-full'>
           <Alert
-            message='South African Tax Compliant'
-            description='Calculations include PAYE, UIF, and SDL as per SARS regulations'
+            message='Configurable deductions'
+            description='Toggle PAYE, UIF and SDL on/off below. Your selection is remembered in this browser.'
             type='info'
             showIcon
           />
@@ -511,16 +568,71 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
             </Card>
           )}
 
+          {/* Deduction Toggles */}
+{/* Deduction Toggles — cleaner, non-squashed layout */}
+<Card size="small" title="Deductions (toggle to include/exclude)">
+  <Row gutter={[12, 12]}>
+    <Col xs={24} sm={12} md={8}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Switch
+          checked={prefs.includePAYE}
+          onChange={(v) => setPrefs((p) => ({ ...p, includePAYE: v }))}
+        />
+        <div style={{ lineHeight: 1.1 }}>
+          
+          <div style={{ fontSize: 12, color: '#666' }}>PAYE</div>
+        </div>
+      </div>
+    </Col>
+
+    <Col xs={24} sm={12} md={8}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Switch
+          checked={prefs.includeUIF}
+          onChange={(v) => setPrefs((p) => ({ ...p, includeUIF: v }))}
+        />
+        <div style={{ lineHeight: 1.1 }}>
+          
+          <div style={{ fontSize: 12, color: '#666' }}>UIF</div>
+        </div>
+      </div>
+    </Col>
+
+    <Col xs={24} sm={12} md={8}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Switch
+          checked={prefs.includeSDL}
+          onChange={(v) => setPrefs((p) => ({ ...p, includeSDL: v }))}
+        />
+        <div style={{ lineHeight: 1.1 }}>
+          
+          <div style={{ fontSize: 12, color: '#666' }}>SDL</div>
+        </div>
+      </div>
+    </Col>
+  </Row>
+
+  <div style={{ marginTop: 12 }}>
+    <Button size="small" onClick={() => setPrefs(defaultDeductionPrefs)}>
+      Reset to defaults
+    </Button>
+  </div>
+</Card>
+
+
           <Descriptions title='Employee Details' bordered size='small' column={1} items={employeeItems} />
           <Descriptions title='Earnings' bordered size='small' column={1} items={earningsItems} />
           <Descriptions title='Deductions' bordered size='small' column={1} items={deductionItems} />
 
-          {/* prettier on-screen bank section with masked account no. */}
+          {/* Bank details */}
           <Descriptions title='Banking Details' bordered size='small' column={1} items={bankItems} />
 
           <Divider>Net Salary</Divider>
           <div className='text-center p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border-2 border-green-200'>
-            <Title level={3} className='text-green-700 mb-0'>R{payrollData.netSalary.toFixed(2)}</Title>
+<Title level={3} className="text-green-700 mb-0">
+  {fmt(effective.effectiveNetSalary)}
+</Title>
+
           </div>
 
           <Button
@@ -533,6 +645,14 @@ const PayslipGenerator: React.FC<PayslipGeneratorProps> = ({ employee }) => {
           >
             Generate & Download Payslip
           </Button>
+
+          {/* Compliance nudge */}
+          <Alert
+            type='warning'
+            showIcon
+            message='Note'
+            description='If you exclude statutory deductions (e.g., PAYE/UIF/SDL), ensure this aligns with your payroll policy and local regulations.'
+          />
         </Space>
       </Card>
     </motion.div>

@@ -24,7 +24,7 @@ export const DASHBOARDS: Record<DashboardKey, DashboardDef> = {
     icon: <BarChartOutlined />,
     chartIds: [
       'sales-trend', // Historical
-      'aov-trend',   // Historical
+      //'aov-trend',   // Historical
       // --- Add Forecast Chart IDs ---
       'forecast-sales-trend', // New Forecast Chart
       'forecast-aov-trend',   // New Forecast Chart
@@ -57,14 +57,6 @@ customers: {
   color: 'green',
   icon: <PieChartOutlined />,
   chartIds: ['cust-clv-donut', 'cust-overdue-bubbles', 'cust-churn-buckets'],
-},
-// Products
-products: {
-  label: 'Products',
-  description: 'Stock alerts, profitability & dead stock',
-  color: 'purple',
-  icon: <LineChartOutlined />,
-  chartIds: ['prod-low-stock', 'prod-profit-scatter', 'prod-dead-stock'],
 },
 
 };

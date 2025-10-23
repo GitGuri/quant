@@ -16,6 +16,7 @@ import axios from 'axios';
 import { format, subDays, differenceInMonths } from 'date-fns';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
+import { useCurrency } from '@/contexts/CurrencyContext'; // ✅ currency
 
 // Initialize the Highcharts-more module for waterfall charts
 if (typeof HighchartsMore === 'function') HighchartsMore(Highcharts);
@@ -54,6 +55,8 @@ const Projections = () => {
   const { toast } = useToast();
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
+  const { symbol, fmt } = useCurrency(); // ✅ currency
+  const F = (n: number) => fmt(Number(n || 0)); // ✅ helper
 
   const [revenueGrowthRate, setRevenueGrowthRate] = useState(5);
   const [costGrowthRate, setCostGrowthRate] = useState(3);
@@ -313,22 +316,22 @@ const Projections = () => {
       },
       yAxis: {
         title: {
-          text: 'Amount (R)',
+          text: `Amount (${symbol})`, // ✅ currency
         },
         labels: {
           formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
-            return 'R' + Highcharts.numberFormat(this.value as number, 0, '.', ',');
+            return `${symbol}` + Highcharts.numberFormat(this.value as number, 0, '.', ','); // ✅ currency
           },
         },
       },
       tooltip: {
         formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          return `<b>${this.series.name}</b><br/>${this.x}: R${Highcharts.numberFormat(
+          return `<b>${this.series.name}</b><br/>${this.x}: ${symbol}${Highcharts.numberFormat(
             this.y as number,
             0,
             '.',
             ','
-          )}`;
+          )}`; // ✅ currency
         },
       },
       series: [
@@ -384,22 +387,22 @@ const Projections = () => {
       },
       yAxis: {
         title: {
-          text: 'Amount (R)',
+          text: `Amount (${symbol})`, // ✅ currency
         },
         labels: {
           formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
-            return 'R' + Highcharts.numberFormat(this.value as number, 0, '.', ',');
+            return `${symbol}` + Highcharts.numberFormat(this.value as number, 0, '.', ','); // ✅ currency
           },
         },
       },
       tooltip: {
         formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          return `<b>${this.point.name}</b><br/>R${Highcharts.numberFormat(
+          return `<b>${this.point.name}</b><br/>${symbol}${Highcharts.numberFormat(
             this.y as number,
             0,
             '.',
             ','
-          )}`;
+          )}`; // ✅ currency
         },
       },
       series: [
@@ -482,7 +485,7 @@ const Projections = () => {
     let csvContent = headers.map(header => `"${header}"`).join(',') + '\n';
 
     invertedData.rows.forEach(row => {
-      const rowValues = [`"${row.metric}"`, ...row.values.map(value => value.toString())];
+      const rowValues = [`"${row.metric}"`, ...row.values.map(value => `"${F(Number(value))}"`)]; // ✅ currency
       csvContent += rowValues.join(',') + '\n';
     });
 
@@ -497,7 +500,7 @@ const Projections = () => {
       link.click();
       document.body.removeChild(link);
     }
-  }, [toast]); // Removed transformToInvertedTableData from dependencies as it's not needed
+  }, [toast, fmt, symbol]); // ✅
 
   const downloadPDF = useCallback((data: ProjectionDataPoint[], title: string, filename: string) => {
     if (!data || data.length === 0) {
@@ -520,7 +523,7 @@ const Projections = () => {
     // --- Add Projections Table ---
     const invertedData = transformToInvertedTableData(data);
     const tableHeaders = invertedData.headers;
-    const tableRows = invertedData.rows.map(row => [row.metric, ...row.values.map(val => 'R' + val.toLocaleString('en-ZA'))]);
+    const tableRows = invertedData.rows.map(row => [row.metric, ...row.values.map(val => F(Number(val)))]); // ✅ currency
 
     (doc as any).autoTable({
       startY: 40,
@@ -535,20 +538,15 @@ const Projections = () => {
     if (data.length > 0) {
       const latestData = data[data.length - 1];
       const profitAnalysisData = [
-        ['Sales', 'R' + latestData.sales.toLocaleString('en-ZA')],
-        ['Cost of Goods', 'R' + (-latestData.costs).toLocaleString('en-ZA')],
-        ['Gross Profit', 'R' + (latestData.grossProfit).toLocaleString('en-ZA')],
-        ['Expenses', 'R' + (-latestData.expenses).toLocaleString('en-ZA')],
-        ['Net Profit', 'R' + (latestData.netProfit).toLocaleString('en-ZA')],
-      ];
-
-      const startY = (doc as any).autoTable.previous.finalY + 10;
-      doc.addPage();
-      doc.setFontSize(16);
-      doc.text('Profit & Loss Analysis: ' + data[data.length - 1].period, 14, 20);
+        ['Sales', F(latestData.sales)],
+        ['Cost of Goods', F(-latestData.costs)],
+        ['Gross Profit', F(latestData.grossProfit)],
+        ['Expenses', F(-latestData.expenses)],
+        ['Net Profit', F(latestData.netProfit)],
+      ]; // ✅ currency
 
       (doc as any).autoTable({
-        startY: 30,
+        startY: (doc as any).autoTable.previous.finalY + 10,
         head: [['Metric', 'Amount']],
         body: profitAnalysisData,
         theme: 'striped',
@@ -558,7 +556,7 @@ const Projections = () => {
     }
 
     doc.save(filename);
-  }, [toast]); // Removed transformToInvertedTableData from dependencies as it's not needed
+  }, [toast, fmt, symbol]); // ✅
 
 
   // --- NEW: Handlers for inline editing ---
@@ -674,7 +672,7 @@ const Projections = () => {
           const hasOverride = customOverrides[periodKey]?.[metricKey] !== undefined;
 
           // Display value based on override or calculated, formatted
-          const displayValue = `R${Number(value).toLocaleString('en-ZA')}`;
+          const displayValue = F(Number(value)); // ✅ currency
 
           return (
             <td

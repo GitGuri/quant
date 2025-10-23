@@ -22,9 +22,10 @@ import {
   Descriptions,
   Empty,
   Typography,
+  DatePicker,
 } from 'antd';
 
-import { ArrowLeftOutlined, InfoCircleOutlined, SearchOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, InfoCircleOutlined, SearchOutlined, ReloadOutlined, CalendarOutlined } from '@ant-design/icons';
 import { AlertTriangle } from 'lucide-react';
 
 import Highcharts from '@/lib/initHighcharts';
@@ -34,7 +35,10 @@ import type { Options } from 'highcharts';
 import { useAuth } from '../AuthPage';
 import { DASHBOARDS } from './_dashboards';
 
+import dayjs, { Dayjs } from 'dayjs';
+
 const { Text } = Typography;
+const { RangePicker } = DatePicker;
 
 // ---------- types ----------
 type DashboardKey = keyof typeof DASHBOARDS;
@@ -48,8 +52,8 @@ interface FunnelStage { name: string; count: number }
 interface DailySalesDataPoint { date: string; total_sales_amount: number }
 // Income Statement (single period) from /reports/income-statement
 interface IncomeStatementSection {
-  section: string;               // 'revenue' | 'cogs' | 'operating_expenses' | 'finance_costs' | ...
-  amount: number;                // already sign-fixed server-side
+  section: string;
+  amount: number;
   accounts: { name: string; amount: number }[];
 }
 interface IncomeStatementResp {
@@ -158,13 +162,30 @@ interface PurchaseSale {
 }
 
 // ---------- API base ----------
-const API = 'https://quantnow-sa1e.onrender.com'
+const API = 'https://quantnow-sa1e.onrender.com';
+
+// ---------- helpers ----------
+const fmt = (d: Dayjs) => d.format('YYYY-MM-DD');
+const thisMonthRange = (): [Dayjs, Dayjs] => [dayjs().startOf('month'), dayjs()];
+
+const rangePresets = [
+  { label: 'Last 7 days', value: [dayjs().subtract(6, 'day'), dayjs()] as [Dayjs, Dayjs] },
+  { label: 'Last 30 days', value: [dayjs().subtract(29, 'day'), dayjs()] as [Dayjs, Dayjs] },
+  { label: 'This month', value: thisMonthRange() },
+  { label: 'Last month', value: [dayjs().subtract(1, 'month').startOf('month'), dayjs().subtract(1, 'month').endOf('month')] as [Dayjs, Dayjs] },
+  { label: 'Year to date', value: [dayjs().startOf('year'), dayjs()] as [Dayjs, Dayjs] },
+];
 
 export default function AnalyticsDashboard() {
   const { dashKey } = useParams<{ dashKey: DashboardKey }>();
   const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+
+  // Global date filter state
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>(thisMonthRange());
+  const startISO = useMemo(() => fmt(dateRange[0]), [dateRange]);
+  const endISO = useMemo(() => fmt(dateRange[1]), [dateRange]);
 
   const [charts, setCharts] = useState<ChartData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -184,6 +205,20 @@ export default function AnalyticsDashboard() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyFor, setHistoryFor] = useState<CustomerClusterData | null>(null);
   const [historyData, setHistoryData] = useState<PurchaseSale[] | null>(null);
+  
+  // Parses a Response but guards against HTML/error pages
+  const parseJson = async <T,>(res: Response, name: string): Promise<T> => {
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`${name} HTTP ${res.status} @ ${res.url} — ${body.slice(0, 200)}…`);
+    }
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (!ct.includes('application/json')) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`${name} expected JSON but got "${ct}" @ ${res.url}. Body: ${body.slice(0, 200)}…`);
+    }
+    return res.json() as Promise<T>;
+  };
 
   // KPI state
   const [kpi, setKpi] = useState({
@@ -215,6 +250,14 @@ export default function AnalyticsDashboard() {
     if (!r.ok) throw new Error(`Failed to fetch ${name}`);
   };
 
+  // Append start/end to a base URL (keeps existing query params)
+  const withRange = (url: string) => {
+    const u = new URL(url, API); // base for safety
+    u.searchParams.set('start', startISO);
+    u.searchParams.set('end', endISO);
+    return url.includes('http') ? `${u.toString()}` : `${API}${u.pathname}${u.search}`;
+  };
+
   // helper: try a URL and return undefined if it fails or isn't an array
   const tryArrayJson = async <T,>(url: string): Promise<T[] | undefined> => {
     try {
@@ -241,16 +284,17 @@ export default function AnalyticsDashboard() {
       forecastSalesTrendRes,
       forecastAovTrendRes,
     ] = await Promise.all([
-      fetch(`${API}/api/charts/sales-trend`, { headers }),
-      fetch(`${API}/api/charts/aov-trend`, { headers }),
-      fetch(`${API}/api/charts/payment-mix`, { headers }),
-      fetch(`${API}/api/charts/top-products-pareto?limit=20`, { headers }),
-      fetch(`${API}/api/charts/sales-funnel`, { headers }),
-      fetch(`${API}/api/charts/order-values-histogram`, { headers }),
-      tryArrayJson<DailySalesDataPoint>(`${API}/api/charts/daily-sales-aggregation`),
-      tryArrayJson<any>(`${API}/api/charts/revenue-trend`),
-      fetch(`${API}/api/forecast/sales-trend?granularity=month&horizon=6`, { headers }),
-      fetch(`${API}/api/forecast/aov-trend?granularity=month&horizon=6`, { headers }),
+      fetch(withRange(`/api/charts/sales-trend`), { headers }),
+      fetch(withRange(`/api/charts/aov-trend`), { headers }),
+      fetch(withRange(`/api/charts/payment-mix`), { headers }),
+      fetch(withRange(`/api/charts/top-products-pareto?limit=20`), { headers }),
+      fetch(withRange(`/api/charts/sales-funnel`), { headers }),
+      fetch(withRange(`/api/charts/order-values-histogram`), { headers }),
+      tryArrayJson<DailySalesDataPoint>(withRange(`/api/charts/daily-sales-aggregation`)),
+      tryArrayJson<any>(withRange(`/api/charts/revenue-trend`)),
+      // forecasts are forward-looking but we keep historical window aligned
+      fetch(withRange(`/api/forecast/sales-trend?granularity=month&horizon=6`), { headers }),
+      fetch(withRange(`/api/forecast/aov-trend?granularity=month&horizon=6`), { headers }),
     ]);
 
     ensureOk(salesTrendRes, 'sales-trend');
@@ -262,20 +306,23 @@ export default function AnalyticsDashboard() {
     ensureOk(forecastSalesTrendRes, 'forecast/sales-trend');
     ensureOk(forecastAovTrendRes, 'forecast/aov-trend');
 
-    const salesTrendJson: { points: SalesTrendPoint[] } = await salesTrendRes.json();
-    const aovJson: { points: AOVPoint[] } = await aovRes.json();
-    const mixJson: { mix: PaymentSlice[] } = await mixRes.json();
-    const paretoJson: { products: TopProduct[] } = await paretoRes.json();
-    const funnelJson: { stages: FunnelStage[] } = await funnelRes.json();
-    const histogramJson: { values: number[] } = await histoRes.json();
+    // strict JSON parsing with good error messages
+    const salesTrendJson = await parseJson<{ points: SalesTrendPoint[] }>(salesTrendRes, 'sales-trend');
+    const aovJson       = await parseJson<{ points: AOVPoint[] }>(aovRes, 'aov-trend');
+    const mixJson       = await parseJson<{ mix: PaymentSlice[] }>(mixRes, 'payment-mix');
+    const paretoJson    = await parseJson<{ products: TopProduct[] }>(paretoRes, 'top-products-pareto');
+    const funnelJson    = await parseJson<{ stages: FunnelStage[] }>(funnelRes, 'sales-funnel');
+    const histogramJson = await parseJson<{ values: number[] }>(histoRes, 'order-values-histogram');
 
-    const forecastSalesTrendJson: {
-      granularity: string; from: string; to: string; history: SalesTrendPoint[]; forecast: ForecastSalesPoint[];
-    } = await forecastSalesTrendRes.json();
+    const forecastSalesTrendJson = await parseJson<{
+      granularity: string; from: string; to: string;
+      history: SalesTrendPoint[]; forecast: ForecastSalesPoint[];
+    }>(forecastSalesTrendRes, 'forecast/sales-trend');
 
-    const forecastAovTrendJson: {
-      granularity: string; from: string; to: string; history: AOVPoint[]; forecast: ForecastAOVPoint[];
-    } = await forecastAovTrendRes.json();
+    const forecastAovTrendJson = await parseJson<{
+      granularity: string; from: string; to: string;
+      history: AOVPoint[]; forecast: ForecastAOVPoint[];
+    }>(forecastAovTrendRes, 'forecast/aov-trend');
 
     // Historical charts
     const sPoints = salesTrendJson.points || [];
@@ -506,55 +553,54 @@ export default function AnalyticsDashboard() {
         latest_profit_pct: latestProfitPct,
       },
     }));
-  }, [headers]);
+  }, [headers, startISO, endISO]);
 
-  // ---------- Finance ----------
-  interface ISPoint { period: string; revenue: number; cogs: number; expenses: number; profit: number }
-  interface ExpenseTrendJson { categories: string[]; series: { name: string; data: number[] }[] }
+// ---------- Finance ----------
+interface ISPoint { period: string; revenue: number; cogs: number; expenses: number; profit: number }
+interface ExpenseTrendJson { categories: string[]; series: { name: string; data: number[] }[] }
+const withBase = (url: string) => (url.startsWith('http') ? url : `${API}${url}`);
 
 const fetchFinance = useCallback(async () => {
-  // pick a sensible default period: current month to date
-  const today = new Date();
-  const endISO = today.toISOString().slice(0, 10);
-  const startISO = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
   const [
     revenueTrendRes,
     expenseTrendRes,
     forecastProfitRes,
     forecastRevenueRes,
     forecastExpensesRes,
-    // NEW: single-period income statement (for Waterfall)
+    // single-period income statement (for Waterfall)
     incomeStatementRes,
   ] = await Promise.all([
-    fetch(`${API}/api/analytics/finance/income-statement`, { headers }),
-    fetch(`${API}/api/charts/finance/expense-trend`, { headers }),
-    fetch(`${API}/api/forecast/finance/profit-trend-prophet?horizon=6&frequency=M`, { headers }),
-    fetch(`${API}/api/forecast/finance/revenue-trend-prophet?horizon=6&frequency=M`, { headers }),
-    fetch(`${API}/api/forecast/finance/expenses-trend-prophet?horizon=6&frequency=M`, { headers }),
-    fetch(`${API}/reports/income-statement?start=${startISO}&end=${endISO}`, { headers }), // ⟵ NEW
+    fetch(withRange(`/api/analytics/finance/income-statement`), { headers }),
+    fetch(withRange(`/api/charts/finance/expense-trend`), { headers }),
+    fetch(withBase(`/api/forecast/finance/profit-trend-prophet?horizon=6&frequency=ME`), { headers }),
+    fetch(withBase(`/api/forecast/finance/revenue-trend-prophet?horizon=6&frequency=ME`), { headers }),
+    fetch(withBase(`/api/forecast/finance/expenses-trend-prophet?horizon=6&frequency=ME`), { headers }),
+    fetch(withBase(`/reports/income-statement?start=${startISO}&end=${endISO}`), { headers }),
   ]);
 
+  // Required endpoints must be OK
   ensureOk(revenueTrendRes, 'analytics/finance/income-statement');
   ensureOk(expenseTrendRes, 'charts/finance/expense-trend');
-  ensureOk(forecastProfitRes, 'forecast/finance/profit-trend-prophet');
-  ensureOk(forecastRevenueRes, 'forecast/finance/revenue-trend-prophet');
-  ensureOk(forecastExpensesRes, 'forecast/finance/expenses-trend-prophet');
   ensureOk(incomeStatementRes, 'reports/income-statement');
 
-  const isJson: { points: ISPoint[] } = await revenueTrendRes.json();
-  const expJson: ExpenseTrendJson = await expenseTrendRes.json();
-  const forecastProfitJson = await forecastProfitRes.json();
-  const forecastRevenueJson = await forecastRevenueRes.json();
-  const forecastExpensesJson = await forecastExpensesRes.json();
+  // Parse required ones strictly
+  const isJson  = await parseJson<{ points: ISPoint[] }>(revenueTrendRes, 'analytics/finance/income-statement');
+  const expJson = await parseJson<ExpenseTrendJson>(expenseTrendRes, 'charts/finance/expense-trend');
+  const isPeriod = await parseJson<IncomeStatementResp>(incomeStatementRes, 'reports/income-statement');
 
-  // -------- Waterfall data from /reports/income-statement (NEW) --------
-  const isPeriod: IncomeStatementResp = await incomeStatementRes.json();
+  // Forecasts: parse softly so a 500 doesn't crash the page
+  const tryForecast = async <T,>(res: Response, name: string): Promise<T | null> => {
+    try { return await parseJson<T>(res, name); } catch { return null; }
+  };
+  const forecastProfitJson   = await tryForecast<any>(forecastProfitRes,   'forecast/finance/profit-trend-prophet');
+  const forecastRevenueJson  = await tryForecast<any>(forecastRevenueRes,  'forecast/finance/revenue-trend-prophet');
+  const forecastExpensesJson = await tryForecast<any>(forecastExpensesRes, 'forecast/finance/expenses-trend-prophet');
+
+  // -------- Waterfall data from /reports/income-statement --------
   const sections = isPeriod.sections || [];
   const secMap = Object.fromEntries(
     sections.map(s => [String(s.section).toLowerCase(), Number(s.amount || 0)])
   );
-
   const revenue = Math.abs(secMap['revenue'] ?? 0);
   const cogs = Math.abs(secMap['cogs'] ?? 0);
   const opex = Math.abs(secMap['operating_expenses'] ?? 0);
@@ -598,35 +644,20 @@ const fetchFinance = useCallback(async () => {
   };
   // -------- end Waterfall --------
 
-  // ----- Expense Trend (make bars more readable, as discussed) -----
+  // ----- Expense Trend (by account) -----
   const expTrend: ChartData = {
     id: 'bar-race-expenses',
     title: 'Expense Trend by Account (Monthly)',
     config: {
-      chart: {
-        type: 'column',
-        height: 480,
-        zoomType: 'x',
-        scrollablePlotArea: { minWidth: 1200, scrollPositionX: 1 }
-      },
+      chart: { type: 'column', height: 480, zoomType: 'x', scrollablePlotArea: { minWidth: 1200, scrollPositionX: 1 } },
       title: { text: 'Expenses by Account' },
-      xAxis: {
-        categories: expJson.categories,
-        crosshair: true,
-        labels: { rotation: -25 }
-      },
+      xAxis: { categories: expJson.categories, crosshair: true, labels: { rotation: -25 } },
       yAxis: { title: { text: 'Amount (ZAR)' }, gridLineColor: '#f0f0f0' },
       legend: { enabled: true },
-      tooltip: {
-        shared: true,
-        pointFormat: '<span style="color:{point.color}">●</span> {series.name}: <b>R {point.y:,.0f}</b><br/>'
-      },
+      tooltip: { shared: true, pointFormat: '<span style="color:{point.color}">●</span> {series.name}: <b>R {point.y:,.0f}</b><br/>' },
       plotOptions: {
         column: {
-          borderRadius: 4,
-          pointWidth: 22,
-          groupPadding: 0.08,
-          pointPadding: 0.1,
+          borderRadius: 4, pointWidth: 22, groupPadding: 0.08, pointPadding: 0.1,
           dataLabels: {
             enabled: true,
             formatter: function () {
@@ -634,14 +665,13 @@ const fetchFinance = useCallback(async () => {
               return y >= 1000 ? `R ${Highcharts.numberFormat(y, 0)}` : '';
             }
           }
-          // stacking: 'normal', // uncomment if you prefer stacked columns
         }
       },
       series: expJson.series.map(s => ({ type: 'column', name: s.name, data: s.data })),
     },
   };
 
-  // ----- Profit gauge from monthly IS (unchanged) -----
+  // ----- Profit gauge from monthly IS -----
   const latest = isJson.points[isJson.points.length - 1] || { revenue: 0, profit: 0 };
   const marginPct = latest.revenue ? Math.round((100 * latest.profit) / latest.revenue) : 0;
   const profitGauge: ChartData = {
@@ -661,75 +691,95 @@ const fetchFinance = useCallback(async () => {
     },
   };
 
-  // ----- Forecast charts (unchanged from your version) -----
-  const forecastProfitPoints = forecastProfitJson.forecast || [];
-  const forecastProfitCats = forecastProfitPoints.map((p: any) => p.period);
-  const forecastProfitTrend: ChartData = {
-    id: 'forecast-profit-trend-prophet',
-    title: `Profit Forecast (Prophet)`,
-    config: {
-      title: { text: `Profit Forecast (Prophet)` },
-      subtitle: { text: `Based on data from ${forecastProfitJson.from} to ${forecastProfitJson.to}` },
-      xAxis: { categories: forecastProfitCats },
-      yAxis: { title: { text: 'Profit (ZAR)' } },
-      series: [
-        { type: 'arearange', name: 'Profit Forecast Range', data: forecastProfitPoints.map((p: any) => [p.profit_lo, p.profit_hi]) as any, color: Highcharts.getOptions().colors?.[3], fillOpacity: 0.3, lineWidth: 0, linkedTo: ':previous', zIndex: 0 },
-        { type: 'line', name: 'Profit Forecast', data: forecastProfitPoints.map((p: any) => p.profit_pred), color: Highcharts.getOptions().colors?.[3], zIndex: 1 },
-      ],
-    },
-  };
+  // ----- NEW: Combined Forecast (Revenue + Expenses + Profit) -----
+  // Build categories from any available forecast (they should align; fall back safely).
+  const cats =
+    forecastRevenueJson?.forecast?.map((p: any) => p.period) ||
+    forecastExpensesJson?.forecast?.map((p: any) => p.period) ||
+    forecastProfitJson?.forecast?.map((p: any) => p.period) ||
+    [];
 
-  const forecastRevenuePoints = (forecastRevenueJson.forecast || []) as ProphetRevenuePoint[];
-  const forecastRevenueCats = forecastRevenuePoints.map(p => p.period);
-  const forecastRevenueTrend: ChartData = {
+  const getArr = <T,>(ok: boolean, arr: T[]): T[] => (ok ? arr : Array(cats.length).fill(null));
+
+  // Revenue
+  const revOK = Boolean(forecastRevenueJson?.forecast?.length);
+  const revPts = (forecastRevenueJson?.forecast || []) as ProphetRevenuePoint[];
+  const revLine   = getArr(revOK, cats.map(c => Number(revPts.find(p => p.period === c)?.revenue_pred ?? null)));
+  const revRange  = getArr(revOK, cats.map(c => {
+    const p = revPts.find(x => x.period === c);
+    return p ? [p.revenue_lo, p.revenue_hi] : [null, null];
+  })) as any;
+
+  // Expenses
+  const expOK = Boolean(forecastExpensesJson?.forecast?.length);
+  const expPts = (forecastExpensesJson?.forecast || []) as ProphetExpensesPoint[];
+  const expLine  = getArr(expOK, cats.map(c => Number(expPts.find(p => p.period === c)?.expenses_pred ?? null)));
+  const expRange = getArr(expOK, cats.map(c => {
+    const p = expPts.find(x => x.period === c);
+    return p ? [p.expenses_lo, p.expenses_hi] : [null, null];
+  })) as any;
+
+  // Profit
+  const profOK = Boolean(forecastProfitJson?.forecast?.length);
+  const profPts = (forecastProfitJson?.forecast || []) as ProphetProfitPoint[];
+  const profLine  = getArr(profOK, cats.map(c => Number(profPts.find(p => p.period === c)?.profit_pred ?? null)));
+  const profRange = getArr(profOK, cats.map(c => {
+    const p = profPts.find(x => x.period === c);
+    return p ? [p.profit_lo, p.profit_hi] : [null, null];
+  })) as any;
+
+  const combinedForecast: ChartData = {
+    // Keep this id so it shows without changing DASHBOARDS['finance'].chartIds
     id: 'forecast-revenue-trend-prophet',
-    title: `Revenue Forecast (Prophet)`,
+    title: 'Forecast — Revenue / Expenses / Profit (Prophet)',
     config: {
-      title: { text: `Revenue Forecast (Prophet)` },
-      subtitle: { text: `Based on data from ${forecastRevenueJson.from} to ${forecastRevenueJson.to}` },
-      xAxis: { categories: forecastRevenueCats },
-      yAxis: { title: { text: 'Revenue (ZAR)' } },
+      title: { text: 'Forecast — Revenue / Expenses / Profit (Prophet)' },
+      subtitle: {
+        text: [
+          forecastRevenueJson?.from && forecastRevenueJson?.to ? `Revenue base: ${forecastRevenueJson.from} → ${forecastRevenueJson.to}` : null,
+          forecastExpensesJson?.from && forecastExpensesJson?.to ? `Expenses base: ${forecastExpensesJson.from} → ${forecastExpensesJson.to}` : null,
+          forecastProfitJson?.from && forecastProfitJson?.to ? `Profit base: ${forecastProfitJson.from} → ${forecastProfitJson.to}` : null,
+        ].filter(Boolean).join(' • ')
+      },
+      xAxis: { categories: cats },
+      yAxis: { title: { text: 'Amount (ZAR)' } },
+      tooltip: { shared: true },
+      legend: { enabled: true },
+      // Click legend to toggle series on/off
       series: [
-        { type: 'arearange', name: 'Revenue Forecast Range', data: forecastRevenuePoints.map(p => [p.revenue_lo, p.revenue_hi]) as any, color: Highcharts.getOptions().colors?.[4], fillOpacity: 0.3, lineWidth: 0, linkedTo: ':previous', zIndex: 0 },
-        { type: 'line', name: 'Revenue Forecast', data: forecastRevenuePoints.map(p => p.revenue_pred), color: Highcharts.getOptions().colors?.[4], zIndex: 1 },
+        // Revenue (line + range)
+        { type: 'arearange', name: 'Revenue Range', data: revRange, color: Highcharts.getOptions().colors?.[4], fillOpacity: 0.25, lineWidth: 0, linkedTo: ':previous', zIndex: 0, visible: revOK } as any,
+        { type: 'line',      name: 'Revenue',       data: revLine,  color: Highcharts.getOptions().colors?.[4], zIndex: 2, visible: revOK },
+
+        // Expenses (line + range)
+        { type: 'arearange', name: 'Expenses Range', data: expRange, color: Highcharts.getOptions().colors?.[5], fillOpacity: 0.25, lineWidth: 0, linkedTo: ':previous', zIndex: 0, visible: expOK } as any,
+        { type: 'line',      name: 'Expenses',       data: expLine,  color: Highcharts.getOptions().colors?.[5], zIndex: 2, visible: expOK },
+
+        // Profit (line + range)
+        { type: 'arearange', name: 'Profit Range', data: profRange, color: Highcharts.getOptions().colors?.[3], fillOpacity: 0.25, lineWidth: 0, linkedTo: ':previous', zIndex: 0, visible: profOK } as any,
+        { type: 'line',      name: 'Profit',       data: profLine,  color: Highcharts.getOptions().colors?.[3], zIndex: 2, visible: profOK },
       ],
     },
   };
 
-  const forecastExpensesPoints = (forecastExpensesJson.forecast || []) as ProphetExpensesPoint[];
-  const forecastExpensesCats = forecastExpensesPoints.map(p => p.period);
-  const forecastExpensesTrend: ChartData = {
-    id: 'forecast-expenses-trend-prophet',
-    title: `Expenses Forecast (Prophet)`,
-    config: {
-      title: { text: `Expenses Forecast (Prophet)` },
-      subtitle: { text: `Based on data from ${forecastExpensesJson.from} to ${forecastExpensesJson.to}` },
-      xAxis: { categories: forecastExpensesCats },
-      yAxis: { title: { text: 'Expenses (ZAR)' } },
-      series: [
-        { type: 'arearange', name: 'Expenses Forecast Range', data: forecastExpensesPoints.map(p => [p.expenses_lo, p.expenses_hi]) as any, color: Highcharts.getOptions().colors?.[5], fillOpacity: 0.3, lineWidth: 0, linkedTo: ':previous', zIndex: 0 },
-        { type: 'line', name: 'Expenses Forecast', data: forecastExpensesPoints.map(p => p.expenses_pred), color: Highcharts.getOptions().colors?.[5], zIndex: 1 }
-      ],
-    },
-  };
-
-  setCharts([
-    incomeWaterfall,       // ⟵ now driven by /reports/income-statement
+  // Final set of charts for Finance dashboard:
+  const chartsToSet: ChartData[] = [
+    incomeWaterfall,
     expTrend,
     profitGauge,
-    forecastProfitTrend,
-    forecastRevenueTrend,
-    forecastExpensesTrend,
-  ]);
-}, [headers, API]);
+    combinedForecast,          // <-- the single combined forecast chart
+  ];
+
+  setCharts(chartsToSet);
+}, [headers, startISO, endISO]);
 
 
-  // ---------- Products (declared before fetchData to avoid TDZ) ----------
+  // ---------- Products ----------
   const fetchProducts = useCallback(async () => {
     const [lowStockRes, profitRes, deadRes] = await Promise.all([
-      fetch(`${API}/api/analytics/products/low-stock?threshold=10&limit=30`, { headers }),
-      fetch(`${API}/api/analytics/products/profitability?sort=profit&limit=60`, { headers }),
-      fetch(`${API}/api/analytics/products/dead-stock?days=90&limit=40`, { headers }),
+      fetch(withRange(`/api/analytics/products/low-stock?threshold=10&limit=30`), { headers }),
+      fetch(withRange(`/api/analytics/products/profitability?sort=profit&limit=60`), { headers }),
+      fetch(withRange(`/api/analytics/products/dead-stock?days=90&limit=40`), { headers }),
     ]);
     ensureOk(lowStockRes, 'products/low-stock');
     ensureOk(profitRes, 'products/profitability');
@@ -789,15 +839,15 @@ const fetchFinance = useCallback(async () => {
     };
 
     setCharts([lowStock, profitScatter, deadStock]);
-  }, [headers]);
+  }, [headers, startISO, endISO]);
 
   // ---------- Customers ----------
   const fetchCustomers = useCallback(async () => {
     const [clvRes, overdueRes, churnRes, clusterRes] = await Promise.all([
-      fetch(`${API}/api/analytics/customers/top-clv?limit=12`, { headers }),
-      fetch(`${API}/api/charts/customers/overdue-top?limit=20`, { headers }),
-      fetch(`${API}/api/analytics/customers/churn?months=3`, { headers }),
-      fetch(`${API}/api/customers/cluster-data`, { headers }),
+      fetch(withRange(`/api/analytics/customers/top-clv?limit=12`), { headers }),
+      fetch(withRange(`/api/charts/customers/overdue-top?limit=20`), { headers }),
+      fetch(withRange(`/api/analytics/customers/churn?months=3`), { headers }),
+      fetch(withRange(`/api/customers/cluster-data`), { headers }),
     ]);
 
     ensureOk(clvRes, 'customers/top-clv');
@@ -810,7 +860,7 @@ const fetchFinance = useCallback(async () => {
     const churnJson: { items: ChurnItem[]; months: number } = await churnRes.json();
     const clusterData: CustomerClusterData[] = await clusterRes.json();
 
-    // Charts (keep as before)
+    // Charts
     const clvTop = (clvJson.items || []).slice(0, 10);
     const rest = (clvJson.items || []).slice(10).reduce((a, b) => a + (b.clv || 0), 0);
     const clvDonut: ChartData = {
@@ -911,7 +961,7 @@ const fetchFinance = useCallback(async () => {
       .slice(0, 5);
 
     setCustomerDetails({ clusterData, churnRiskSoon, longTermInactive });
-  }, [headers]);
+  }, [headers, startISO, endISO]);
 
   // ------------------------ FETCHER multiplexer ------------------------
   const fetchData = useCallback(async () => {
@@ -955,7 +1005,7 @@ const fetchFinance = useCallback(async () => {
       setErr('Please log in to view analytics.');
       setCustomerDetails(null);
     }
-  }, [dashKey, isAuthenticated, token, fetchData, navigate]);
+  }, [dashKey, isAuthenticated, token, fetchData, navigate, startISO, endISO]);
 
   if (!dashKey || !DASHBOARDS[dashKey]) return null;
   const cfg = DASHBOARDS[dashKey];
@@ -1031,7 +1081,6 @@ const fetchFinance = useCallback(async () => {
 
   // ---------- Customers: cluster + table + drawers ----------
   const deriveCluster = (c: CustomerClusterData): string => {
-    // Simple rule-based clustering (client-side, non-destructive)
     const highAOV = c.averageOrderValue >= 1000;
     const highRevenue = c.totalInvoiced >= 20000;
     const frequent = c.numberOfPurchases >= 5;
@@ -1071,6 +1120,7 @@ const fetchFinance = useCallback(async () => {
     setHistoryOpen(true);
     setHistoryLoading(true);
     try {
+      // (history currently ignores global range; keep as-is unless your endpoint supports it)
       const res = await fetch(`${API}/api/customers/${row.id}/purchase-history`, { headers });
       ensureOk(res, 'customers/:id/purchase-history');
       const json: PurchaseSale[] = await res.json();
@@ -1291,15 +1341,41 @@ const fetchFinance = useCallback(async () => {
   };
 
   // ------------------------ RENDER ------------------------
+  const onResetRange = () => setDateRange(thisMonthRange());
+
   return (
     <div className="flex-1 space-y-4 p-4 md:p-6 lg:p-8">
       <Header title={`${cfg.label} Dashboard`} />
-      <Space style={{ marginBottom: 8 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/analytics')}>
-          Back to Dashboards
-        </Button>
-        <Tag color={cfg.color}>{cfg.label}</Tag>
-      </Space>
+      <Row gutter={[8, 8]} align="middle" style={{ marginBottom: 8 }}>
+        <Col flex="none">
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/analytics')}>
+            Back to Dashboards
+          </Button>
+        </Col>
+        <Col flex="none">
+          <Tag color={cfg.color}>{cfg.label}</Tag>
+        </Col>
+        <Col flex="auto" />
+        <Col flex="none">
+          <Space>
+            <RangePicker
+              allowClear={false}
+              value={dateRange}
+              onChange={(vals) => {
+                if (vals && vals[0] && vals[1]) setDateRange([vals[0], vals[1]]);
+              }}
+              presets={rangePresets as any}
+              format="YYYY-MM-DD"
+              inputReadOnly
+              showToday
+              suffixIcon={<CalendarOutlined />}
+            />
+            <Tooltip title="Reset to this month">
+              <Button icon={<ReloadOutlined />} onClick={onResetRange} />
+            </Tooltip>
+          </Space>
+        </Col>
+      </Row>
 
       {loading && (
         <Spin tip="Loading…" size="large">

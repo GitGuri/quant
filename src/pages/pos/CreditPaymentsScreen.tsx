@@ -14,6 +14,8 @@ import {
 } from 'antd';
 import { UserOutlined, SearchOutlined } from '@ant-design/icons';
 import { useAuth } from '../../AuthPage';
+import { useCurrency } from '../../contexts/CurrencyContext';
+
 
 // 🧰 offline utilities
 import { fetchWithCache, enqueueRequest, flushQueue } from '../../offline';
@@ -382,7 +384,7 @@ const CreditPaymentsScreen: React.FC = () => {
     const display = cached ?? { score: 0, label: 'Unknown', color: 'default' };
     return <Tag color={(display.color as any) || 'default'}>{`Score: ${display.score || '—'}${display.score ? ` (${display.label})` : ''}`}</Tag>;
   };
-
+  const { fmt, symbol } = useCurrency();
   // ===== Derived score (History tab): uses already fetched history =====
   const selectedCustomerScore = useMemo(() => {
     return computeCreditScoreFromHistory(historyCredits);
@@ -441,7 +443,7 @@ const CreditPaymentsScreen: React.FC = () => {
                         </Text>
                         <div>
                           Amount Due:{' '}
-                          <b>R{credit.remaining_credit_amount.toFixed(2)}</b>
+                          <b>{fmt(credit.remaining_credit_amount)}</b>
                         </div>
                         <div>
                           Due:{' '}
@@ -510,17 +512,17 @@ const CreditPaymentsScreen: React.FC = () => {
                           <Col flex="auto">
                             <Text strong>{c.customer_name}</Text>
                             <div>
-                              Original Amount: <b>R{c.total_amount.toFixed(2)}</b>
+                              Original Amount: <b>{fmt(c.total_amount)}</b>
                             </div>
                             <div>
-                              Paid: <b>R{paidAmount.toFixed(2)}</b>
+                              Paid: <b>{fmt(paidAmount)}</b>
                             </div>
                             <div>
                               Due Date: {c.due_date ? c.due_date.split('T')[0] : 'N/A'}
                             </div>
                             {c.remaining_credit_amount > 0 && (
                               <div>
-                                Remaining: <b>R{c.remaining_credit_amount.toFixed(2)}</b>
+                                Remaining: <b>{fmt(c.remaining_credit_amount)}</b>
                               </div>
                             )}
                           </Col>
@@ -569,12 +571,13 @@ const CreditPaymentsScreen: React.FC = () => {
                 Pay {selectedCredit.customer_name}
               </Title>
               <Text>
-                Remaining: <b>R{selectedCredit.remaining_credit_amount.toFixed(2)}</b>
+                Remaining: <b>{fmt(selectedCredit.remaining_credit_amount)}</b>
               </Text>
               <div style={{ margin: '12px 0' }} />
               <Input
                 type="number"
-                placeholder={`Enter amount (max R${selectedCredit.remaining_credit_amount.toFixed(2)})`}
+                placeholder={`Enter amount (max ${fmt(selectedCredit.remaining_credit_amount)})`}
+
                 value={paymentAmount}
                 onChange={(e) => setPaymentAmount(e.target.value)}
                 style={{ margin: '12px 0 6px 0' }}
@@ -631,7 +634,7 @@ const CreditPaymentsScreen: React.FC = () => {
                   <Text>{item.name}</Text>
                   {item.balance_due > 0 && (
                     <Text type="secondary" style={{ marginLeft: 8 }}>
-                      (Due: R{item.balance_due.toFixed(2)})
+                      (Due: {fmt(item.balance_due)})
                     </Text>
                   )}
                   {scoreCache[item.id] && (

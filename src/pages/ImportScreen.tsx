@@ -46,6 +46,7 @@ import { SearchableAccountSelect } from '../components/SearchableAccountSelect';
 import { SearchableCategorySelect } from '../components/SearchableCategorySelect';
 import { Link, useNavigate } from 'react-router-dom';
 import { EvidencePrompt } from './EvidencePrompt';
+import { useCurrency } from '../contexts/CurrencyContext';
 
 declare global {
   interface Window {
@@ -616,6 +617,7 @@ const EditableTransactionTable = ({
     () => transactions.filter(t => t.includeInImport !== false && Number(t.amount) === 0).length,
     [transactions]
   );
+  const { symbol, fmt } = useCurrency();
 
 // ... find the useEffect that resets confirmClicked ...
 useEffect(() => {
@@ -783,7 +785,7 @@ const handleConfirmOnce = () => {
                 <TableRow>
                   <TableHead>Import?</TableHead>
                   <TableHead>Type</TableHead>
-                  <TableHead>Amount (R)</TableHead>
+                  <TableHead>Amount ({symbol})</TableHead>
                   <TableHead>Description</TableHead>
                   <TableHead>Date</TableHead>
                   <TableHead>Category</TableHead>
@@ -844,7 +846,7 @@ const handleConfirmOnce = () => {
                             className={`w-[110px] ${isZero ? 'ring-1 ring-red-400' : ''}`}
                           />
                         ) : (
-                          Number(tx.amount).toFixed(2)
+                          fmt(Number(tx.amount || 0))
                         )}
                       </TableCell>
 
@@ -935,7 +937,7 @@ const handleConfirmOnce = () => {
                               <div className="space-y-2 mt-2">
                                 {tx.duplicateMatches!.map((m, i) => (
                                   <div key={i} className="border rounded p-2 text-sm">
-                                    <div><strong>Amount:</strong> R {m.amount.toFixed(2)}</div>
+                                    <div><strong>Amount:</strong> {fmt(m.amount)}</div>
                                     <div><strong>Date:</strong> {m.date}</div>
                                     <div className="truncate"><strong>Desc:</strong> {m.description}</div>
                                     <div><strong>Similarity:</strong> {(m.score * 100).toFixed(0)}%</div>
@@ -1054,6 +1056,8 @@ const ChatInterface = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const [confirmationInitiated, setConfirmationInitiated] = useState(false);
+  const { symbol, fmt } = useCurrency();
+
   // evidence modal state
 const [evidenceOpen, setEvidenceOpen] = useState(false);
 const [evidenceNotes, setEvidenceNotes] = useState<string>('');
@@ -1231,7 +1235,7 @@ function saleToPreviewRow(
   if (!txs || txs.length === 0) return;
   // pick the first selected / visible row to seed the notes
   const t = txs[0];
-  const note = `Evidence for ${t.type} R${Number(t.amount || 0).toFixed(2)} on ${t.date} — ${t.description} (${sourceLabel})`;
+  const note = `Evidence for ${t.type} ${fmt(Number(t.amount || 0))} on ${t.date} — ${t.description} (${sourceLabel})`;
   setEvidenceNotes(note);
   setEvidenceOpen(true);
 };
@@ -1626,7 +1630,7 @@ prepared.push({
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
           <div className="font-semibold">Sales queued for posting:</div>
          <div>
-  {salesQueue.length} sale(s), total R {salesTotal.toFixed(2)} — will be submitted
+  {salesQueue.length} sale(s), total {fmt(salesTotal)} — will be submitted
   after you click <em>Confirm &amp; Submit Selected</em>.
 </div>
         </div>
@@ -1741,7 +1745,8 @@ saleRows.push(saleRow);
       addAssistantMessage(
         <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
           <div className="font-semibold mb-1">✅ Sale Recorded & Stock Updated!</div>
-          <div>Sold {qty} × “{product.name}” for R {(unitPrice * qty).toFixed(2)}.</div>
+          <div>Sold {qty} × “{product.name}” for {fmt(unitPrice * qty)}.</div>
+
           {product.is_service ? <div className="text-xs mt-1">Note: Service item — no stock deduction.</div> : null}
         </div>
       );
@@ -1802,11 +1807,12 @@ try {
         // 🔽 ADD THIS
         addAssistantMessage(
           successBubble('✅ Sale Recorded', [
-            `Sold "${s.description || 'Sale'}" for R ${Number(s.amount || 0).toFixed(2)}`
+           `Sold "${s.description || 'Sale'}" for ${fmt(Number(s.amount || 0))}`
           ])
         );
       } catch (e: any) {
-        addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+        addAssistantMessage(
+  `Failed sale for "${s.customer_name}" (${fmt(Number(s.amount || 0))}): ${e?.message || e}`);
       }
     }
     addAssistantMessage(`Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`);
@@ -1917,7 +1923,7 @@ try {
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
           <div className="font-semibold">Sales queued for posting:</div>
           <div>
-  {salesQueue.length} sale(s), total R {totalSales.toFixed(2)} — will be submitted
+  {salesQueue.length} sale(s), total {fmt(totalSales)} — will be submitted
   after you click <em>Confirm &amp; Submit Selected</em>.
 </div>
         </div>
@@ -1954,7 +1960,10 @@ if (journalRows.length) {
         for (const s of q) {
           try { await submitSale(s); ok++; }
           catch (e:any) {
-            addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+            addAssistantMessage(
+  `Failed sale for "${s.customer_name}" (${fmt(Number(s.amount || 0))}): ${e?.message || e}`
+);
+
           }
         }
         addAssistantMessage(`Sales posting complete: ${ok}/${q.length} succeeded.`);
@@ -2141,11 +2150,14 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
           // Per-sale success line
           addAssistantMessage(
             successBubble('✅ Sale submitted', [
-              `${s.description} — R ${Number(s.amount || 0).toFixed(2)} (${s.customer_name})`
+              `${s.description} — ${fmt(Number(s.amount || 0))} (${s.customer_name})`
             ])
           );
         } catch (e: any) {
-          addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+          addAssistantMessage(
+  `Failed sale for "${s.customer_name}" (${fmt(Number(s.amount || 0))}): ${e?.message || e}`
+);
+
         }
       }
       addAssistantMessage(`Sales posting complete: ${ok}/${salesOnlyQueue.length} succeeded.`);
@@ -2336,10 +2348,11 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
     const prettyLines = toSubmit.map(t => {
       const amt = Number(t.amount || 0).toFixed(2);
       const d   = t.date || new Date().toISOString().slice(0,10);
-      if (t.type === 'expense') return `Paid ${t.description} — R ${amt} on ${d}`;
-      if (t.type === 'income')  return `Received ${t.description} — R ${amt} on ${d}`;
-      if (t.type === 'debt')    return `Debt entry: ${t.description} — R ${amt} on ${d}`;
-      return `${t.type} ${t.description} — R ${amt} on ${d}`;
+      if (t.type === 'expense') return `Paid ${t.description} — ${fmt(Number(t.amount || 0))} on ${d}`;
+ if (t.type === 'income')  return `Received ${t.description} — ${fmt(Number(t.amount || 0))} on ${d}`;
+if (t.type === 'debt')    return `Debt entry: ${t.description} — ${fmt(Number(t.amount || 0))} on ${d}`;
+      return `${t.type} ${t.description} — ${fmt(Number(amt))} on ${d}`;
+
     });
 
     addAssistantMessage(
@@ -2373,11 +2386,11 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
             // Per-sale success line
             addAssistantMessage(
               successBubble('✅ Sale submitted', [
-                `${s.description} — R ${Number(s.amount || 0).toFixed(2)} (${s.customer_name})`
+                `${s.description} — ${fmt(Number(s.amount || 0))} (${s.customer_name})`
               ])
             );
           } catch (e: any) {
-            addAssistantMessage(`Failed sale for "${s.customer_name}" (R${Number(s.amount).toFixed(2)}): ${e?.message || e}`);
+            `Failed sale for "${s.customer_name}" (${fmt(Number(s.amount || 0))}): ${e?.message || e}`
           }
         }
         addAssistantMessage(`Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`);

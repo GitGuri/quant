@@ -15,6 +15,7 @@ import {
 import { motion } from 'framer-motion';
 import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '../AuthPage';
+import { useCurrency } from '@/contexts/CurrencyContext';
 
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -285,6 +286,9 @@ const Financials = () => {
   const navigate = useNavigate();
   const { latestProcessedTransactions } = useFinancials(); // (unused, but fine)
   const { toast } = useToast();
+  const { symbol, fmt } = useCurrency();
+const F = (n: number) => fmt(Number(n || 0));
+
 
   const [fromDate, setFromDate] = useState(() => {
     const today = new Date();
@@ -360,25 +364,33 @@ const reportTypes = [
   const isZeroish = (n: any) => Math.abs(Number(n) || 0) < ZEPS;
   const nonZero = (n: number) => !isZeroish(n);
 
-// replaces the existing toMoney()
+
+
+// single source of truth
 const toMoney = (val: number): string => {
-  const n = Number(val);
+  const n = Number(val || 0);
   const abs = Math.abs(n);
-  const s = abs.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return n < 0 ? `(R ${s})` : `R ${s}`;
+
+  const s = fmt(abs);
+
+  if (n < 0) {
+
+    const stripped = s.replace(new RegExp(`^\\${symbol}\\s*`), ''); // Remove leading symbol and optional space
+    return `(${symbol} ${stripped})`;
+  } else {
+   
+    return s;
+  }
 };
 
+const moneyOrBlank = (amount?: number | null): string => {
+  if (amount == null || !isFinite(Number(amount)) || Math.abs(Number(amount)) < 0.005) return '';
+  return toMoney(Number(amount));
+};
 
-  const moneyOrBlank = (amount: number | null | undefined): string => {
-    if (amount === null || amount === undefined) return '';
-    const v = Number(amount);
-    if (!isFinite(v) || isZeroish(v)) return '';
-    return toMoney(v);
-  };
-  const formatCurrency = (amount: number | null | undefined): string => {
-    if (amount === null || amount === undefined) return '';
-    return toMoney(Number(amount));
-  };
+const formatCurrency = (amount?: number | null): string =>
+  amount == null ? '' : toMoney(Number(amount));
+
 
   // ---------- CSV helpers ----------
   const csvEscape = (v: any) => {
@@ -422,14 +434,18 @@ function multiAlignByItem(series: SimpleLine[][], orderHint?: string[]) {
     return m;
   });
 
-  // Build the order:
-  // 1) use orderHint (aggregate order) if provided,
-  // 2) else start from the first series,
-  // 3) then append any remaining keys.
+  // Build the order from hint → first series → any remaining
   const orderedKeys: string[] = orderHint ? [...orderHint] : [];
   if (!orderedKeys.length && series[0]) series[0].forEach(l => orderedKeys.push(l.item));
   for (let i = 0; i < monthMaps.length; i++) {
     monthMaps[i].forEach((_v, k) => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
+  }
+
+  // Always move NET PROFIT/LOSS line to the bottom
+  const netIdx = orderedKeys.findIndex(k => /NET (PROFIT|LOSS) for the period/i.test(k));
+  if (netIdx >= 0) {
+    const [netKey] = orderedKeys.splice(netIdx, 1);
+    orderedKeys.push(netKey);
   }
 
   return orderedKeys.map(k => {
@@ -510,12 +526,18 @@ function multiAlignByItem(series: SimpleLine[][], orderHint?: string[]) {
       if (nonZero(totalExpenses)) lines.push({ item: 'Total Expenses', amount: totalExpenses, type: 'subtotal' });
     }
 
-    const netProfitLoss = (revenueSection?.amount || 0) - (cogsSection?.amount || 0) + (otherIncomeSection?.amount || 0) - totalExpenses;
-    lines.push({
-      item: netProfitLoss >= 0 ? 'NET PROFIT for the period' : 'NET LOSS for the period',
-      amount: Math.abs(netProfitLoss),
-      type: 'total'
-    });
+const netProfitLoss =
+  (revenueSection?.amount || 0)
+  - (cogsSection?.amount || 0)
+  + (otherIncomeSection?.amount || 0)
+  - totalExpenses;
+
+lines.push({
+  item: netProfitLoss >= 0 ? 'NET PROFIT for the period' : 'NET LOSS for the period',
+  amount: netProfitLoss,     // <-- keep SIGNED (no Math.abs)
+  type: 'total',
+  isTotal: true              // <-- mark clearly as a total
+});
 
     return lines;
   }, []);
@@ -1047,7 +1069,7 @@ if (type === 'income-statement') {
       rows.push(['Income Statement']);
       rows.push([`For the period ${periodStr}`]);
       pushBlank();
-      rows.push(['Item', 'Amount (R)']);
+      rows.push(['Item', 'Amount ']);
       const filtered = (incomeStatementData || []).filter(
         l => typeof l.amount !== 'number' || nonZero(Number(l.amount))
       );
@@ -1081,14 +1103,14 @@ if (type === 'income-statement') {
       pushBlank();
 
       rows.push(['ASSETS']);
-      rows.push(['Item', 'Amount (R)']);
+      rows.push(['Item', 'Amount ']);
       (balanceSheetData.assets || [])
         .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
         .forEach(li => rows.push([li.item, li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })]));
 
       pushBlank();
       rows.push(['EQUITY AND LIABILITIES']);
-      rows.push(['Item', 'Amount (R)']);
+      rows.push(['Item', 'Amount ']);
       [...(balanceSheetData.liabilities || []), ...(balanceSheetData.equity || [])]
         .filter(li => li.isTotal || li.isSubheader || nonZero(li.amount))
         .forEach(li => rows.push([li.item, li.isSubheader ? '' : csvAmount(li.amount, { alwaysShow: li.isTotal })]));
@@ -1109,7 +1131,7 @@ if (type === 'income-statement') {
     return rows;
   }
 
-  rows.push(['Line', 'Amount (R)']);
+  rows.push(['Line', 'Amount ']);
   rows.push(['Output VAT (Box 1A)', csvAmount(vatData.results.output_vat_1A, { alwaysShow: true })]);
   rows.push(['Input VAT (Box 1B)',  csvAmount(vatData.results.input_vat_1B,  { alwaysShow: true })]);
   rows.push(['Net VAT – Payable(+) / Refund(-) (Box 1C)', csvAmount(vatData.results.net_vat_1C, { alwaysShow: true })]);
@@ -1142,7 +1164,7 @@ if (type === 'income-statement') {
       filteredSections.forEach(section => {
         rows.push([section.category]);
         if (section.items.length > 0) {
-          rows.push(['Item', 'Amount (R)']);
+          rows.push(['Item', 'Amount ']);
           section.items.forEach(it => rows.push([it.item, csvAmount(it.amount)]));
           rows.push([
             section.total >= 0 ? `Net cash from ${section.category}` : `Net cash used in ${section.category}`,
@@ -1439,7 +1461,7 @@ const handleDownloadPdf = async () => {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Item</TableHead>
-                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                        {!showCompare && <TableHead className="text-right">{`Amount (${symbol})`}</TableHead>}
                         {showCompare && (
                           <>
                             <TableHead className="text-right">Current (R)</TableHead>
@@ -1533,7 +1555,8 @@ const handleDownloadPdf = async () => {
                           </TableRow>
                         )}
                         {!isMonthlyLoading && incomeMonthly.length > 0 ? (
-                          multiAlignByItem(incomeMonthly).map((row, idx) => {
+                          multiAlignByItem(incomeMonthly, incomeOrderHint).map((row, idx) => {
+
                             const isTotalish = row.type === 'total' || row.isTotal;
                             const isHeaderish = row.type === 'header' || row.isSubheader;
                             const isExpenseDetail = row.type === 'detail-expense';
@@ -1583,8 +1606,9 @@ const handleDownloadPdf = async () => {
                         <TableHead>Account</TableHead>
                         {!showCompare && (
                           <>
-                            <TableHead className="text-right">Debit (R)</TableHead>
-                            <TableHead className="text-right">Credit (R)</TableHead>
+<TableHead className="text-right">{`Debit (${symbol})`}</TableHead>
+<TableHead className="text-right">{`Credit (${symbol})`}</TableHead>
+
                           </>
                         )}
                         {showCompare && (
@@ -1733,7 +1757,7 @@ const handleDownloadPdf = async () => {
                         <TableHeader>
                           <TableRow>
                             <TableHead>Item</TableHead>
-                            {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                            {!showCompare && <TableHead className="text-right">{`Amount (${symbol})`}</TableHead>}
                             {showCompare && (
                               <>
                                 <TableHead className="text-right">Current (R)</TableHead>
@@ -1791,7 +1815,7 @@ const handleDownloadPdf = async () => {
                         <TableHeader>
                           <TableRow>
                             <TableHead>Item</TableHead>
-                            {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                            {!showCompare && <TableHead className="text-right">{`Amount (${symbol})`}</TableHead>}
                             {showCompare && (
                               <>
                                 <TableHead className="text-right">Current (R)</TableHead>
@@ -1842,7 +1866,7 @@ const handleDownloadPdf = async () => {
                         <TableHeader>
                           <TableRow>
                             <TableHead>Item</TableHead>
-                            {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                            {!showCompare && <TableHead className="text-right">{`Amount (${symbol})`}</TableHead>}
                             {showCompare && (
                               <>
                                 <TableHead className="text-right">Current (R)</TableHead>
@@ -2085,7 +2109,7 @@ const handleDownloadPdf = async () => {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Line</TableHead>
-                        {!showCompare && <TableHead className="text-right">Amount (R)</TableHead>}
+                        {!showCompare && <TableHead className="text-right">{`Amount (${symbol})`}</TableHead>}
                         {showCompare && (
                           <>
                             <TableHead className="text-right">Current (R)</TableHead>

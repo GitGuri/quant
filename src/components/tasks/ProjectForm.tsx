@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Loader2 } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -45,7 +46,7 @@ export function ProjectForm({ project, onSave, onCancel, users }: ProjectFormPro
     status: project?.status || 'Not Started',
     assignee_id: project?.assignee_id ?? null,
   });
-
+ const [isSaving, setIsSaving] = useState(false)
   useEffect(() => {
     if (project) {
       setFormData({
@@ -58,14 +59,33 @@ export function ProjectForm({ project, onSave, onCancel, users }: ProjectFormPro
     }
   }, [project]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+// Add 'async' here because onSave is likely an async operation in the parent
+const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+
+  // 1. Start saving process / show spinner
+  setIsSaving(true); 
+
+  try {
+    // OPTIONAL: Add a brief delay to ensure the user sees the spinner for feedback
+    await new Promise(resolve => setTimeout(resolve, 500)); 
+    
+    // 2. Call the save function (assuming the parent component handles success/failure and closing the dialog)
+    // We don't await onSave because we rely on the parent to handle the API call and close the dialog
     onSave({
       ...formData,
       assignee_id: formData.assignee_id || null,
     });
-  };
+    
+    // Note: If onSave is truly synchronous and doesn't close the dialog, you'd move setIsSaving(false) here.
+    // For a typical form submission, the parent component handles API call and state change/dialog close.
 
+  } catch (error) {
+    // 3. Stop saving on failure if the error doesn't close the dialog
+    console.error("Project save failed:", error);
+    setIsSaving(false); 
+  }
+};
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
@@ -143,12 +163,16 @@ export function ProjectForm({ project, onSave, onCancel, users }: ProjectFormPro
         </Select>
       </div>
 
-      <DialogFooter>
-        <Button type="submit">{project ? 'Update Project' : 'Create Project'}</Button>
-        <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-      </DialogFooter>
+
+<DialogFooter>
+  <Button type="submit" disabled={isSaving}>
+    {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+    {project ? 'Update Project' : 'Create Project'}
+  </Button>
+  <Button type="button" variant="ghost" onClick={onCancel} disabled={isSaving}>
+    Cancel
+  </Button>
+</DialogFooter>
     </form>
   );
 }

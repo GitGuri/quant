@@ -25,7 +25,7 @@ import {
 } from '@ant-design/icons';
 import { useAuth } from '../AuthPage';
 import { Header } from '../components/layout/Header';
-
+import { useCurrency } from '../contexts/CurrencyContext';
 const useBreakpoint = Grid.useBreakpoint;
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -183,6 +183,8 @@ export default function POSScreen() {
   const [messageApi, contextHolder] = message.useMessage();
   const screens = useBreakpoint();
   const isOnline = useOnline();
+  const { fmt, formatter: moneyFormatter, parser: moneyParser, symbol } = useCurrency();
+
 
   // Auth
   const { isAuthenticated } = useAuth();
@@ -1126,13 +1128,13 @@ return (
                   color: selectedCustomer.balanceDue > 0 ? 'red' : '#888',
                 }}
               >
-                Outstanding Balance: R{(selectedCustomer.balanceDue || 0).toFixed(2)}
+                Outstanding Balance: {fmt(selectedCustomer.balanceDue || 0)}
               </div>
             )}
             {selectedCustomer?.creditLimit !== undefined &&
               selectedCustomer.creditLimit > 0 && (
                 <div style={{ fontSize: 12, color: '#888' }}>
-                  Credit Limit: R{(selectedCustomer.creditLimit || 0).toFixed(2)}
+                  Credit Limit: {fmt(selectedCustomer.creditLimit || 0)}
                 </div>
               )}
             {selectedCustomer?.id && creditScoreCache[selectedCustomer.id] && (
@@ -1168,7 +1170,7 @@ return (
               {selectedProduct ? selectedProduct.name : 'Select Product'}
             </Text>
             <div style={{ fontSize: 12, color: '#888' }}>
-              Price: R{(selectedProduct?.unit_price || 0).toFixed(2)}{' '}
+              Price: {fmt(selectedProduct?.unit_price || 0)}{' '}
               {selectedProduct?.is_service ? '(Service)' : ''}
             </div>
             {selectedProduct && (
@@ -1265,11 +1267,11 @@ return (
                 {
                   title: 'Price',
                   dataIndex: 'unit_price',
-                  render: (p: number) => `R${p.toFixed(2)}`,
+                  render: (p: number) => fmt(p),
                 },
                 {
                   title: 'Total',
-                  render: (_: any, r: any) => `R${r.subtotal.toFixed(2)}`,
+                  render: (_: any, r: any) => fmt(r.subtotal),
                 },
                 {
                   title: 'Action',
@@ -1288,11 +1290,10 @@ return (
               summary={() => (
                 <Table.Summary.Row>
                   <Table.Summary.Cell colSpan={2}>
-                    Subtotal (excl): R{totals.excl.toFixed(2)} | VAT: R
-                    {totals.vat.toFixed(2)}
+                    Subtotal (excl): {fmt(totals.excl)} | VAT: {fmt(totals.vat)}
                   </Table.Summary.Cell>
                   <Table.Summary.Cell colSpan={2} align="right">
-                    Total (incl): <strong>R{totals.incl.toFixed(2)}</strong>
+                    Total (incl): <strong>{fmt(totals.incl)}</strong>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell />
                 </Table.Summary.Row>
@@ -1308,9 +1309,9 @@ return (
                   <Col>
                     <Text strong>{item.name}</Text>{' '}
                     <Tag>
-                      {item.quantity} x R{item.unit_price.toFixed(2)}{' '}
+                      {item.quantity} x {fmt(item.unit_price)}{' '}
                     </Tag>
-                    <div>Total: R{item.subtotal.toFixed(2)}</div>
+                    <div>Total: {fmt(item.subtotal)}</div>
                     {String(item.id).startsWith('custom-') && (
                       <div style={{ fontSize: 12, color: '#999' }}>
                         custom item
@@ -1369,18 +1370,20 @@ return (
                 <div style={{ marginBottom: 4 }}>
                   <Text>Amount Paid</Text>
                 </div>
-                <InputNumber
-                  min={0}
-                  value={amountPaid}
-                  onChange={(value) => setAmountPaid(value ?? 0)}
-                  style={{ width: '100%' }}
-                  disabled={!isAuthenticated || isLoading}
-                />
+<InputNumber
+  min={0}
+  value={amountPaid}
+  onChange={(value) => setAmountPaid(value ?? 0)}
+  style={{ width: '100%' }}
+  formatter={moneyFormatter}
+   parser={moneyParser}
+   disabled={!isAuthenticated || isLoading}
+ />
                 <div style={{ marginTop: 4 }}>
                   <Text strong>
                     Change:&nbsp;
                     <span style={{ color: change < 0 ? 'red' : 'green' }}>
-                      {change < 0 ? 'Insufficient' : `R${change.toFixed(2)}`}
+                      {change < 0 ? 'Insufficient' : fmt(change)}
                     </span>
                   </Text>
                 </div>
@@ -1442,12 +1445,12 @@ return (
           <Divider style={{ margin: '16px 0' }} />
           <div style={{ textAlign: 'center', marginBottom: 12 }}>
             <div style={{ marginBottom: 6 }}>
-              Subtotal (excl): <strong>R{totals.excl.toFixed(2)}</strong>
+              Subtotal (excl): <strong>{fmt(totals.excl)}</strong>
             </div>
             <div style={{ marginBottom: 6 }}>
-              VAT: <strong>R{totals.vat.toFixed(2)}</strong>
+              VAT: <strong>{fmt(totals.vat)}</strong>
             </div>
-            <Text strong>Total (incl): R{totals.incl.toFixed(2)}</Text>
+            <Text strong>Total (incl): {fmt(totals.incl)}</Text>
           </div>
           <Button
             type="primary"
@@ -1640,10 +1643,9 @@ return (
                         <div>
                           <Text strong>{p.name}</Text>
                           <div style={{ fontSize: 13, color: '#888' }}>
-                            Price: R
-                            {typeof p.unit_price === 'number'
-                              ? p.unit_price.toFixed(2)
-                              : parseFloat(p.unit_price as any).toFixed(2)}{' '}
+ Price: {fmt(typeof p.unit_price === 'number'
+  ? p.unit_price
+  : parseFloat(p.unit_price as any))}{' '}
                             {p.is_service ? '(Service)' : ''}
                           </div>
                           <div style={{ fontSize: 13, color: '#888' }}>
@@ -1710,18 +1712,15 @@ return (
                   { type: 'number', min: 0.01, message: 'Price must be positive!' },
                 ]}
               >
-                <InputNumber
-                  min={0.01}
-                  step={0.01}
-                  style={{ width: '100%' }}
-                  formatter={(value) =>
-                    `R ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-                  }
-                  parser={(value) =>
-                    (value || '').replace(/R\s?|(,*)/g, '') as unknown as number
-                  }
-                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-                />
+<InputNumber
+  min={0.01}
+  step={0.01}
+  style={{ width: '100%' }}
+  formatter={moneyFormatter}
+  parser={moneyParser}
+  placeholder={`e.g. ${symbol} 0.00`}
+  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
+/>
               </Form.Item>
 
               <Form.Item name="customProductDescription" label="Description (Optional)">

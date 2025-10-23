@@ -19,6 +19,7 @@ import { Edit, Printer, FileText, Trash2, AlertTriangle, Loader2, Check } from '
 import { useAuth } from '../AuthPage';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/components/ui/use-toast';
+import { useCurrency } from '../contexts/CurrencyContext';
 
 // ---------------- Types ----------------
 interface Account {
@@ -85,7 +86,6 @@ interface UnifiedTxViewRow {
 
 // -------------- Helpers --------------
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
-const fmtMoney = (n: number) => `R${n.toFixed(2)}`;
 const parseNumber = (v: string | number | null | undefined) => {
   if (v === null || v === undefined) return 0;
   const n = typeof v === 'number' ? v : parseFloat(String(v));
@@ -185,6 +185,7 @@ function pickSurvivor(group: UnifiedTxViewRow[]) {
 const Transactions: React.FC = () => {
   const { isAuthenticated } = useAuth();
   const { toast } = useToast();
+  const { symbol, fmt } = useCurrency();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const authHeaders = useMemo(
     () => (token ? { Authorization: `Bearer ${token}` } : {}),
@@ -883,7 +884,7 @@ const Transactions: React.FC = () => {
                     <th className="text-left p-3">Date</th>
                     <th className="text-left p-3">Description</th>
                     <th className="text-left p-3">Accounts</th>
-                    <th className="text-left p-3">Amount</th>
+                    <th className="text-left p-3">Amount ({symbol})</th>
                     <th className="text-left p-3">Action</th>
                   </tr>
                 </thead>
@@ -938,7 +939,7 @@ const Transactions: React.FC = () => {
                                         <div><strong>ID:</strong> {m.id} (JE)</div>
                                         <div><strong>Date:</strong> {m.date}</div>
                                         <div className="truncate"><strong>Memo:</strong> {m.memo || '—'}</div>
-                                        <div><strong>Amount:</strong> {fmtMoney(m.amount)}</div>
+                                        <div><strong>Amount:</strong> {fmt(Number(m.amount || 0))}</div>
                                         <div><strong>Similarity:</strong> {(m.score * 100).toFixed(0)}%</div>
                                       </div>
                                     ))}
@@ -952,7 +953,7 @@ const Transactions: React.FC = () => {
                           {resolveAccountLabel(r.debitAccountId, r.debitAccountName)} <span className="opacity-60">↔</span> {resolveAccountLabel(r.creditAccountId, r.creditAccountName)}
                           {r.complex && <span className="ml-1 text-xs text-muted-foreground">(Complex)</span>}
                         </td>
-                        <td className="p-3">{fmtMoney(r.amount)}</td>
+                        <td className="p-3">{fmt(Number(r.amount || 0))}</td>
                         <td className="p-3">
                           <div className="flex items-center gap-2">
                             <Button variant="ghost" size="sm" onClick={() => openEdit(r.id, r.sourceType)}>
@@ -1082,7 +1083,7 @@ const Transactions: React.FC = () => {
                         <Label className="mb-2 block">Amount</Label>
                         <div className="flex">
                           <span className="inline-flex items-center px-3 border border-r-0 rounded-l-md text-sm text-muted-foreground bg-muted/40">
-                            R
+                            {symbol}
                           </span>
                           <Input
                             type="number"

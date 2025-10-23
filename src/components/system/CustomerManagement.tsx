@@ -48,6 +48,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 // ⬇️ adjust the path if needed
 import { CustomerForm } from './CustomerForm';
+import { useCurrency } from '../../contexts/CurrencyContext';
 
 interface CustomField {
   id: number;
@@ -148,7 +149,7 @@ const CLUSTER_TABS: { value: CustomerCluster; label: string; icon: React.ReactNo
   { value: 'High Value', label: 'High Value', icon: <CircleDollarSign className="h-4 w-4 mr-2" /> },
   { value: 'Low Value', label: 'Low Value', icon: <Coins className="h-4 w-4 mr-2" /> },
   { value: 'Frequent Buyer', label: 'Frequent Buyers', icon: <Repeat className="h-4 w-4 mr-2" /> },
-  { value: 'Big Spender', label: 'Big Spenders', icon: <Gem className="h-4 w-4 mr-2" /> },
+  { value: 'Big Spender', label: 'Premium Buyers', icon: <Gem className="h-4 w-4 mr-2" /> },
 ];
 
 // --- Utils for token handling ---
@@ -226,6 +227,7 @@ export function CustomerManagement() {
   const [alsoSendSms, setAlsoSendSms] = useState(false);
 
   const { toast } = useToast();
+  const { symbol, fmt } = useCurrency();
 
   const getAuthHeaders = useCallback(() => {
     const token = localStorage.getItem('token');
@@ -304,9 +306,7 @@ export function CustomerManagement() {
         id: idx + 1,
         title: `Promo: ${o.name}`,
         description: desc,
-        promotionText: `Hi {{name}}, special on ${o.name}: now R${o.priceAfterDiscount.toFixed(
-          2
-        )} ({{discount}}% off).`,
+        promotionText: `Hi {{name}}, special on ${o.name}: now ${fmt(o.priceAfterDiscount)} ({{discount}}% off).`,
         discountPercent: o.suggestedDiscountPercent,
         targetCustomers: clusterCustomers.map((c) => c.id),
         targetCount: clusterCustomers.length,
@@ -916,9 +916,9 @@ export function CustomerManagement() {
                           <TableHead>Email</TableHead>
                           <TableHead>Phone</TableHead>
                           <TableHead>VAT Number</TableHead>
-                          <TableHead className="text-right">Total Invoiced (R)</TableHead>
+                          <TableHead className="text-right">Total Invoiced ({symbol})</TableHead>
                           <TableHead className="text-right">Purchases</TableHead>
-                          <TableHead className="text-right">Avg Order (R)</TableHead>
+                          <TableHead className="text-right">Avg Order ({symbol})</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
@@ -938,13 +938,13 @@ export function CustomerManagement() {
                               <TableCell>{customer.phone || 'N/A'}</TableCell>
                               <TableCell>{customer.vatNumber || 'N/A'}</TableCell>
                               <TableCell className="text-right">
-                                R{customer.totalInvoiced.toFixed(2)}
+                                {fmt(customer.totalInvoiced)}
                               </TableCell>
                               <TableCell className="text-right">
                                 {customer.numberOfPurchases}
                               </TableCell>
                               <TableCell className="text-right">
-                                R{customer.averageOrderValue.toFixed(2)}
+                                {fmt(customer.averageOrderValue)}
                               </TableCell>
                               <TableCell>
                                 <Badge
@@ -1108,7 +1108,7 @@ export function CustomerManagement() {
                               Avg Days Since Purchase:{' '}
                               {suggestion.clusterAnalysis.avgDaysSinceLastPurchase}
                             </div>
-                            <div>Avg Total Spent: R{suggestion.clusterAnalysis.avgTotalSpent}</div>
+                            <div>Avg Total Spent: {fmt(suggestion.clusterAnalysis.avgTotalSpent)}</div>
                             <div>
                               Purchase Frequency: {suggestion.clusterAnalysis.avgPurchaseFrequency}
                               x/month
@@ -1321,7 +1321,7 @@ export function CustomerManagement() {
             <DialogTitle>Compose Combined Campaign</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4">
+        <div className="space-y-4">
             {/* Tokens */}
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="text-muted-foreground">Insert token:</span>

@@ -15,6 +15,7 @@ import { Plus, XCircle, Loader2, ChevronLeft } from 'lucide-react';
 
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '../../AuthPage';
+import { useCurrency } from '../../contexts/CurrencyContext'; // ⬅️ NEW
 
 // Define API Base URL
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
@@ -155,6 +156,7 @@ function upsertBankBlockIntoNotes(notes: string, newBlock: string) {
 export function QuotationForm({ quotation, onClose, onSubmitSuccess }: QuotationFormProps) {
   const { toast } = useToast();
   const { isAuthenticated } = useAuth();
+  const { symbol, fmt } = useCurrency(); // ⬅️ NEW
   const token = localStorage.getItem('token');
 
   const getDefaultExpiryDate = (quotationDateString: string) => {
@@ -173,7 +175,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
     quotation_date: initialQuotationDate,
     expiry_date: getDefaultExpiryDate(initialQuotationDate),
     status: 'Draft',
-    currency: 'R',
+    currency: symbol, // ⬅️ NEW: default to context symbol
     notes: '',
     line_items: [],
   });
@@ -220,8 +222,8 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
   const [saveBankAsDefault, setSaveBankAsDefault] = useState(false);
 
   const bankPreview = useMemo(
-    () => (includeBankInNotes ? renderBankBlock(bankDetails, formData.currency) : ''),
-    [includeBankInNotes, bankDetails, formData.currency]
+    () => (includeBankInNotes ? renderBankBlock(bankDetails, symbol) : ''), // ⬅️ NEW: use context symbol
+    [includeBankInNotes, bankDetails, symbol]
   );
 
   // Save defaults
@@ -233,7 +235,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
     }
   }, [saveBankAsDefault, bankDetails]);
 
-  // Load products
+  // Load products + populate edit
   useEffect(() => {
     const fetchProducts = async () => {
       if (!isAuthenticated || !token) {
@@ -281,7 +283,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
           ? new Date(quotation.expiry_date).toISOString().split('T')[0]
           : getDefaultExpiryDate(quotation.quotation_date || initialQuotationDate),
         status: quotation.status || 'Draft',
-        currency: quotation.currency || 'R',
+        currency: quotation.currency || symbol, // ⬅️ NEW: fallback to context symbol
         notes: quotation.notes || '',
         line_items:
           quotation.line_items?.map((item: any) => ({
@@ -313,7 +315,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
         setCustomerSearchQuery(quotation.customer_name);
       }
     }
-  }, [quotation, toast, isAuthenticated, token, initialQuotationDate]);
+  }, [quotation, toast, isAuthenticated, token, initialQuotationDate, symbol]);
 
   // Search customers
   useEffect(() => {
@@ -537,7 +539,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
     // Build notes with bank block
     let finalNotes = formData.notes || '';
     if (includeBankInNotes) {
-      const block = renderBankBlock(bankDetails, formData.currency);
+      const block = renderBankBlock(bankDetails, symbol); // ⬅️ NEW: use context symbol
       finalNotes = upsertBankBlockIntoNotes(finalNotes, block);
     } else {
       // strip any existing block if user disabled it
@@ -876,7 +878,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
                 type="button"
                 variant="outline"
                 onClick={() => {
-                  const block = renderBankBlock(bankDetails, formData.currency);
+                  const block = renderBankBlock(bankDetails, symbol); // ⬅️ NEW
                   setFormData((fd) => ({ ...fd, notes: upsertBankBlockIntoNotes(fd.notes || '', block) }));
                 }}
                 disabled={!isAuthenticated || isLoading}
@@ -928,7 +930,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
                     <SelectItem value="custom-item">Custom Item</SelectItem>
                     {productsServices.map(ps => (
                       <SelectItem key={ps.id} value={ps.id}>
-                        {ps.name} ({formData.currency}{(ps.price ?? 0).toFixed(2)})
+                        {ps.name} ({fmt(ps.price ?? 0)}) {/* ⬅️ NEW */}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -998,7 +1000,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
               </div>
               <div className="flex items-center justify-end gap-2">
                 <Label className="whitespace-nowrap">
-                  Total: {formData.currency}{(item.line_total ?? 0).toFixed(2)}
+                  Total: {fmt(item.line_total ?? 0)} {/* ⬅️ NEW */}
                 </Label>
                 <Button
                   type="button"
@@ -1025,7 +1027,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
       </Card>
 
       <div className="text-right text-xl font-bold mt-4">
-        Total Quotation Amount: {formData.currency}{totalAmount.toFixed(2)}
+        Total Quotation Amount: {fmt(totalAmount)} {/* ⬅️ NEW */}
       </div>
 
       <div className="flex justify-end gap-2 mt-6">

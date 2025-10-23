@@ -11,17 +11,11 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
+import { ToastAction } from '@/components/ui/toast';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com'
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -109,47 +103,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 };
 
-// --- Define Registration Types ---
-type RegistrationType =
-  | 'PTY'
-  | 'CC'
-  | 'NPO'
-  | 'Sole Proprietorship'
-  | 'Cooperative'
-  | 'Other';
-const REGISTRATION_TYPES: RegistrationType[] = [
-  'PTY',
-  'CC',
-  'NPO',
-  'Sole Proprietorship',
-  'Cooperative',
-  'Other',
-];
-// --- End Define Registration Types ---
+/** ---------- Onboarding helpers (scoped per user) ---------- */
+const skey = (key: string, userId: string) => `${key}:${userId}`;
 
-// --- Define Titles ---
-type Title = 'Owner' | 'Director' | 'Manager' | 'Employee' | 'Other';
-const TITLES: Title[] = ['Owner', 'Director', 'Manager', 'Employee', 'Other'];
-// --- End Define Titles ---
-
-// --- Define Genders ---
-type Gender = 'Male' | 'Female' | 'Non-binary' | 'Other' | 'Prefer not to say';
-const GENDERS: Gender[] = ['Male', 'Female', 'Non-binary', 'Other', 'Prefer not to say'];
-// --- End Define Genders ---
-
-// --- Define Provinces ---
-const PROVINCES = [
-  'Eastern Cape',
-  'Free State',
-  'Gauteng',
-  'KwaZulu-Natal',
-  'Limpopo',
-  'Mpumalanga',
-  'Northern Cape',
-  'North West',
-  'Western Cape',
-];
-// --- End Define Provinces ---
+function computeProfileCompletion(
+  p: any,
+  opts: { logo?: string | null; branchCount?: number } = {}
+) {
+  const checks: Array<boolean> = [
+    !!p?.name,
+    !!p?.company,
+    !!p?.email,
+    !!p?.phone,
+    !!p?.address,
+    !!p?.city,
+    !!p?.province,
+    !!p?.country,
+    //!!p?.website || !!p?.linkedin,
+    !!p?.currency,
+    //!p?.is_vat_registered || !!p?.vat_number,
+    !!opts.logo,
+    //(opts.branchCount || 0) > 0,
+  ];
+  const done = checks.filter(Boolean).length;
+  return Math.max(0, Math.min(100, Math.round((done / checks.length) * 100)));
+}
+/** --------------------------------------------------------- */
 
 export function AuthPage() {
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
@@ -164,7 +143,7 @@ export function AuthPage() {
   const [forgotEmail, setForgotEmail] = useState('');
   // --- End Forgot Password State ---
 
-  // --- Registration State (Extended) ---
+  // --- Registration State (Simplified) ---
   const [regName, setRegName] = useState(''); // First Name
   const [regSurname, setRegSurname] = useState(''); // Last Name
   const [regEmail, setRegEmail] = useState('');
@@ -173,16 +152,6 @@ export function AuthPage() {
   const [showRegPassword, setShowRegPassword] = useState(false);
   const [showRegConfirmPassword, setShowRegConfirmPassword] = useState(false);
   const [regCompanyName, setRegCompanyName] = useState('');
-  const [regRegistrationType, setRegRegistrationType] = useState<RegistrationType | ''>('');
-  const [regCompanySize, setRegCompanySize] = useState<number | ''>('');
-  const [regTitle, setRegTitle] = useState<Title | ''>(''); // Owner/Director
-  const [regGender, setRegGender] = useState<Gender | ''>('');
-  const [regAddress, setRegAddress] = useState('');
-  const [regCity, setRegCity] = useState('');
-  const [regProvince, setRegProvince] = useState('');
-  const [regCountry, setRegCountry] = useState(''); // Default
-  const [regPostalCode, setRegPostalCode] = useState('');
-  const [regPhone, setRegPhone] = useState(''); // Optional
   // --- End Registration State ---
 
   const [isLoading, setIsLoading] = useState(false);
@@ -245,10 +214,68 @@ export function AuthPage() {
         localStorage.setItem('userName', user.name || '');
 
         login();
+
+        // basic success toast
         toast({
           title: '✅ Login Successful',
           description: `Welcome back, ${user.name || 'User'}!`,
         });
+
+        // ---------- CONDITIONAL "Go to Profile" TOAST ----------
+        const token = data.token as string;
+        const userId = user.user_id as string;
+        const THRESHOLD = 60;
+
+        // allow users to permanently dismiss the nudge
+        const dismissed = localStorage.getItem(skey('onboarding:dismiss', userId)) === '1';
+
+        // Try cached completion first
+        let completion = Number(localStorage.getItem('qx:profile:completion') || 'NaN');
+
+        if (Number.isNaN(completion)) {
+          try {
+            const [profR, logoR, brR] = await Promise.all([
+              fetch(`${API_BASE}/api/profile`, { headers: { Authorization: `Bearer ${token}` } }),
+              fetch(`${API_BASE}/logo`,        { headers: { Authorization: `Bearer ${token}` } }),
+              fetch(`${API_BASE}/api/branches`,{ headers: { Authorization: `Bearer ${token}` } }),
+            ]);
+
+            const [profile, logoData, branches] = await Promise.all([
+              profR.ok ? profR.json() : {},
+              logoR.ok ? logoR.json().catch(() => ({})) : {},
+              brR.ok ? brR.json().catch(() => []) : [],
+            ]);
+
+            completion = computeProfileCompletion(profile || {}, {
+              logo: logoData?.url || null,
+              branchCount: Array.isArray(branches) ? branches.length : 0,
+            });
+
+            // cache for other screens
+            localStorage.setItem('qx:profile:completion', String(completion));
+          } catch {
+            completion = 0; // safe fallback
+          }
+        }
+
+        if (!dismissed && completion < THRESHOLD) {
+          toast({
+            title: 'Complete your profile',
+            description: 'Finish your profile to unlock invoices, payroll and documents.',
+            action: (
+              <ToastAction
+                altText="Go"
+                onClick={() => {
+                  localStorage.setItem(skey('onboarding:shown', userId), '1');
+                  navigate('/profile-setup');
+                }}
+              >
+                Go to Profile
+              </ToastAction>
+            ),
+          });
+        }
+        // -------------------------------------------------------
 
         navigate('/');
       } else {
@@ -271,30 +298,16 @@ export function AuthPage() {
   };
   // --- End Handle Login Submit ---
 
-  // --- Handle Registration Submit ---
+  // --- Handle Registration Submit (Simplified) ---
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
-    if (
-      !regName ||
-      !regSurname ||
-      !regEmail ||
-      !regPassword ||
-      !regCompanyName ||
-      !regRegistrationType ||
-      regCompanySize === '' ||
-      !regTitle ||
-      !regGender ||
-      !regAddress ||
-      !regCity ||
-      !regProvince ||
-      !regCountry ||
-      !regPostalCode
-    ) {
+    // Only require: name, surname, email, password + confirm, company name
+    if (!regName || !regSurname || !regEmail || !regPassword || !regCompanyName) {
       toast({
         title: '⚠️ Registration Incomplete',
-        description: 'Please fill in all required fields.',
+        description: 'Please fill in First Name, Last Name, Email, Password, and Company Name.',
         variant: 'destructive',
       });
       setIsLoading(false);
@@ -314,23 +327,12 @@ export function AuthPage() {
     try {
       const endpoint = `${API_BASE}/register`;
 
+      // Minimal payload only
       const payload = {
         name: `${regName} ${regSurname}`.trim(),
         email: regEmail,
         password: regPassword,
         company: regCompanyName,
-        position: regTitle,
-        phone: regPhone || null,
-        address: regAddress,
-        city: regCity,
-        province: regProvince,
-        country: regCountry,
-        postal_code: regPostalCode,
-        // Extended fields
-        surname: regSurname,
-        registrationType: regRegistrationType,
-        companySize: regCompanySize,
-        gender: regGender,
       };
 
       const res = await fetch(endpoint, {
@@ -356,16 +358,6 @@ export function AuthPage() {
         setRegPassword('');
         setRegConfirmPassword('');
         setRegCompanyName('');
-        setRegRegistrationType('');
-        setRegCompanySize('');
-        setRegTitle('');
-        setRegGender('');
-        setRegAddress('');
-        setRegCity('');
-        setRegProvince('');
-        setRegCountry('');
-        setRegPostalCode('');
-        setRegPhone('');
       } else {
         toast({
           title: '❌ Registration Failed',
@@ -630,7 +622,7 @@ export function AuthPage() {
               )}
               {/* --- END LOGIN FORM --- */}
 
-              {/* --- REGISTRATION FORM --- */}
+              {/* --- REGISTRATION FORM (Simplified) --- */}
               {mode === 'register' && (
                 <form onSubmit={handleRegisterSubmit} className="space-y-5">
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -734,158 +726,6 @@ export function AuthPage() {
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="reg-registration-type">Registration Type *</Label>
-                      <Select
-                        value={regRegistrationType}
-                        onValueChange={(value) => setRegRegistrationType(value as RegistrationType)}
-                        required
-                      >
-                        <SelectTrigger id="reg-registration-type" className="h-11">
-                          <SelectValue placeholder="Select type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {REGISTRATION_TYPES.map((type) => (
-                            <SelectItem key={type} value={type}>
-                              {type}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="reg-company-size">Company Size (Employees) *</Label>
-                      <Input
-                        id="reg-company-size"
-                        type="number"
-                        min="1"
-                        placeholder="e.g., 10"
-                        value={regCompanySize}
-                        onChange={(e) =>
-                          setRegCompanySize(e.target.value === '' ? '' : Number(e.target.value))
-                        }
-                        required
-                        className="h-11"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="reg-title">Title *</Label>
-                      <Select value={regTitle} onValueChange={(value) => setRegTitle(value as Title)} required>
-                        <SelectTrigger id="reg-title" className="h-11">
-                          <SelectValue placeholder="Select title" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {TITLES.map((title) => (
-                            <SelectItem key={title} value={title}>
-                              {title}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="reg-gender">Gender *</Label>
-                      <Select
-                        value={regGender}
-                        onValueChange={(value) => setRegGender(value as Gender)}
-                        required
-                      >
-                        <SelectTrigger id="reg-gender" className="h-11">
-                          <SelectValue placeholder="Select gender" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {GENDERS.map((gender) => (
-                            <SelectItem key={gender} value={gender}>
-                              {gender}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="reg-phone">Contact Number</Label>
-                    <Input
-                      id="reg-phone"
-                      type="tel"
-                      placeholder="+27 12 345 6789"
-                      value={regPhone}
-                      onChange={(e) => setRegPhone(e.target.value)}
-                      className="h-11"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="reg-address">Physical Address *</Label>
-                    <Input
-                      id="reg-address"
-                      type="text"
-                      placeholder="123 Main Street"
-                      value={regAddress}
-                      onChange={(e) => setRegAddress(e.target.value)}
-                      required
-                      className="h-11"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <div className="space-y-2">
-                      <Label htmlFor="reg-city">City/Suburb *</Label>
-                      <Input
-                        id="reg-city"
-                        type="text"
-                        placeholder="Cape Town"
-                        value={regCity}
-                        onChange={(e) => setRegCity(e.target.value)}
-                        required
-                        className="h-11"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="reg-province">Province *</Label>
-                      <Select value={regProvince} onValueChange={(value) => setRegProvince(value)} required>
-                        <SelectTrigger id="reg-province" className="h-11">
-                          <SelectValue placeholder="Select province" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {PROVINCES.map((province) => (
-                            <SelectItem key={province} value={province}>
-                              {province}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="reg-postal-code">Postal Code *</Label>
-                      <Input
-                        id="reg-postal-code"
-                        type="text"
-                        placeholder="8001"
-                        value={regPostalCode}
-                        onChange={(e) => setRegPostalCode(e.target.value)}
-                        required
-                        className="h-11"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="reg-country">Country</Label>
-                    <Input
-                      id="reg-country"
-                      type="text"
-                      value={regCountry}
-                      onChange={(e) => setRegCountry(e.target.value)}
-                      className="h-11 bg-gray-100/80 text-gray-600 dark:bg-gray-800/50 dark:text-gray-300"
-                    />
-                  </div>
-
                   <Button
                     type="submit"
                     className="h-11 w-full bg-gradient-to-r from-fuchsia-600 to-indigo-600 text-white hover:from-fuchsia-700 hover:to-indigo-700"
@@ -979,6 +819,9 @@ export function AuthPage() {
     </div>
   );
 }
+
+// ❌ removed the global "force onboarding" line
+// localStorage.setItem('qx:onboarding:show', '1');
 
 export const getUserId = () => localStorage.getItem('userId');
 export const getCompanyId = () => localStorage.getItem('companyId');

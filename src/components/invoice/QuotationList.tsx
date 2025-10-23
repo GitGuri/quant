@@ -26,6 +26,7 @@ import {
   XOctagon,
   Clock,
   MoreVertical,
+  RefreshCcw,
 } from 'lucide-react';
 import {
   Dialog,
@@ -59,6 +60,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { useCurrency } from '../../contexts/CurrencyContext'; // ⬅️ NEW
 
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
@@ -106,6 +108,7 @@ interface UserProfile {
 
 export function QuotationList() {
   const { toast } = useToast();
+  const { fmt } = useCurrency(); // ⬅️ NEW
   const [quotations, setQuotations] = useState<Quotation[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [showQuotationForm, setShowQuotationForm] = useState(false);
@@ -218,7 +221,7 @@ export function QuotationList() {
     }
   }, [toast, token]);
 
-  // silent refresh: same as fetchQuotations but without flipping the big list spinner
+  // silent refresh
   const refreshQuotationsSilently = useCallback(async () => {
     if (!token) return;
     try {
@@ -414,16 +417,17 @@ export function QuotationList() {
     setEmailRecipient(quotation.customer_email || '');
     setEmailSubject(`Quotation #${quotation.quotation_number} from ${userProfile?.company || 'Your Company'}`);
     setEmailBody(
-      `Dear ${quotation.customer_name},\n\nPlease find attached your quotation (Quotation ID: #${quotation.quotation_number}).\n\nTotal amount: ${quotation.currency} ${quotation.total_amount.toFixed(
-        2
-      )}\nExpiry Date: ${quotation.expiry_date ? new Date(quotation.expiry_date).toLocaleDateString('en-ZA') : ''}\n\nThank you for your business!\n\nSincerely,\n${
-        userProfile?.company || 'Your Company'
-      }\n${userProfile?.contact_person || ''}`
+      `Dear ${quotation.customer_name},\n\n` +
+        `Please find attached your quotation (Quotation ID: #${quotation.quotation_number}).\n\n` +
+        `Total amount: ${fmt(quotation.total_amount)}\n` + // ⬅️ was: `${quotation.currency} ${quotation.total_amount.toFixed(2)}`
+        `Expiry Date: ${quotation.expiry_date ? new Date(quotation.expiry_date).toLocaleDateString('en-ZA') : ''}\n\n` +
+        `Thank you for your business!\n\nSincerely,\n` +
+        `${userProfile?.company || 'Your Company'}\n${userProfile?.contact_person || ''}`
     );
     setShowSendEmailModal(true);
   };
 
-  // ---- CONVERT TO INVOICE (per-row indicator, silent reload) ----
+  // ---- CONVERT TO INVOICE ----
   const handleConvertQuotationToInvoice = useCallback(
     async (quotation: Quotation) => {
       if (quotation.status !== 'Accepted') {
@@ -437,7 +441,6 @@ export function QuotationList() {
 
       setConvertingId(quotation.id);
       try {
-        // fetch full quotation
         const resp = await fetch(`${API_BASE_URL}/api/quotations/${quotation.id}`, {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         });
@@ -450,7 +453,6 @@ export function QuotationList() {
           throw new Error('Quotation has no line items to convert.');
         }
 
-        // new invoice number & dates
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -494,7 +496,6 @@ export function QuotationList() {
           throw new Error(err.error || 'Failed to create invoice.');
         }
 
-        // mark quotation as Invoiced (full/partial depends on backend; here partial is fine if your PUT accepts it)
         await fetch(`${API_BASE_URL}/api/quotations/${quotation.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -512,7 +513,7 @@ export function QuotationList() {
     [token, toast, refreshQuotationsSilently]
   );
 
-  // ---- STATUS UPDATE (fetch full, PUT full; auto-convert if Accepted; per-row indicator; silent refresh) ----
+  // ---- STATUS UPDATE ----
   const handleManualStatusUpdate = useCallback(
     async (quotationId: string, newStatus: Quotation['status'], showToast: boolean = true) => {
       if (!token) {
@@ -523,7 +524,6 @@ export function QuotationList() {
       setStatusUpdatingId(quotationId);
 
       try {
-        // fetch full quotation first
         const fetchResp = await fetch(`${API_BASE_URL}/api/quotations/${quotationId}`, {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         });
@@ -533,7 +533,6 @@ export function QuotationList() {
         }
         const full: Quotation = await fetchResp.json();
 
-        // complete payload with numbers cast + new status
         const payload: Quotation = {
           ...full,
           status: newStatus,
@@ -560,7 +559,6 @@ export function QuotationList() {
 
         if (showToast) toast({ title: 'Status Updated', description: `Quotation is now ${newStatus}.` });
 
-        // if accepted -> immediately convert (silent per-row spinner)
         if (newStatus === 'Accepted') {
           await handleConvertQuotationToInvoice({ ...full, status: 'Accepted' });
         } else {
@@ -583,7 +581,7 @@ export function QuotationList() {
     [token, toast, handleConvertQuotationToInvoice, refreshQuotationsSilently]
   );
 
-  // send email (kept the same, but uses silent status update)
+  // send email (uses fmt)
   const confirmSendQuotationEmail = useCallback(
     async () => {
       if (!quotationToSendEmail || !emailRecipient || !emailSubject || !emailBody) {
@@ -669,10 +667,16 @@ export function QuotationList() {
             <FileText className="h-5 w-5" />
             Quotations
           </CardTitle>
-          <Button onClick={handleNewQuotationClick}>
-            <Plus className="h-4 w-4 mr-2" />
-            New Quotation
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={fetchQuotations} title="Refresh">
+              <RefreshCcw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+            <Button onClick={handleNewQuotationClick}>
+              <Plus className="h-4 w-4 mr-2" />
+              New Quotation
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -720,12 +724,7 @@ export function QuotationList() {
                       <TableCell>{quotation.customer_name}</TableCell>
                       <TableCell>{new Date(quotation.quotation_date).toLocaleDateString('en-ZA')}</TableCell>
                       <TableCell>{quotation.expiry_date ? new Date(quotation.expiry_date).toLocaleDateString('en-ZA') : 'N/A'}</TableCell>
-                      <TableCell>
-                        R
-                        {quotation.total_amount.toLocaleString('en-ZA', {
-                          minimumFractionDigits: 2,
-                        })}
-                      </TableCell>
+                      <TableCell>{fmt(quotation.total_amount)}</TableCell> {/* ⬅️ NEW */}
                       <TableCell className="text-left">
                         <div className="flex items-center gap-2">
                           <Button variant="ghost" size="sm" onClick={() => handleViewQuotationClick(quotation)}>
@@ -858,8 +857,7 @@ export function QuotationList() {
                     </Badge>
                   </p>
                   <p>
-                    <strong>Total Amount:</strong> {selectedQuotation.currency}
-                    {selectedQuotation.total_amount.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}
+                    <strong>Total Amount:</strong> {fmt(selectedQuotation.total_amount)} {/* ⬅️ NEW */}
                   </p>
                   <p>
                     <strong>Currency:</strong> {selectedQuotation.currency}
@@ -892,9 +890,9 @@ export function QuotationList() {
                           <TableCell>{item.product_service_name || 'Custom Item'}</TableCell>
                           <TableCell>{item.description}</TableCell>
                           <TableCell>{item.quantity}</TableCell>
-                          <TableCell>R{(item.unit_price ?? 0).toFixed(2)}</TableCell>
+                          <TableCell>{fmt(item.unit_price ?? 0)}</TableCell> {/* ⬅️ NEW */}
                           <TableCell>{((item.tax_rate ?? 0) * 100).toFixed(2)}%</TableCell>
-                          <TableCell>R{(item.line_total ?? 0).toFixed(2)}</TableCell>
+                          <TableCell>{fmt(item.line_total ?? 0)}</TableCell>   {/* ⬅️ NEW */}
                         </TableRow>
                       ))}
                     </TableBody>

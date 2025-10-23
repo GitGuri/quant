@@ -23,6 +23,8 @@ import { useAuth } from '../../AuthPage';
 import dayjs from 'dayjs';
 import type { Employee } from '../../types/payroll';
 import LeaveManagement from './LeaveManagement';
+import { useCurrency } from '../../contexts/CurrencyContext'; // ⬅️ add
+
 import { LeaveSettings } from './LeaveSettings';
 const { Title } = Typography;
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
@@ -53,6 +55,9 @@ const defaultTab = canSeeEmployeeManagement ? 'employees' : 'leave';
   const getAuthHeaders = useCallback(() => {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
+
+  const { symbol, fmt } = useCurrency(); // ⬅️ add
+
 
   /** Fetch employees */
   const fetchEmployees = useCallback(async () => {
@@ -222,7 +227,12 @@ const defaultTab = canSeeEmployeeManagement ? 'employees' : 'leave';
             <Card className='text-center shadow-lg border-0 bg-purple-50'>
               <Space direction='vertical'>
                 <DollarOutlined className='text-3xl text-purple-600' />
-                <Statistic title='Total Payroll' prefix='R' value={totalPayroll.toFixed(2)} />
+                <Statistic
+  title='Total Payroll'
+  value={totalPayroll}                 // pass the raw number
+  formatter={(v) => fmt(Number(v))}    // ⬅️ currency-aware format
+/>
+
               </Space>
             </Card>
           </Col>

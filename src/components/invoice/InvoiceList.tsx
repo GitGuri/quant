@@ -61,6 +61,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { useCurrency } from '../../contexts/CurrencyContext';
 
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
 
@@ -146,6 +147,7 @@ export function InvoiceList() {
   const { toast } = useToast();
   const { isAuthenticated } = useAuth();
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const { symbol, fmt } = useCurrency();
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -827,12 +829,7 @@ export function InvoiceList() {
                       <TableCell>{invoice.customer_name}</TableCell>
                       <TableCell>{new Date(invoice.invoice_date).toLocaleDateString('en-ZA')}</TableCell>
                       <TableCell>{new Date(invoice.due_date).toLocaleDateString('en-ZA')}</TableCell>
-                      <TableCell>
-                        R
-                        {invoice.total_amount.toLocaleString('en-ZA', {
-                          minimumFractionDigits: 2,
-                        })}
-                      </TableCell>
+                      <TableCell>{fmt(invoice.total_amount)}</TableCell>
                       <TableCell className="text-left">
                         <div className="flex items-center gap-2">
                           <Button variant="ghost" size="sm" onClick={() => handleViewInvoiceClick(invoice)}>
@@ -1020,8 +1017,7 @@ export function InvoiceList() {
                     </Badge>
                   </p>
                   <p>
-                    <strong>Total Amount:</strong> {selectedInvoice.currency}
-                    {selectedInvoice.total_amount.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}
+                    <strong>Total Amount:</strong> {fmt(selectedInvoice.total_amount)}
                   </p>
                   <p>
                     <strong>Currency:</strong> {selectedInvoice.currency}
@@ -1034,19 +1030,19 @@ export function InvoiceList() {
                 <div className="rounded-md border p-3">
                   <div className="text-muted-foreground">Invoice Total</div>
                   <div className="font-semibold">
-                    {selectedInvoiceSummary ? `R ${selectedInvoiceSummary.invoice_total.toFixed(2)}` : '—'}
+                    {selectedInvoiceSummary ? fmt(selectedInvoiceSummary.invoice_total) : '—'}
                   </div>
                 </div>
                 <div className="rounded-md border p-3">
                   <div className="text-muted-foreground">Paid to Date</div>
                   <div className="font-semibold">
-                    {selectedInvoiceSummary ? `R ${selectedInvoiceSummary.total_paid.toFixed(2)}` : '—'}
+                    {selectedInvoiceSummary ? fmt(selectedInvoiceSummary.total_paid) : '—'}
                   </div>
                 </div>
                 <div className="rounded-md border p-3">
                   <div className="text-muted-foreground">Balance Due</div>
                   <div className="font-semibold">
-                    {selectedInvoiceSummary ? `R ${selectedInvoiceSummary.balance_due.toFixed(2)}` : '—'}
+                    {selectedInvoiceSummary ? fmt(selectedInvoiceSummary.balance_due) : '—'}
                   </div>
                 </div>
               </div>
@@ -1077,9 +1073,9 @@ export function InvoiceList() {
                           <TableCell>{item.product_service_name || 'Custom Item'}</TableCell>
                           <TableCell>{item.description}</TableCell>
                           <TableCell>{item.quantity}</TableCell>
-                          <TableCell>R{(item.unit_price ?? 0).toFixed(2)}</TableCell>
+                          <TableCell>{fmt(item.unit_price ?? 0)}</TableCell>
                           <TableCell>{((item.tax_rate ?? 0) * 100).toFixed(2)}%</TableCell>
-                          <TableCell>R{(item.line_total ?? 0).toFixed(2)}</TableCell>
+                          <TableCell>{fmt(item.line_total ?? 0)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -1213,15 +1209,15 @@ export function InvoiceList() {
               <div className="grid grid-cols-3 gap-3 text-sm">
                 <div className="rounded-md border p-3">
                   <div className="text-muted-foreground">Invoice Total</div>
-                  <div className="font-semibold">R {paySummary.invoice_total.toFixed(2)}</div>
+                  <div className="font-semibold">{fmt(paySummary.invoice_total)}</div>
                 </div>
                 <div className="rounded-md border p-3">
                   <div className="text-muted-foreground">Total Paid</div>
-                  <div className="font-semibold">R {paySummary.total_paid.toFixed(2)}</div>
+                  <div className="font-semibold">{fmt(paySummary.total_paid)}</div>
                 </div>
                 <div className="rounded-md border p-3">
                   <div className="text-muted-foreground">Balance Due</div>
-                  <div className="font-semibold">R {paySummary.balance_due.toFixed(2)}</div>
+                  <div className="font-semibold">{fmt(paySummary.balance_due)}</div>
                 </div>
               </div>
             ) : (
@@ -1299,15 +1295,15 @@ export function InvoiceList() {
             <div className="grid grid-cols-3 gap-3 text-sm mb-4">
               <div className="rounded-md border p-3">
                 <div className="text-muted-foreground">Invoice Total</div>
-                <div className="font-semibold">R {historySummary.invoice_total.toFixed(2)}</div>
+                <div className="font-semibold">{fmt(historySummary.invoice_total)}</div>
               </div>
               <div className="rounded-md border p-3">
                 <div className="text-muted-foreground">Total Paid</div>
-                <div className="font-semibold">R {historySummary.total_paid.toFixed(2)}</div>
+                <div className="font-semibold">{fmt(historySummary.total_paid)}</div>
               </div>
               <div className="rounded-md border p-3">
                 <div className="text-muted-foreground">Balance Due</div>
-                <div className="font-semibold">R {historySummary.balance_due.toFixed(2)}</div>
+                <div className="font-semibold">{fmt(historySummary.balance_due)}</div>
               </div>
             </div>
           ) : (
@@ -1352,7 +1348,7 @@ export function InvoiceList() {
                   historyRows.map((p) => (
                     <TableRow key={p.id}>
                       <TableCell>{new Date(p.payment_date).toLocaleDateString('en-ZA')}</TableCell>
-                      <TableCell className="text-right">R {Number(p.amount_paid).toFixed(2)}</TableCell>
+                      <TableCell className="text-right">{fmt(Number(p.amount_paid))}</TableCell>
                       <TableCell>{p.notes || '—'}</TableCell>
                       <TableCell className="text-right">
                         <Button variant="ghost" size="sm" onClick={() => reversePayment(p.id)} disabled={reversingId === p.id}>

@@ -29,6 +29,7 @@ import ResetPassword from '@/pages/ResetPassword';
 // ✅ Unified Auth Page (Login + Register)
 import { AuthPage, AuthProvider, useAuth } from './AuthPage';
 import { Header } from './components/layout/Header';
+import { CurrencyProvider } from './contexts/CurrencyContext';
 
 // NEW: Import POS sub-pages from the recommended structure
 import POSScreen from './pages/POS';
@@ -94,7 +95,9 @@ const Unauthorized = () => (
     <div className="min-h-screen flex w-full">
       {isAuthenticated && <AppSidebar />}
       <SidebarInset className="flex-1">
+
         <FinancialsProvider>
+
           <Routes>
             {/* ✅ Unified Login/Register Page */}
             <Route path="/login" element={<AuthPage />} />
@@ -150,7 +153,9 @@ const App = () => (
     <BrowserRouter>
       <AuthProvider>
         <SidebarProvider>
+          <CurrencyProvider>
           <AppContent />
+          </CurrencyProvider>
         </SidebarProvider>
       </AuthProvider>
     </BrowserRouter>

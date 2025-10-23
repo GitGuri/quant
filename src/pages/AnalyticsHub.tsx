@@ -55,13 +55,7 @@ const DASHBOARDS: Record<
     icon: <PieChartOutlined />,
     chartIds: ['packed-bubble-ltv'],
   },
-  products: {
-    label: 'Products',
-    description: 'Product relationships & motion',
-    color: 'purple',
-    icon: <LineChartOutlined />,
-    chartIds: ['network-products-types'],
-  },
+
 };
 
 const AnalyticsHub = () => {
