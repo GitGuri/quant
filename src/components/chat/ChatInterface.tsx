@@ -9,8 +9,22 @@ import { Label } from '@/components/ui/label'
 import { CalendarIcon, Bot, User, Trash2, Download, Upload as UploadIcon, Send, SlidersHorizontal } from 'lucide-react'
 import { motion } from 'framer-motion'
 
+// NEW: recharts
+import {
+  ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RTooltip, Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  LineChart, Line
+} from 'recharts'
+
 type DatasetKey = 'customers' | 'products' | 'sales' | 'invoices' | 'suppliers' | 'ledger' | 'custom'
-type ModeKey = 'chat' | 'report' | 'marketing' | 'bplan' | 'notify'
+type ModeKey = 'chat' | 'report' | 'marketing' | 'bplan' | 'notify' | 'auto_analyze'
+
+// NEW: shape that /ai/auto-analyze returns
+type AutoChart = {
+  key: string
+  chart_type: 'pie' | 'bar' | 'line'
+  data: any[]
+}
 
 interface Message {
   id: string
@@ -19,12 +33,16 @@ interface Message {
   timestamp: string
   isHtml?: boolean
   isImage?: boolean
+  // NEW: payload for structured results (charts/insights)
+  payload?: {
+    charts?: AutoChart[]
+    insights?: string
+  }
 }
 
 type Filters = {
   dateFrom?: string
   dateTo?: string
-  // you can add branchId/status/limit later; backend already supports them
 }
 
 const API_BASE = 'https://quantnow-sa1e.onrender.com'
@@ -45,7 +63,11 @@ const MODE_OPTIONS: { value: ModeKey; label: string }[] = [
   { value: 'marketing', label: 'Marketing' },
   { value: 'bplan', label: 'Business Plan' },
   { value: 'notify', label: 'Notify' },
+  { value: 'auto_analyze', label: 'Auto Analyze' }, // NEW
 ]
+
+// NEW: small color palette for charts
+const COLORS = ['#6366F1', '#22C55E', '#F59E0B', '#EF4444', '#06B6D4', '#A78BFA', '#84CC16', '#F97316', '#14B8A6', '#E11D48']
 
 export default function ChatInterface() {
   const currentUserId =
@@ -126,11 +148,25 @@ export default function ChatInterface() {
     m: Omit<Message, 'id' | 'timestamp' | 'isHtml' | 'isImage'> & { content: string }
   ) => {
     const trimmed = m.content?.trim?.() || ''
-    const isHtml = /^<(?!!)/.test(trimmed) // starts with "<" but not "<!"
+    const isHtml = /^<(?!!)/.test(trimmed)
     const isImage = trimmed.startsWith('data:image/')
     setMessages(prev => [
       ...prev,
       { ...m, id: nowId(), timestamp: new Date().toISOString(), isHtml, isImage },
+    ])
+  }
+
+  const pushAutoMessage = (charts: AutoChart[], insights?: string) => { // NEW
+    const payload = { charts, insights }
+    setMessages(prev => [
+      ...prev,
+      {
+        id: nowId(),
+        sender: 'bot',
+        timestamp: new Date().toISOString(),
+        content: '', // we render via payload
+        payload
+      }
     ])
   }
 
@@ -144,7 +180,7 @@ export default function ChatInterface() {
     setIsTyping(true)
 
     try {
-      // Switch by mode: /ai/chat vs /ai/report|/ai/marketing|/ai/bplan|/ai/notify
+      // Route by mode
       let endpoint = '/ai/chat'
       let body: any = {}
 
@@ -152,7 +188,7 @@ export default function ChatInterface() {
         body = { question: qRaw, dataset, filters }
       } else if (mode === 'report') {
         endpoint = '/ai/report'
-        body = { dataset, filters } // server builds json_data
+        body = { dataset, filters }
       } else if (mode === 'marketing') {
         endpoint = '/ai/marketing'
         body = { dataset, filters }
@@ -161,6 +197,9 @@ export default function ChatInterface() {
         body = { dataset, filters }
       } else if (mode === 'notify') {
         endpoint = '/ai/notify'
+        body = { dataset, filters }
+      } else if (mode === 'auto_analyze') {
+        endpoint = '/ai/auto-analyze'
         body = { dataset, filters }
       }
 
@@ -177,16 +216,27 @@ export default function ChatInterface() {
 
       const data = await r.json()
 
-      // Normalize different shapes from your endpoints
+      // NEW: render charts when Auto Analyze mode
+      if (mode === 'auto_analyze') {
+        const charts: AutoChart[] = Array.isArray(data?.charts) ? data.charts : []
+        const insights: string | undefined = typeof data?.insights === 'string' ? data.insights : undefined
+
+        if (!charts.length && !insights) {
+          pushMessage({ sender: 'bot', content: 'No charts or insights returned.' })
+        } else {
+          pushAutoMessage(charts, insights)
+        }
+        return
+      }
+
+      // Other modes: normalize to string or <pre>
       const answer =
         data.answer ||
         data.report ||
         data.plan ||
         data.insights ||
         data?.kpis ||
-        data?.ok === true
-          ? (data.answer || data.report || data.plan || data.insights || 'Done.')
-          : data?.error || 'No answer returned.'
+        (data?.ok === true ? (data.answer || data.report || data.plan || data.insights || 'Done.') : data?.error || 'No answer returned.')
 
       pushMessage({
         sender: 'bot',
@@ -198,9 +248,7 @@ export default function ChatInterface() {
     } catch (err: any) {
       pushMessage({
         sender: 'bot',
-        content: `<div style="color:#b91c1c"><strong>Oops:</strong> ${
-          err?.message || 'Failed to contact AI service.'
-        }</div>`,
+        content: `<div style="color:#b91c1c"><strong>Oops:</strong> ${escapeHtml(err?.message || 'Failed to contact AI service.')}</div>`,
       })
     } finally {
       setIsTyping(false)
@@ -265,7 +313,7 @@ export default function ChatInterface() {
                 value={mode}
                 onValueChange={(v: ModeKey) => setMode(v)}
               >
-                <SelectTrigger className="w-[150px] h-8">
+                <SelectTrigger className="w-[170px] h-8">
                   <SelectValue placeholder="Mode" />
                 </SelectTrigger>
                 <SelectContent>
@@ -404,8 +452,11 @@ export default function ChatInterface() {
                     ) : (
                       <User className="h-4 w-4 mt-1 flex-shrink-0" />
                     )}
-                    <div>
-                      {m.isImage ? (
+                    <div className="min-w-[220px]">
+                      {/* NEW: payload renderer for Auto Analyze */}
+                      {m.payload?.charts ? (
+                        <AutoAnalyzeBlock charts={m.payload.charts} insights={m.payload.insights} />
+                      ) : m.isImage ? (
                         <img src={m.content} alt="AI output" className="max-w-full rounded" />
                       ) : m.isHtml ? (
                         <div
@@ -454,7 +505,9 @@ export default function ChatInterface() {
               placeholder={
                 mode === 'chat'
                   ? `Ask a question about ${cap(dataset)}…`
-                  : `Optional note… (${cap(mode)} runs on selected dataset)`
+                  : mode === 'auto_analyze'
+                    ? `Optional note… (Auto Analyze runs on ${cap(dataset)})`
+                    : `Optional note… (${cap(mode)} runs on selected dataset)`
               }
               value={inputMessage}
               onChange={(e) => setInputMessage(e.target.value)}
@@ -499,6 +552,7 @@ function getWelcome(): Message[] {
 - **Marketing** — Drafts campaign ideas/copy using your data. Ignores the prompt (note optional).
 - **Business Plan** — Outlines a high-level plan from your data. Ignores the prompt (note optional).
 - **Notify** — Creates alerts/notifications based on the dataset. Ignores the prompt (note optional).
+- **Auto Analyze** — Produces **charts + insights** from the selected dataset via the AI server's /auto-analyze. Ignores the prompt.
 
 **Filters**
 Click the **sliders** icon to set a **From/To** date. Leave blank to use all available dates.
@@ -511,4 +565,140 @@ Click the **sliders** icon to set a **From/To** date. Leave blank to use all ava
 You’re set—choose a dataset and mode to begin.`,
     },
   ];
+}
+
+// ===== NEW: Auto Analyze visual block (charts + insights) =====
+function AutoAnalyzeBlock({ charts, insights }: { charts: AutoChart[], insights?: string }) {
+  return (
+    <div className="space-y-4">
+      {charts.map((c, idx) => (
+        <div key={idx} className="bg-background/40 border rounded-xl p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-semibold">{friendlyTitle(c.key)}</div>
+            <div className="text-[11px] text-muted-foreground">{c.chart_type}</div>
+          </div>
+          <div className="h-[220px] w-[68vw] max-w-[720px] min-w-[280px]">
+            <ChartRenderer chart={c} />
+          </div>
+        </div>
+      ))}
+
+      {insights && (
+        <div className="bg-background/40 border rounded-xl p-3">
+          <div className="text-sm font-semibold mb-2">Executive Summary</div>
+          <div className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: mdToHtml(insights) }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ===== NEW: ChartRenderer maps pie/bar/line to Recharts components =====
+function ChartRenderer({ chart }: { chart: AutoChart }) {
+  const { chart_type, data } = chart
+
+  if (!Array.isArray(data) || data.length === 0) {
+    return <div className="text-xs text-muted-foreground">No data</div>
+  }
+
+  if (chart_type === 'pie') {
+    // Heuristics for label/value keys
+    const labelKey = guessKey(data[0], ['status','payment_type','name','category','label','key'])
+    const valueKey = guessKey(data[0], ['value','total','total_amount','total_spent','count'])
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey={valueKey}
+            nameKey={labelKey}
+            cx="50%"
+            cy="50%"
+            outerRadius="80%"
+            isAnimationActive
+          >
+            {data.map((_entry, i) => (
+              <Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />
+            ))}
+          </Pie>
+          <RTooltip />
+          <Legend />
+        </PieChart>
+      </ResponsiveContainer>
+    )
+  }
+
+  if (chart_type === 'bar') {
+    // For bars, try to find x and y keys
+    const xKey = guessKey(data[0], ['name','customer','customer_name','status','payment_type','category','date','label','key'])
+    const yKey = guessKey(data[0], ['value','total','total_amount','total_spent','count'])
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={xKey} />
+          <YAxis />
+          <RTooltip />
+          <Legend />
+          <Bar dataKey={yKey} fill={COLORS[0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    )
+  }
+
+  if (chart_type === 'line') {
+    // Dates on X, count/total on Y
+    const xKey = guessKey(data[0], ['date','month','period','label','key'])
+    const yKey = guessKey(data[0], ['count','value','total','total_amount','total_spent'])
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={xKey} />
+          <YAxis />
+          <RTooltip />
+          <Legend />
+          <Line type="monotone" dataKey={yKey} stroke={COLORS[0]} strokeWidth={2} dot />
+        </LineChart>
+      </ResponsiveContainer>
+    )
+  }
+
+  // Fallback: show raw
+  return (
+    <pre className="whitespace-pre-wrap text-xs bg-muted/30 rounded p-2 h-full overflow-auto">
+      {JSON.stringify(data, null, 2)}
+    </pre>
+  )
+}
+
+// ===== NEW: helpers for charts
+function guessKey(obj: any, prefs: string[]): string {
+  for (const k of prefs) if (k in obj) return k
+  // fallback to the first numeric (for value) or first string (for label)
+  const entries = Object.keys(obj)
+  const num = entries.find(k => typeof obj[k] === 'number')
+  const str = entries.find(k => typeof obj[k] === 'string')
+  return num || str || entries[0]
+}
+
+function friendlyTitle(key: string) {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (m) => m.toUpperCase())
+}
+
+/** super-light markdown to HTML (only headers, lists, italics, bold, code fences) */
+function mdToHtml(md: string): string {
+  let html = md
+  html = html.replace(/```([\s\S]*?)```/g, (_m, code) => `<pre class="whitespace-pre-wrap text-xs bg-muted/30 rounded p-2">${escapeHtml(String(code))}</pre>`)
+  html = html.replace(/^### (.*)$/gm, '<h3>$1</h3>')
+  html = html.replace(/^## (.*)$/gm, '<h2>$1</h2>')
+  html = html.replace(/^# (.*)$/gm, '<h1>$1</h1>')
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
+  html = html.replace(/^\s*-\s+(.*)$/gm, '<li>$1</li>')
+  html = html.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')
+  html = html.replace(/\n/g, '<br/>')
+  return html
 }

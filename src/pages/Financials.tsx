@@ -673,43 +673,60 @@ lines.push({
   }, []);
 
   // --- Cashflow (memoized) ---
-  const normalizeCashflow = useCallback((groupedSections: ApiCashFlowGrouped | undefined) => {
-    const sections: { category: string; items: { item: string; amount: number }[]; total: number; showSubtotal: boolean }[] = [];
-    if (!groupedSections || typeof groupedSections !== 'object') return sections;
+// --- Cashflow (memoized) ---
+const normalizeCashflow = useCallback((groupedSections: ApiCashFlowGrouped | undefined) => {
+  const sections: {
+    category: string;
+    items: { item: string; amount: number }[];
+    total: number;
+    showSubtotal: boolean;
+  }[] = [];
+  if (!groupedSections || typeof groupedSections !== 'object') return sections;
 
-    const categories = ['operating', 'investing', 'financing'] as const;
-    let netChange = 0;
+  const isServerTotal = (label: string) =>
+    /^net\s+cash\s+(from|used in)\s+.*activities$/i.test(label.trim());
 
-    categories.forEach(cat => {
-      const itemsRaw = groupedSections[cat];
-      if (Array.isArray(itemsRaw)) {
-        const items = itemsRaw
-          .map(i => ({ item: i.line, amount: num(i.amount) }))
-          .filter(i => nonZero(i.amount));
+  const categories = ['operating', 'investing', 'financing'] as const;
+  let netChange = 0;
 
-        const total = items.reduce((sum, item) => sum + item.amount, 0);
-        netChange += total;
+  categories.forEach(cat => {
+    const itemsRaw = groupedSections[cat];
+    if (!Array.isArray(itemsRaw)) return;
 
-        if (items.length > 0 || nonZero(total)) {
-          sections.push({
-            category: `${cat.charAt(0).toUpperCase() + cat.slice(1)} Activities`,
-            items,
-            total,
-            showSubtotal: true
-          });
-        }
-      }
-    });
+    // 1) Separate server subtotal (if any)
+    const serverTotalRow = itemsRaw.find(r => isServerTotal(r.line));
+    const serverTotal = serverTotalRow ? num(serverTotalRow.amount) : null;
 
-    sections.push({
-      category: 'Net Increase / (Decrease) in Cash',
-      items: [],
-      total: netChange,
-      showSubtotal: false
-    });
+    // 2) Keep only detail rows (strip the server subtotal so we don't render it again)
+    const items = itemsRaw
+      .filter(r => !isServerTotal(r.line))
+      .map(r => ({ item: r.line, amount: num(r.amount) }))
+      .filter(r => nonZero(r.amount));
 
-    return sections;
-  }, []);
+    // 3) Decide which total to use: server's if present, otherwise sum of details
+    const total = serverTotal != null ? serverTotal : items.reduce((s, it) => s + it.amount, 0);
+    netChange += total;
+
+    if (items.length > 0 || nonZero(total)) {
+      sections.push({
+        category: `${cat.charAt(0).toUpperCase() + cat.slice(1)} Activities`,
+        items,
+        total,
+        showSubtotal: true
+      });
+    }
+  });
+
+  sections.push({
+    category: 'Net Increase / (Decrease) in Cash',
+    items: [],
+    total: netChange,
+    showSubtotal: false
+  });
+
+  return sections;
+}, []);
+
 
   // ======= GENERAL DATA FETCH =======
   const { isAuthenticated } = useAuth(); // keep after hooks okay
@@ -1185,11 +1202,19 @@ if (type === 'income-statement') {
 
 const handleDownloadPdf = async () => {
   if (!token) {
-    toast({ title: "Authentication Required", description: "Please log in to download financial documents.", variant: "destructive" });
+    toast({
+      title: "Authentication Required",
+      description: "Please log in to download financial documents.",
+      variant: "destructive",
+    });
     return;
   }
   if (!selectedDocumentType || !fromDate || !toDate) {
-    toast({ title: "Missing Information", description: "Please select a document type and valid dates.", variant: "destructive" });
+    toast({
+      title: "Missing Information",
+      description: "Please select a document type and valid dates.",
+      variant: "destructive",
+    });
     return;
   }
   try {
@@ -1197,17 +1222,42 @@ const handleDownloadPdf = async () => {
       documentType: selectedDocumentType,
       startDate: fromDate,
       endDate: toDate,
-      breakdown,                      // "aggregate" | "monthly"
-      compare: compareMode,           // "none" | "prev-period" | "prev-year"
+      breakdown,            // "aggregate" | "monthly"
+      compare: compareMode, // "none" | "prev-period" | "prev-year"
     });
     const resp = await fetch(`${API_BASE_URL}/generate-financial-document?${qs}`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${token}` },
     });
+
+    // === NEW: plan limit handling with Upgrade button (matches Transactions.tsx style) ===
+    if (resp.status === 402) {
+      const data = await resp.json().catch(() => null);
+      if (data?.code === 'plan_limit_reached') {
+        const used  = Number(data.used ?? 0);
+        const limit = Number(data.limit ?? 0);
+        toast({
+          variant: 'destructive',
+          title: 'Monthly limit reached',
+          description: `You've used ${used}/${limit} financial document downloads this month.`,
+          action: (
+            <Button size="sm" onClick={() => window.open('/pricing','_blank')}>
+              Upgrade
+            </Button>
+          ),
+        });
+        return;
+      }
+      const text = await resp.text().catch(() => '');
+      throw new Error(`402 Payment Required. Details: ${text.substring(0,200)}`);
+    }
+
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(`Download failed: ${resp.status} ${resp.statusText}. Details: ${text.substring(0, 200)}`);
     }
+
+    // success flow unchanged
     const cd = resp.headers.get('Content-Disposition') || '';
     const match = /filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i.exec(cd);
     const suffix =
@@ -1218,12 +1268,21 @@ const handleDownloadPdf = async () => {
     const filename = decodeURIComponent(match?.[1] || match?.[2] || fallback);
     const blob = await resp.blob();
     openBlobInNewTab(blob, filename);
-    toast({ title: "Download ready", description: `Your ${selectedDocumentType.replace(/-/g, ' ')} opened in a new tab.` });
+    toast({
+      title: "Download ready",
+      description: `Your ${selectedDocumentType.replace(/-/g, ' ')} opened in a new tab.`,
+    });
   } catch (err: any) {
     console.error("Error downloading PDF:", err);
-    toast({ title: "Download Failed", description: err?.message || "There was an error generating the report. Please try again.", variant: "destructive" });
+    toast({
+      title: "Download Failed",
+      description: err?.message || "There was an error generating the report. Please try again.",
+      variant: "destructive",
+    });
   }
 };
+
+
 
 
   const handleDownloadCsv = () => {
