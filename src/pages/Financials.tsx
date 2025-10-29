@@ -554,46 +554,57 @@ lines.push({
       };
     }
 
-    const openingEquity = num(response.equityBreakdown?.opening ?? response.openingEquity);
-    const periodProfit = num(response.equityBreakdown?.periodProfit ?? response.netProfitLoss);
-    const priorRetained = num(response.equityBreakdown?.priorRetained ?? 0);
-    const sinceInception = num(response.equityBreakdown?.sinceInception ?? 0);
-    const equityAccounts = num(response.equityBreakdown?.equityAccounts ?? response.closingEquity ?? 0);
-    const otherEquityMovements = num(response.otherEquityMovements ?? 0);
+const openingEquity = num(response.equityBreakdown?.opening ?? response.openingEquity);
+const periodProfit  = num(response.equityBreakdown?.periodProfit ?? response.netProfitLoss);
+const priorRetained = num(response.equityBreakdown?.priorRetained ?? 0);
+const sinceInception = num(response.equityBreakdown?.sinceInception ?? 0);
+const equityAccounts = num(response.equityBreakdown?.equityAccounts ?? response.closingEquity ?? 0);
+const otherEquityMovements = num(response.otherEquityMovements ?? 0);
 
-    const currentAssets = num(response.assets?.current ?? 0);
-    const ppe = response.non_current_assets_detail;
-    const nonCurrentFromDetail = Array.isArray(ppe?.rows)
-      ? ppe!.rows.reduce((sum, r) => sum + num(r.net_book_value), 0)
-      : 0;
-    const nonCurrentFallback = num(response.assets?.non_current ?? 0);
-    const nonCurrentAssets = nonCurrentFromDetail || nonCurrentFallback;
+// ✅ Prefer detail totals for CURRENT ASSETS
+const cad = response.current_assets_detail;
+const currentFromDetail = num(cad?.total ?? 0);
+const currentFromSections = num(response.assets?.current ?? 0);
+const currentAssets = (currentFromDetail || currentFromSections);
 
-    const currentLiabs = num(response.liabilities?.current ?? 0);
-    const nonCurrentLiabs = num(response.liabilities?.non_current ?? 0);
+// ✅ Prefer PPE detail for NON-CURRENT ASSETS (fallback to section)
+const ppe = response.non_current_assets_detail;
+const nonCurrentFromDetail = Array.isArray(ppe?.rows)
+  ? ppe!.rows.reduce((sum, r) => sum + num(r.net_book_value), 0)
+  : 0;
+const nonCurrentFallback = num(response.assets?.non_current ?? 0);
+const nonCurrentAssets = (nonCurrentFromDetail || nonCurrentFallback);
 
-    const displayTotalAssets = currentAssets + nonCurrentAssets;
-    const displayTotalLiabs = currentLiabs + nonCurrentLiabs;
+// Liabilities
+const currentLiabs    = num(response.liabilities?.current ?? 0);
+const nonCurrentLiabs = num(response.liabilities?.non_current ?? 0);
 
-    const equityComputed =
-      num(response.control?.effective?.equityComputed) ||
-      num(response.equityBreakdown?.totalComputed) ||
-      (equityAccounts + sinceInception) ||
-      (openingEquity + periodProfit + otherEquityMovements);
+// Totals for display
+const displayTotalAssets = currentAssets + nonCurrentAssets;
+const displayTotalLiabs  = currentLiabs + nonCurrentLiabs;
 
-    const displayLiabPlusEquity = displayTotalLiabs + equityComputed;
+// Equity (effective)
+const equityComputed =
+  num(response.control?.effective?.equityComputed) ||
+  num(response.equityBreakdown?.totalComputed) ||
+  (equityAccounts + sinceInception) ||
+  (openingEquity + periodProfit + otherEquityMovements);
 
-    const controlAssetsTotal = num(response.control?.assetsTotal);
-    const controlLiabPlusEquityEff = num(response.control?.effective?.liabPlusEquityComputed);
-    const controlDiffEff = num(response.control?.effective?.diffComputed);
+const displayLiabPlusEquity = displayTotalLiabs + equityComputed;
 
-    const totalAssetsFinal = controlAssetsTotal || displayTotalAssets;
-    const totalEquityAndLiabsFinal = controlLiabPlusEquityEff || displayLiabPlusEquity;
-    const diffFinal = Number((totalAssetsFinal - totalEquityAndLiabsFinal).toFixed(2));
+// GL control (if present, use for the equality check box)
+const controlAssetsTotal         = num(response.control?.assetsTotal);
+const controlLiabPlusEquityEff   = num(response.control?.effective?.liabPlusEquityComputed);
+const controlDiffEff             = num(response.control?.effective?.diffComputed);
+
+const totalAssetsFinal           = controlAssetsTotal || displayTotalAssets;
+const totalEquityAndLiabsFinal   = controlLiabPlusEquityEff || displayLiabPlusEquity;
+const diffFinal                  = Number((totalAssetsFinal - totalEquityAndLiabsFinal).toFixed(2));
+
 
     // ----- Build asset lines -----
     assets.push({ item: 'Current Assets', amount: 0, isSubheader: true });
-    const cad = response.current_assets_detail;
+    //const cad = response.current_assets_detail;
     if (cad && Array.isArray(cad.rows) && cad.rows.length > 0) {
       cad.rows.filter(r => nonZero(r.amount)).forEach(r => {
         assets.push({ item: `  ${r.label}`, amount: r.amount });

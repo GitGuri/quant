@@ -1,4 +1,3 @@
-// src/components/layout/AppSidebar.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate, NavLink } from 'react-router-dom';
 import {
@@ -12,7 +11,7 @@ import {
   SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarFooter,
   SidebarSeparator, useSidebar,
 } from '@/components/ui/sidebar';
-import { motion } from 'framer-motion';
+import { motion } from 'framer-motion'; // Framer Motion is already imported
 import { MoneyCollectFilled } from '@ant-design/icons';
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/AuthPage';
@@ -23,7 +22,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 const NONE = '__none__';
 
 // ---------- Nav data ----------
@@ -69,9 +68,80 @@ const setupItems: NavigationItem[] = [
 ];
 const zororoItems: NavigationItem[] = [
   { title: 'Register Person', url: '/agent-signup', icon: UserPlus, allowedRoles: ['agent', 'super-agent', 'admin', 'user'] },
-  { title: 'My Dashboard', url: '/agent-dashboard', icon: UserCheck, allowedRoles: ['agent',  'admin', 'user'] },
+  { title: 'My Dashboard', url: '/agent-dashboard', icon: UserCheck, allowedRoles: ['agent', 'admin', 'user'] },
   { title: 'Agents Overview', url: '/super-agent-dashboard', icon: Users2, allowedRoles: ['super-agent', 'admin', 'user']},
 ];
+
+// ----------------------------------------------------------------------
+// ACTIVE RAIL ANIMATION COMPONENT (NEW)
+// ----------------------------------------------------------------------
+const ActiveRail: React.FC<{ currentPath: string; sidebarContentRef: React.RefObject<HTMLDivElement> }> = ({ currentPath, sidebarContentRef }) => {
+  const { state } = useSidebar();
+  const [railTop, setRailTop] = useState<number | null>(null);
+  const [railHeight, setRailHeight] = useState<number | null>(null);
+
+  // Hook to calculate the position of the active link
+  useEffect(() => {
+    const recalculatePosition = () => {
+        if (!sidebarContentRef.current) return;
+        
+        // Find the active NavLink element (aria-current="page" is automatically added by NavLink)
+        const activeLink = sidebarContentRef.current.querySelector(
+          `a[href="${currentPath}"][aria-current="page"]`
+        );
+
+        if (activeLink) {
+          // Get the position of the active link relative to the sidebar content
+          const contentRect = sidebarContentRef.current.getBoundingClientRect();
+          const linkRect = activeLink.getBoundingClientRect();
+
+          // Calculate the 'top' position relative to the scrollable container
+          // Adjustments (+4, -8) are to visually center the rail inside the link item's padding
+          setRailTop(linkRect.top - contentRect.top + sidebarContentRef.current.scrollTop + 4); 
+          setRailHeight(linkRect.height - 8); 
+        } else {
+          setRailTop(null);
+          setRailHeight(null);
+        }
+    };
+
+    // 1. Initial calculation and when path changes
+    recalculatePosition();
+
+    // 2. Recalculate when the sidebar expands/collapses (after transition)
+    const handler = setTimeout(recalculatePosition, 300);
+
+    // 3. Recalculate on window resize (to handle responsive layout changes)
+    window.addEventListener('resize', recalculatePosition);
+
+    return () => {
+      clearTimeout(handler);
+      window.removeEventListener('resize', recalculatePosition);
+    };
+
+  }, [currentPath, state, sidebarContentRef]); // Depend on path and sidebar state
+
+  // Use the extracted railTop/railHeight states to animate the rail
+  return railTop !== null && railHeight !== null ? (
+    <motion.div
+      initial={false}
+      animate={{
+        y: railTop,
+        height: railHeight,
+        opacity: 1,
+      }}
+      transition={{ type: 'spring', stiffness: 350, damping: 30 }}
+      // Tailwind classes for the visual style
+      className='absolute left-0 top-0 w-1 rounded-r-sm bg-blue-600 z-10'
+      style={{
+        // Set initial state before the animation
+        opacity: 0,
+        height: 0,
+      }}
+    />
+  ) : null;
+};
+// ----------------------------------------------------------------------
 
 export function AppSidebar() {
   const { state } = useSidebar();
@@ -81,124 +151,119 @@ export function AppSidebar() {
   const { logout, userName, userRoles } = useAuth();
   const currentPath = location.pathname;
 
+  // Ref for the scrollable SidebarContent container
+  const sidebarContentRef = useRef<HTMLDivElement>(null); 
+
   const [isPosSubMenuOpen, setIsPosSubMenuOpen] = useState(false);
   const [isPosAdminSubMenuOpen, setIsPosAdminSubMenuOpen] = useState(false);
-  // ---------- Profile completion progress ----------
-// ---------- Profile completion (ignores branches, VAT, LinkedIn, Website) ----------
-const [profileCompletion, setProfileCompletion] = useState<number>(0);
+  // ---------- Profile completion (ignores branches, VAT, LinkedIn, Website) ----------
+  const [profileCompletion, setProfileCompletion] = useState<number>(0);
 
-useEffect(() => {
-  (async () => {
-    try {
-      const token = localStorage.getItem('token');
-      if (!token) return;
+  useEffect(() => {
+    (async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) return;
 
-      // Fetch profile + logo in parallel
-      const [profR, logoR] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/profile`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${API_BASE_URL}/logo`, { headers: { Authorization: `Bearer ${token}` } }),
-      ]);
+        // Fetch profile + logo in parallel
+        const [profR, logoR] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/profile`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API_BASE_URL}/logo`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
 
-      const profile = profR.ok ? await profR.json() : {};
-      const logoData = logoR.ok ? await logoR.json().catch(() => ({})) : {};
+        const profile = profR.ok ? await profR.json() : {};
+        const logoData = logoR.ok ? await logoR.json().catch(() => ({})) : {};
 
-      // Count only essential fields (NO: branches, VAT, website, LinkedIn)
-      const checks = [
-        !!profile?.name,
-        !!profile?.company,
-        !!profile?.email,
-        !!profile?.phone,
-        !!profile?.address,
-        !!profile?.city,
-        !!profile?.province,
-        !!profile?.country,
-        !!logoData?.url, // company logo
-      ];
+        // Count only essential fields
+        const checks = [
+          !!profile?.name,
+          !!profile?.company,
+          !!profile?.email,
+          !!profile?.phone,
+          !!profile?.address,
+          !!profile?.city,
+          !!profile?.province,
+          !!profile?.country,
+          !!logoData?.url,
+        ];
 
-      const done = checks.filter(Boolean).length;
-      const percent = Math.round((done / checks.length) * 100);
-      setProfileCompletion(percent);
-      localStorage.setItem('qx:profile:completion', String(percent));
-    } catch {
-      // leave as 0 if something fails
-    }
-  })();
-}, []);
+        const done = checks.filter(Boolean).length;
+        const percent = Math.round((done / checks.length) * 100);
+        setProfileCompletion(percent);
+        localStorage.setItem('qx:profile:completion', String(percent));
+      } catch {
+        // leave as 0 if something fails
+      }
+    })();
+  }, []);
 
+  // Small SVG progress ring that wraps children in the center
+  const ProgressRing: React.FC<{
+    percent: number;
+    size?: number;
+    stroke?: number;
+    className?: string;
+    title?: string;
+    onClick?: () => void;
+    children?: React.ReactNode;
+  }> = ({ percent, size = 28, stroke = 3, className = '', title, onClick, children }) => {
+    const r = (size - stroke) / 2;
+    const c = 2 * Math.PI * r;
+    const p = Math.min(100, Math.max(0, percent || 0));
+    const dash = (p / 100) * c;
 
-// Small SVG progress ring that wraps children in the center
-const ProgressRing: React.FC<{
-  percent: number;
-  size?: number;     // outer square px
-  stroke?: number;   // stroke width px
-  className?: string;
-  title?: string;
-  onClick?: () => void;
-  children?: React.ReactNode;
-}> = ({ percent, size = 28, stroke = 3, className = '', title, onClick, children }) => {
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const p = Math.min(100, Math.max(0, percent || 0));
-  const dash = (p / 100) * c;
-
-  return (
-    <div
-      className={`relative inline-flex items-center justify-center ${className}`}
-      style={{ width: size, height: size }}
-      title={title}
-      onClick={onClick}
-      role={onClick ? 'button' : undefined}
-    >
-      <svg
-        width={size}
-        height={size}
-        viewBox={`0 0 ${size} ${size}`}
-        className="block"
-        style={{ transform: 'rotate(-90deg)' }}  // start at top
-      >
-        {/* track */}
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          stroke="currentColor"
-          strokeWidth={stroke}
-          className="text-gray-200 dark:text-gray-800"
-          fill="none"
-        />
-        {/* progress */}
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          stroke="url(#qxgrad)"
-          strokeWidth={stroke}
-          strokeLinecap="round"
-          fill="none"
-          strokeDasharray={`${dash} ${c - dash}`}
-          style={{ transition: 'stroke-dasharray 400ms ease' }}
-        />
-        {/* gradient defs */}
-        <defs>
-          <linearGradient id="qxgrad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#a21caf" />   {/* fuchsia-700 */}
-            <stop offset="100%" stopColor="#4f46e5" /> {/* indigo-600 */}
-          </linearGradient>
-        </defs>
-      </svg>
-
-      {/* Inner badge (your Q) */}
+    return (
       <div
-        className="absolute inset-0 m-[4px] rounded-lg flex items-center justify-center
-                   bg-gradient-to-br from-purple-500 to-pink-500 text-white font-bold text-xs select-none"
+        className={`relative inline-flex items-center justify-center ${className}`}
+        style={{ width: size, height: size }}
+        title={title}
+        onClick={onClick}
+        role={onClick ? 'button' : undefined}
       >
-        {children}
+        <svg
+          width={size}
+          height={size}
+          viewBox={`0 0 ${size} ${size}`}
+          className="block"
+          style={{ transform: 'rotate(-90deg)' }}
+        >
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            stroke="currentColor"
+            strokeWidth={stroke}
+            className="text-gray-200 dark:text-gray-800"
+            fill="none"
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            stroke="url(#qxgrad)"
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            fill="none"
+            strokeDasharray={`${dash} ${c - dash}`}
+            style={{ transition: 'stroke-dasharray 400ms ease' }}
+          />
+          <defs>
+            <linearGradient id="qxgrad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#a21caf" />
+              <stop offset="100%" stopColor="#4f46e5" />
+            </linearGradient>
+          </defs>
+        </svg>
+
+        <div
+          className="absolute inset-0 m-[4px] rounded-lg flex items-center justify-center
+                      bg-gradient-to-br from-purple-500 to-pink-500 text-white font-bold text-xs select-none"
+        >
+          {children}
+        </div>
       </div>
-    </div>
-  );
-};
-
-
+    );
+  };
 
   // Current logged in user id (set by your Auth flow on login)
   const currentUserId =
@@ -212,7 +277,7 @@ const ProgressRing: React.FC<{
     localStorage.getItem('user_email') ||
     '';
 
-  // ---------- AI access control (ONLY this specific user can see the widget/icon)
+  // ---------- AI access control ----------
   const AI_ALLOWED_USER_IDS = new Set<string>([
     '9f138221-a90d-496e-8c8f-7f733d55ba56',
   ]);
@@ -385,17 +450,17 @@ const ProgressRing: React.FC<{
     return () => { if (widgetContainerRef.current) widgetContainerRef.current.innerHTML = ''; };
   }, [isAIWidgetVisible, canSeeAI]);
 
-  // Active nav styling with left rail
+  // Active nav styling - REMOVED 'relative' and 'getActiveRail' logic
   const getNavCls = (active: boolean) =>
     [
-      'relative flex items-center w-full rounded-md transition-colors duration-200',
+      'flex items-center w-full rounded-md transition-colors duration-200',
       'px-3 py-2',
       active
         ? 'bg-blue-600/10 text-blue-700 dark:text-blue-200 font-semibold ring-1 ring-inset ring-blue-600/20'
         : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-50'
     ].join(' ');
-  const getActiveRail = (active: boolean) =>
-    active ? 'before:absolute before:left-0 before:top-1 before:bottom-1 before:w-1 before:rounded-r before:bg-blue-600' : '';
+    
+  // The 'getActiveRail' function is removed entirely.
 
   const hasAccess = (allowedRoles: string[] = []) =>
     !!(userRoles?.some((role) => allowedRoles.includes(role)));
@@ -408,7 +473,7 @@ const ProgressRing: React.FC<{
             to={item.url}
             onClick={() => setIsOpen(!isOpen)}
             className={({ isActive }) =>
-              `${getNavCls(isActive || currentPath.startsWith(item.url))} ${getActiveRail(isActive || currentPath.startsWith(item.url))}`
+              getNavCls(isActive || currentPath.startsWith(item.url)) // Cleaned up
             }
           >
             <item.icon className='h-5 w-5' />
@@ -424,7 +489,7 @@ const ProgressRing: React.FC<{
               <motion.div key={child.title} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, delay: childIndex * 0.05 }}>
                 <SidebarMenuItem>
                   <SidebarMenuButton asChild>
-                    <NavLink to={child.url} className={({ isActive }) => `${getNavCls(isActive)} ${getActiveRail(isActive)}`}>
+                    <NavLink to={child.url} className={({ isActive }) => getNavCls(isActive)}> {/* Cleaned up */}
                       <child.icon className='h-5 w-5' />
                       {state === 'expanded' && <span className="ml-2">{child.title}</span>}
                     </NavLink>
@@ -442,7 +507,7 @@ const ProgressRing: React.FC<{
     <motion.div key={item.title} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.3, delay: (index + delayBase) * 0.05 }}>
       <SidebarMenuItem>
         <SidebarMenuButton asChild>
-          <NavLink to={item.url} className={({ isActive }) => `${getNavCls(isActive)} ${getActiveRail(isActive)}`}>
+          <NavLink to={item.url} className={({ isActive }) => getNavCls(isActive)}> {/* Cleaned up */}
             {item.icon === MoneyCollectFilled ? <MoneyCollectFilled style={{ fontSize: '20px' }} /> : <item.icon className='h-5 w-5' />}
             {state === 'expanded' && <span className="ml-2">{item.title}</span>}
           </NavLink>
@@ -454,56 +519,81 @@ const ProgressRing: React.FC<{
   // ---------------------------
   // Switch company (new token) with authorization guard
   // ---------------------------
-  const switchCompany = async (id: string) => {
-    if (!companies.some(c => c.id === id)) {
-      toast({ title: 'Not allowed', description: 'You do not have access to that company.', variant: 'destructive' });
-      return;
+const switchCompany = async (id: string) => {
+  if (!companies.some(c => c.id === id)) {
+    toast({ title: 'Not allowed', description: 'You do not have access to that company.', variant: 'destructive' });
+    return;
+  }
+
+  const prevId = activeCompanyId;
+  const uid =
+    localStorage.getItem('currentUserId') ||
+    localStorage.getItem('user_id') || '';
+
+  // ✅ Optimistic set: IDs
+  setActiveCompanyId(id);
+  localStorage.setItem(skey('activeCompanyId'), id);
+  localStorage.setItem('activeCompanyId', id);
+  localStorage.setItem('companyId', id);
+  if (compareCompanyId === id) setCompare('');
+
+  // ✅ Optimistic set: NAME (prevents header inversion)
+  const optimisticName = companies.find(c => String(c.id) === String(id))?.name || 'My Company';
+  localStorage.setItem(`activeCompanyName:${uid}`, optimisticName);
+  localStorage.setItem('activeCompanyName', optimisticName);
+  // (Optional) keep legacy key in sync:
+  localStorage.setItem('companyName', optimisticName);
+  window.dispatchEvent(new Event('company:changed'));
+
+  try {
+    const r = await fetch(`${API_BASE_URL}/session/switch-company`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+      body: JSON.stringify({ company_id: id }),
+    });
+    const data = await r.json();
+    if (!r.ok || !data?.ok || !data?.token) {
+      throw new Error(data?.error || 'Failed to switch company');
     }
 
-    const prevId = activeCompanyId;
+    localStorage.setItem('token', data.token);
 
-    // Optimistic: update local state + mirrors so the chip updates immediately
-    setActiveCompanyId(id);
-    localStorage.setItem(skey('activeCompanyId'), id);
-    localStorage.setItem('activeCompanyId', id);
-    localStorage.setItem('companyId', id);
-    if (compareCompanyId === id) setCompare('');
-
+    // Try to fetch canonical name for the new scope (overwrites optimistic)
     try {
-      const r = await fetch(`${API_BASE_URL}/session/switch-company`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-        },
-        body: JSON.stringify({ company_id: id }),
-      });
-      const data = await r.json();
-      if (!r.ok || !data?.ok || !data?.token) {
-        throw new Error(data?.error || 'Failed to switch company');
+      const pr = await fetch(`${API_BASE_URL}/api/profile`, { headers: { Authorization: `Bearer ${data.token}` } });
+      if (pr.ok) {
+        const prof = await pr.json();
+        if (prof?.company) {
+          localStorage.setItem(`activeCompanyName:${uid}`, prof.company);
+          localStorage.setItem('activeCompanyName', prof.company);
+          localStorage.setItem('companyName', prof.company);
+          window.dispatchEvent(new Event('company:changed')); // notify header again
+        }
       }
+    } catch { /* ignore */ }
 
-      // Swap token and hard reload so ALL screens refetch under the new scope
-      localStorage.setItem('token', data.token);
+    // Final refresh under new token/scope
+    window.location.reload();
+
+  } catch (e: any) {
+    // rollback
+    setActiveCompanyId(prevId);
+    if (prevId) {
+      localStorage.setItem(skey('activeCompanyId'), prevId);
+      localStorage.setItem('activeCompanyId', prevId);
+      localStorage.setItem('companyId', prevId);
+      const rollbackName = companies.find(c => String(c.id) === String(prevId))?.name || 'My Company';
+      localStorage.setItem(`activeCompanyName:${uid}`, rollbackName);
+      localStorage.setItem('activeCompanyName', rollbackName);
+      localStorage.setItem('companyName', rollbackName);
       window.dispatchEvent(new Event('company:changed'));
-      window.location.reload();
-    } catch (e: any) {
-      // Revert optimistic selection if server refused
-      setActiveCompanyId(prevId);
-      if (prevId) {
-        localStorage.setItem(skey('activeCompanyId'), prevId);
-        localStorage.setItem('activeCompanyId', prevId);
-        localStorage.setItem('companyId', prevId);
-      }
-      toast({
-        title: 'Switch failed',
-        description: e?.message || 'Please try again',
-        variant: 'destructive',
-      });
-    } finally {
-      setSwitcherOpen(false);
     }
-  };
+    toast({ title: 'Switch failed', description: e?.message || 'Please try again', variant: 'destructive' });
+  } finally {
+    setSwitcherOpen(false);
+  }
+};
+
 
   const setCompare = (id: string) => {
     setCompareCompanyId(id);
@@ -560,7 +650,9 @@ const ProgressRing: React.FC<{
   };
 
   const showZororoSection = hasAccess(['agent','user']) || hasAccess(['super-agent','user']);
-  const activeName = companies.find(c => c.id === activeCompanyId)?.name || (activeCompanyId ? `Current (${activeCompanyId.slice(0,6)}…)` : 'Select company');
+  const activeName =
+    companies.find(c => c.id === activeCompanyId)?.name ||
+    (activeCompanyId ? `Current (${activeCompanyId.slice(0,6)}…)` : 'Select company');
 
   return (
     <>
@@ -577,16 +669,16 @@ const ProgressRing: React.FC<{
         <SidebarHeader className='p-3 border-b border-gray-200 dark:border-gray-700'>
           <motion.div className='w-full' initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.3 }}>
             <div className='flex items-center gap-2'>
-<ProgressRing
-  percent={profileCompletion}
-  size={28}          // tweak if you want a bigger ring
-  stroke={3}
-  className="cursor-pointer"
-  title={`Profile ${profileCompletion}% complete`}
-  onClick={() => navigate('/profile-setup')}
->
-  <span>Q</span>
-</ProgressRing>
+              <ProgressRing
+                percent={profileCompletion}
+                size={28}
+                stroke={3}
+                className="cursor-pointer"
+                title={`Profile ${profileCompletion}% complete`}
+                onClick={() => navigate('/profile-setup')}
+              >
+                <span>Q</span>
+              </ProgressRing>
 
               {state === 'expanded' && (
                 <div className='flex-1 min-w-0'>
@@ -619,7 +711,6 @@ const ProgressRing: React.FC<{
                                 <SelectValue placeholder="Select company" />
                               </SelectTrigger>
                               <SelectContent>
-                                {/* Removed the "Current (…)" ghost entry to avoid showing unauthorized IDs */}
                                 {companies.map(c => (
                                   <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                                 ))}
@@ -680,7 +771,13 @@ const ProgressRing: React.FC<{
           </motion.div>
         </SidebarHeader>
 
-        <SidebarContent className='flex-1 overflow-y-auto'>
+        <SidebarContent
+          className='flex-1 overflow-y-auto relative' // Added 'relative' and 'ref'
+          ref={sidebarContentRef}
+        >
+          {/* 🎯 THE ACTIVE RAIL COMPONENT 🎯 */}
+          <ActiveRail currentPath={currentPath} sidebarContentRef={sidebarContentRef} />
+
           <SidebarGroup>
             <SidebarGroupLabel>Main Navigation</SidebarGroupLabel>
             <SidebarGroupContent>
@@ -711,79 +808,75 @@ const ProgressRing: React.FC<{
 
           <SidebarSeparator />
 
-          {showZororoSection && (
-            <>
-              <SidebarGroup>
-                <SidebarGroupLabel>Zororo Phumulani</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {zororoItems.filter(i => hasAccess(i.allowedRoles)).map((item, idx) =>
-                      renderMenuItem(
-                        item,
-                        idx,
-                        zororoItems.length,
-                        navigationItems.filter(i => hasAccess(i.allowedRoles)).length +
-                        businessItems.filter(i => hasAccess(i.allowedRoles)).length
-                      )
-                    )}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-              <SidebarSeparator />
-            </>
-          )}
-
           <SidebarGroup>
             <SidebarGroupLabel>Setup</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {setupItems.filter(i => hasAccess(i.allowedRoles)).map((item, idx) =>
-                  renderMenuItem(
-                    item,
-                    idx,
-                    setupItems.length,
-                    navigationItems.filter(i => hasAccess(i.allowedRoles)).length +
-                    businessItems.filter(i => hasAccess(i.allowedRoles)).length +
-                    (showZororoSection ? zororoItems.filter(i => hasAccess(i.allowedRoles)).length : 0)
-                  )
+                  renderMenuItem(item, idx, setupItems.length, navigationItems.length + businessItems.length)
                 )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
+
+          {showZororoSection && (
+            <>
+              <SidebarSeparator />
+              <SidebarGroup>
+                <SidebarGroupLabel>Zororo Platform</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {zororoItems.filter(i => hasAccess(i.allowedRoles)).map((item, idx) =>
+                      renderMenuItem(item, idx, zororoItems.length, navigationItems.length + businessItems.length + setupItems.length)
+                    )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            </>
+          )}
+
+
         </SidebarContent>
 
-        <SidebarFooter className='p-3 border-t border-gray-200 dark:border-gray-700'>
-          <div className='flex items-center justify-between mb-2'>
-            <div className='flex items-center space-x-2 text-sm text-muted-foreground'>
-              <User className='h-5 w-5' />
-              {state === 'expanded' && (
-                <div className="flex flex-col">
-                  <span className="truncate max-w-[180px]">{userName || 'Guest'}</span>
-                  <span className="text-[11px] text-muted-foreground truncate max-w-[180px]">
-                    {userRoles && userRoles.length > 0 ? userRoles.join(', ') : 'No Role'}
-                  </span>
-                </div>
-              )}
-            </div>
-            {state === 'expanded' && canSeeAI && (
-              <button
-                onClick={() => setIsAIWidgetVisible(v => !v)}
-                className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                aria-label={isAIWidgetVisible ? "Hide AI Assistant" : "Show AI Assistant"}
-              >
-                <Bot className="h-5 w-5 text-muted-foreground" />
-              </button>
-            )}
-          </div>
-          
+<SidebarFooter className='p-3 border-t border-gray-200 dark:border-gray-700'>
+  {/* Footer header row: user info + QxBot toggle */}
+  <div className='flex items-center justify-between mb-2'>
+    <div className='flex items-center space-x-2 text-sm text-muted-foreground'>
+      <User className='h-5 w-5' />
+      {state === 'expanded' && (
+        <div className="flex flex-col">
+          <span className="truncate max-w-[180px]">{userName || 'Guest'}</span>
+          <span className="text-[11px] text-muted-foreground truncate max-w-[180px]">
+            {userRoles && userRoles.length > 0 ? userRoles.join(', ') : 'No Role'}
+          </span>
+        </div>
+      )}
+    </div>
 
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={handleLogout} className='w-full justify-start text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'>
-              <LogOut className='h-5 w-5' />
-              {state === 'expanded' && <span>Logout</span>}
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarFooter>
+    {/* QxBot toggle lives here */}
+    {canSeeAI && (
+      <button
+        onClick={() => setIsAIWidgetVisible(v => !v)}
+        className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+        aria-label={isAIWidgetVisible ? "Hide AI Assistant" : "Show AI Assistant"}
+        title={isAIWidgetVisible ? "Hide QxBot" : "Show QxBot"}
+      >
+        <Bot className="h-5 w-5 text-muted-foreground" />
+      </button>
+    )}
+  </div>
+
+  {/* Keep your profile + logout items */}
+  <SidebarMenu>
+ <SidebarMenuItem>
+      <SidebarMenuButton onClick={handleLogout}>
+        <LogOut className='h-5 w-5 text-red-500' />
+        {state === 'expanded' && <span className="ml-2 text-red-500">Log Out</span>}
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  </SidebarMenu>
+</SidebarFooter>
+
       </Sidebar>
     </>
   );

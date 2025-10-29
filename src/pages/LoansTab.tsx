@@ -1,7 +1,5 @@
-// src/components/accounting/LoansTab.tsx
-// Loans tab: list + create + build schedule + view schedule + accrue interest + repayment
-// Expects parent to pass `assets` and `accounts` from the same endpoints & auth as Accounting.tsx
-// Backend routes still expected: /loans, /loans/:id/schedule, /loans/:id/accrue-interest, /loans/:id/repayment
+// src/pages/LoansTab.tsx
+
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {

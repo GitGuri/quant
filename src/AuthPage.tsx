@@ -36,57 +36,75 @@ export const useAuth = () => {
 };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
-    localStorage.getItem('isAuthenticated') === 'true'
-  );
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
+    localStorage.getItem('isAuthenticated') === 'true'
+  );
 
-  const [userRoles, setUserRoles] = useState<string[]>(
-    JSON.parse(localStorage.getItem('userRoles') || '[]')
-  );
+  const [userRoles, setUserRoles] = useState<string[]>(
+    JSON.parse(localStorage.getItem('userRoles') || '[]')
+  );
 
-  const [userName, setUserName] = useState<string | null>(
-    localStorage.getItem('userName')
-  );
+  const [userName, setUserName] = useState<string | null>(
+    localStorage.getItem('userName')
+  );
 
-  const login = () => {
-    setIsAuthenticated(true);
-    setUserRoles(JSON.parse(localStorage.getItem('userRoles') || '[]'));
-    setUserName(localStorage.getItem('userName'));
-    localStorage.setItem('isAuthenticated', 'true');
-  };
+  const login = () => {
+    setIsAuthenticated(true);
+    setUserRoles(JSON.parse(localStorage.getItem('userRoles') || '[]'));
+    setUserName(localStorage.getItem('userName'));
+    localStorage.setItem('isAuthenticated', 'true');
+  };
 
-  const logout = () => {
-    setIsAuthenticated(false);
-    setUserRoles([]);
-    setUserName(null);
 
-    // Remove our auth + company keys (scoped + legacy), without nuking other apps' keys
-    const keysToRemove = [
-      'token',
-      'isAuthenticated',
-      'userId',
-      'user_id',          // bridge
-      'currentUserId',    // fetch patch uses this
-      'userRoles',
-      'userName',
-      'companyId',        // legacy
-      'activeCompanyId',  // legacy
-      'compareCompanyId',
-      'companies',        // legacy
-    ];
-    keysToRemove.forEach(k => localStorage.removeItem(k));
+  const logout = () => {
+    // 1. Clear In-Memory State Immediately
+    setIsAuthenticated(false);
+    setUserRoles([]);
+    setUserName(null);
 
-    // Remove any *scoped* company keys
-    Object.keys(localStorage).forEach(k => {
-      if (
-        k.startsWith('activeCompanyId:') ||
-        k.startsWith('companies:') ||
-        k.startsWith('compareCompanyId:')
-      ) {
-        localStorage.removeItem(k);
-      }
-    });
-  };
+    // 2. Clear Local Storage (existing logic)
+    const keysToRemove = [
+      'token',
+      'isAuthenticated',
+      'userId',
+      'user_id',
+      'currentUserId',
+      'userRoles',
+      'userName',
+      'companyId',
+      'activeCompanyId',
+      'compareCompanyId',
+      'companies',
+      'qx:profile:completion', // Clear the profile completion cache key as well
+    ];
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+
+    // Remove any *scoped* company keys (existing logic)
+    Object.keys(localStorage).forEach(k => {
+      if (
+        k.startsWith('activeCompanyId:') ||
+        k.startsWith('companies:') ||
+        k.startsWith('compareCompanyId:') ||
+        k.startsWith('onboarding:') // Clear any scoped onboarding keys
+      ) {
+        localStorage.removeItem(k);
+      }
+    });
+    
+    // 3. Clear Session Storage
+    // This removes any session-only state that might be holding old data.
+    sessionStorage.clear();
+
+    // 4. Force Immediate Hard Navigation with Cache Busting
+    // We create a new URL object based on the current origin.
+    const url = new URL(window.location.origin);
+    // Set the path to the root/login page
+    url.pathname = '/'; 
+    // Add a unique timestamp 'c' parameter to force the browser to ignore its cache.
+    url.searchParams.set('c', Date.now().toString()); 
+
+    window.location.replace(url.toString()); 
+  };
 
   return (
     <AuthContext.Provider
@@ -209,17 +227,38 @@ export function AuthPage() {
         // Remove legacy global list so it can’t bleed across users
         localStorage.removeItem('companies');
 
-        // Roles + name
-        localStorage.setItem('userRoles', JSON.stringify(roles));
-        localStorage.setItem('userName', user.name || '');
 
-        login();
+// Roles + name
+localStorage.setItem('userRoles', JSON.stringify(roles));
+localStorage.setItem('userName', user.name || '');
 
-        // basic success toast
-        toast({
-          title: '✅ Login Successful',
-          description: `Welcome back, ${user.name || 'User'}!`,
-        });
+// ✅ NEW: Fetch the company name from the /api/profile endpoint
+try {
+  const profileRes = await fetch(`${API_BASE}/api/profile`, {
+    headers: { Authorization: `Bearer ${data.token}` },
+  });
+  if (profileRes.ok) {
+    const profile = await profileRes.json();
+    if (profile?.company) {
+      localStorage.setItem('companyName', profile.company);
+      localStorage.setItem('activeCompanyName', profile.company);
+    }
+  } else {
+    // fallback: use the user's own name if company missing
+    localStorage.setItem('companyName', user.company || user.name || 'My Company');
+  }
+} catch {
+  localStorage.setItem('companyName', user.company || user.name || 'My Company');
+}
+
+login();
+
+// basic success toast
+toast({
+  title: '✅ Login Successful',
+  description: `Welcome back, ${user.name || 'User'}!`,
+});
+
 
         // ---------- CONDITIONAL "Go to Profile" TOAST ----------
         const token = data.token as string;

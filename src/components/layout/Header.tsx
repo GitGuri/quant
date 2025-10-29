@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Button } from 'antd';
 import { SidebarTrigger } from '@/components/ui/sidebar';
-import { RefreshCw, Plus } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 type HeaderProps = {
@@ -16,6 +16,38 @@ type HeaderProps = {
   style?: React.CSSProperties;
 };
 
+function readActiveCompanyName(): string {
+  const uid =
+    localStorage.getItem('currentUserId') ||
+    localStorage.getItem('user_id') ||
+    '';
+
+  // Fast paths (set on login + switch)
+  const direct =
+    localStorage.getItem('activeCompanyName') ||
+    localStorage.getItem('companyName');
+  if (direct) return direct;
+
+  // Scoped lists (your sidebar stores these)
+  try {
+    const activeId =
+      localStorage.getItem(`activeCompanyId:${uid}`) ||
+      localStorage.getItem('activeCompanyId') ||
+      localStorage.getItem('companyId') ||
+      '';
+    const companiesRaw =
+      localStorage.getItem(`companies:${uid}`) ||
+      localStorage.getItem('companies') || '[]';
+    const companies = JSON.parse(companiesRaw) as Array<{ id: string; name: string }>;
+    const match = companies.find(c => c.id === activeId);
+    if (match?.name) return match.name;
+  } catch {
+    // ignore parse errors
+  }
+
+  return 'My Company';
+}
+
 export function Header({
   title,
   subtitle,
@@ -27,7 +59,55 @@ export function Header({
   className,
   style,
 }: HeaderProps) {
-  // ✅ default behavior: full tab reload if no custom handler
+  const [companyName, setCompanyName] = useState<string>(() => readActiveCompanyName());
+
+  // Keep in sync with app-wide switches and cross-tab updates
+  useEffect(() => {
+    const refresh = () => setCompanyName(readActiveCompanyName());
+
+    // Fired by your AppSidebar after successful switch
+    window.addEventListener('company:changed', refresh);
+    // Cross-tab/localStorage updates
+    window.addEventListener('storage', refresh);
+
+    return () => {
+      window.removeEventListener('company:changed', refresh);
+      window.removeEventListener('storage', refresh);
+    };
+  }, []);
+
+  // Optional: if token changes, try a light profile fetch to refresh the cached name
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    // Only fetch if we currently have the generic fallback
+    if (companyName && companyName !== 'My Company') return;
+
+    const API_BASE =
+      // keep this consistent with the rest of the app
+      (import.meta as any)?.env?.VITE_API_BASE ||
+      'https://quantnow-sa1e.onrender.com';
+
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/profile`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!r.ok) return;
+        const prof = await r.json();
+        if (prof?.company) {
+          localStorage.setItem('companyName', prof.company);
+          localStorage.setItem('activeCompanyName', prof.company);
+          // trigger local update (no full reload)
+          setCompanyName(prof.company);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, [companyName]);
+
   const handleRefresh = () => {
     if (onRefresh) onRefresh();
     else window.location.reload();
@@ -46,45 +126,39 @@ export function Header({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25 }}
     >
-      {/* Left side: burger + titles */}
+      {/* Left: burger + title */}
       <div className="flex items-center gap-3 min-w-0">
         <SidebarTrigger />
         <div className="flex flex-col min-w-0">
-          {!!title && (
-            <h1 className="text-xl font-semibold truncate">{title}</h1>
-          )}
+          {!!title && <h1 className="text-xl font-semibold truncate">{title}</h1>}
           {!!subtitle && (
-            <span className="text-xs text-muted-foreground truncate">
-              {subtitle}
-            </span>
+            <span className="text-xs text-muted-foreground truncate">{subtitle}</span>
           )}
         </div>
       </div>
 
-      {/* Middle/right: extra controls */}
-      <div className="flex items-center gap-2">
-        {/* RightExtra (e.g., Online tag + Branch picker) */}
-        {!!rightExtra && (
-          <div className="flex items-center gap-2">{rightExtra}</div>
-        )}
+      {/* Right */}
+      <div className="flex items-center gap-3">
+        {!!rightExtra && <div className="flex items-center gap-2">{rightExtra}</div>}
 
-        {/* Action buttons */}
         {actions ? (
           actions
         ) : (
           showActions && (
-            <>
-              <Button
-                size="small"
-                onClick={handleRefresh}
-                icon={<RefreshCw className="w-4 h-4" />}
-              >
-                Refresh
-              </Button>
-
-            </>
+            <Button
+              size="small"
+              onClick={handleRefresh}
+              icon={<RefreshCw className="w-4 h-4" />}
+            >
+              Refresh
+            </Button>
           )
         )}
+
+        {/* Company name on far right */}
+        <span className="ml-4 text-sm font-medium text-gray-600 dark:text-gray-300 truncate max-w-[240px]">
+          {companyName}
+        </span>
       </div>
     </motion.header>
   );

@@ -540,29 +540,29 @@ function getWelcome(): Message[] {
       timestamp: new Date().toISOString(),
       content: `Welcome to QX 👋
 
-**How to start**
-1) Pick a **Dataset** (top-right).  
-2) Pick a **Mode**.  
-3) Type a message (only needed for *Chat*), or just hit **Send**.
+How to begin:
+1. Choose a dataset from the top right.
+2. Select a mode for what you want to do.
+3. Type a message (only needed for Chat) or just click Send.
 
-**What each mode does**
-- **Chat** — Ask free-form questions about the selected dataset.  
-  _Examples:_ “Top 10 products by revenue this month”, “Customers with overdue invoices”, “Sales by region vs last year”.
-- **Report** — Generates a data summary + KPIs for the chosen dataset. Ignores the prompt (your note is optional).
-- **Marketing** — Drafts campaign ideas/copy using your data. Ignores the prompt (note optional).
-- **Business Plan** — Outlines a high-level plan from your data. Ignores the prompt (note optional).
-- **Notify** — Creates alerts/notifications based on the dataset. Ignores the prompt (note optional).
-- **Auto Analyze** — Produces **charts + insights** from the selected dataset via the AI server's /auto-analyze. Ignores the prompt.
+What each mode does:
+- Chat – Ask questions about your data.  
+  Examples: “Show top 10 products by revenue this month”, “List customers with overdue invoices”, “Compare sales by region to last year”.
+- Report – Creates a quick summary and key metrics for your selected dataset.
+- Marketing – Suggests marketing ideas or messages using your data.
+- Business Plan – Builds a simple business plan outline based on your data.
+- Notify – Generates alerts or reminders from your dataset.
+- Auto Analyze – Creates charts and short insights from the selected dataset.
 
-**Filters**
-Click the **sliders** icon to set a **From/To** date. Leave blank to use all available dates.
+Filters:
+Click the sliders icon to set a start and end date. Leave them empty to include all dates.
 
-**Tips**
-- Press **Enter** to send.  
-- Use the **download/upload** icons to export/import chats.  
-- **Clear** wipes the current conversation (doesn’t affect your data).
+Tips:
+• Press Enter to send a message.  
+• Use the download or upload buttons to save or restore chats.  
+• The Clear button removes your current conversation (your data stays safe).
 
-You’re set—choose a dataset and mode to begin.`,
+You’re ready—pick a dataset and mode to get started.`,
     },
   ];
 }

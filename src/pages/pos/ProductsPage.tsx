@@ -902,8 +902,8 @@ const ProductsPage = () => {
       {formType === 'service' && (
         <Form.Item
           name="availableValue"
-          label="Available Value (e.g., hours, licenses)"
-          rules={[{ required: true, message: 'Please enter available value' }]}
+          label="Available Value (optional)"
+          rules={[{ required: false, message: '(e.g., hours, licenses)' }]}
         >
           <InputNumber min={0} style={{ width: '100%' }} />
         </Form.Item>
