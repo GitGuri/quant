@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { DialogFooter } from '@/components/ui/dialog';
-import { Trash2 } from 'lucide-react';
+import { Trash2, Loader2 } from 'lucide-react';
 
 interface CustomField {
   id: number;
@@ -24,7 +24,7 @@ interface Customer {
 
 interface CustomerFormProps {
   customer?: Customer;
-  onSave: (customer: Customer) => void;
+  onSave: (customer: Customer) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -45,126 +45,172 @@ export function CustomerForm({
     customer?.customFields || []
   );
 
+  // 🚫 Prevent double submit
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
   const handleAddCustomField = () => {
-    setCustomFields([
-      ...customFields,
-      { id: Date.now(), name: '', value: '' },
-    ]);
+    setCustomFields(prev => [...prev, { id: Date.now(), name: '', value: '' }]);
   };
 
   const handleRemoveCustomField = (id: number) => {
-    setCustomFields(customFields.filter((field) => field.id !== id));
+    setCustomFields(prev => prev.filter(f => f.id !== id));
   };
 
-  const handleCustomFieldChange = (id: number, fieldName: keyof Omit<CustomField, 'id'>, value: string) => {
-    setCustomFields(
-      customFields.map((field) =>
-        field.id === id ? { ...field, [fieldName]: value } : field
-      )
+  const handleCustomFieldChange = (
+    id: number,
+    fieldName: keyof Omit<CustomField, 'id'>,
+    value: string
+  ) => {
+    setCustomFields(prev =>
+      prev.map(f => (f.id === id ? { ...f, [fieldName]: value } : f))
     );
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const customerWithCustomFields = {
+
+    if (isSubmitting) return; // hard guard
+
+    setSubmitError(null);
+    setIsSubmitting(true);
+
+    const payload: Customer = {
       ...formData,
-      customFields: customFields.filter(field => field.name.trim() !== ''),
+      customFields: customFields.filter(f => f.name.trim() !== ''),
     };
-    onSave(customerWithCustomFields);
+
+    try {
+      await Promise.resolve(onSave(payload));
+      // Parent usually closes the dialog on success. If not, we re-enable here:
+      setIsSubmitting(false);
+    } catch (err: any) {
+      setSubmitError(err?.message || 'Failed to save customer.');
+      setIsSubmitting(false);
+    }
   };
 
   return (
-    <form onSubmit={handleSubmit} className='space-y-4'>
-      <div className='grid grid-cols-2 gap-4'>
+    <form
+      onSubmit={handleSubmit}
+      className="space-y-4"
+      aria-busy={isSubmitting}
+    >
+      <div className="grid grid-cols-2 gap-4">
         <div>
-          <Label htmlFor='name'>Customer Name *</Label>
+          <Label htmlFor="name">Customer Name *</Label>
           <Input
-            id='name'
+            id="name"
             value={formData.name}
-            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            onChange={e => setFormData({ ...formData, name: e.target.value })}
             required
+            disabled={isSubmitting}
           />
         </div>
         <div>
-          <Label htmlFor='email'>Email *</Label>
+          <Label htmlFor="email">Email *</Label>
           <Input
-            id='email'
-            type='email'
+            id="email"
+            type="email"
             value={formData.email}
-            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+            onChange={e => setFormData({ ...formData, email: e.target.value })}
             required
+            disabled={isSubmitting}
           />
         </div>
       </div>
 
-      <div className='grid grid-cols-2 gap-4'>
+      <div className="grid grid-cols-2 gap-4">
         <div>
-          <Label htmlFor='phone'>Phone</Label>
+          <Label htmlFor="phone">Phone</Label>
           <Input
-            id='phone'
+            id="phone"
             value={formData.phone}
-            onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+            onChange={e => setFormData({ ...formData, phone: e.target.value })}
+            disabled={isSubmitting}
           />
         </div>
         <div>
-          <Label htmlFor='vatNumber'>VAT Number</Label>
+          <Label htmlFor="vatNumber">VAT Number</Label>
           <Input
-            id='vatNumber'
+            id="vatNumber"
             value={formData.vatNumber}
-            onChange={(e) => setFormData({ ...formData, vatNumber: e.target.value })}
+            onChange={e => setFormData({ ...formData, vatNumber: e.target.value })}
+            disabled={isSubmitting}
           />
         </div>
       </div>
 
       <div>
-        <Label htmlFor='address'>Address</Label>
+        <Label htmlFor="address">Address</Label>
         <Textarea
-          id='address'
-          value={formData.address}
-          onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+          id="address"
           rows={3}
+          value={formData.address}
+          onChange={e => setFormData({ ...formData, address: e.target.value })}
+          disabled={isSubmitting}
         />
       </div>
 
-      {/* Dynamic Custom Fields Section */}
-      <div className='space-y-2'>
+      {/* Dynamic Custom Fields */}
+      <div className="space-y-2">
         <Label>Additional Fields</Label>
-        {customFields.map((field) => (
-          <div key={field.id} className='flex items-center gap-2'>
+        {customFields.map(field => (
+          <div key={field.id} className="flex items-center gap-2">
             <Input
-              placeholder='Field Name'
+              placeholder="Field Name"
               value={field.name}
-              onChange={(e) => handleCustomFieldChange(field.id, 'name', e.target.value)}
+              onChange={e => handleCustomFieldChange(field.id, 'name', e.target.value)}
+              disabled={isSubmitting}
             />
             <Input
-              placeholder='Value'
+              placeholder="Value"
               value={field.value}
-              onChange={(e) => handleCustomFieldChange(field.id, 'value', e.target.value)}
+              onChange={e => handleCustomFieldChange(field.id, 'value', e.target.value)}
+              disabled={isSubmitting}
             />
             <Button
-              type='button'
-              variant='ghost'
-              size='icon'
+              type="button"
+              variant="ghost"
+              size="icon"
               onClick={() => handleRemoveCustomField(field.id)}
+              disabled={isSubmitting}
             >
-              <Trash2 className='h-4 w-4 text-red-500' />
+              <Trash2 className="h-4 w-4 text-red-500" />
             </Button>
           </div>
         ))}
         <Button
-          type='button'
-          variant='outline'
+          type="button"
+          variant="outline"
           onClick={handleAddCustomField}
+          disabled={isSubmitting}
         >
           + Add Field
         </Button>
       </div>
 
+      {/* Error */}
+      {submitError && (
+        <p className="text-sm text-red-600">{submitError}</p>
+      )}
+
       <DialogFooter>
-        <Button type='button' variant='outline' onClick={onCancel}>
+        <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
           Cancel
         </Button>
-        <Button type='submit'>{customer ? 'Update' : 'Create'} Customer</Button>
+
+        {/* ✅ Disabled + spinner while saving */}
+        <Button type="submit" disabled={isSubmitting} className="min-w-[160px]">
+          {isSubmitting ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {customer ? 'Updating…' : 'Creating…'}
+            </>
+          ) : (
+            <>{customer ? 'Update' : 'Create'} Customer</>
+          )}
+        </Button>
       </DialogFooter>
     </form>
   );

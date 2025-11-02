@@ -156,6 +156,14 @@ export function QuotationList() {
     }
   };
 
+  // put inside QuotationList, above useEffect
+const normalizeQuotation = (q: Quotation): Quotation => ({
+  ...q,
+  total_amount: parseFloat(q.total_amount as any) || 0,
+  quotation_date: new Date(q.quotation_date).toISOString().split('T')[0],
+  expiry_date: q.expiry_date ? new Date(q.expiry_date).toISOString().split('T')[0] : null,
+});
+
   // -------- data fetchers --------
 
   const fetchUserProfile = useCallback(async () => {
@@ -626,10 +634,14 @@ export function QuotationList() {
     [quotationToSendEmail, emailRecipient, emailSubject, emailBody, toast, token, handleManualStatusUpdate, refreshQuotationsSilently]
   );
 
-  const handleFormSubmitSuccess = () => {
-    setShowQuotationForm(false);
-    fetchQuotations();
-  };
+const handleFormSubmitSuccess = (q: Quotation, mode: 'create'|'update') => {
+  setShowQuotationForm(false);
+  const nq = normalizeQuotation(q);
+  if (mode === 'create') setQuotations(prev => [nq, ...prev]);
+  else setQuotations(prev => prev.map(x => String(x.id) === String(nq.id) ? nq : x));
+  refreshQuotationsSilently();
+};
+
 
   const filteredQuotations = quotations.filter(
     (q) =>

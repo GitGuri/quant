@@ -164,6 +164,8 @@ interface ApiBalanceSheetResponse {
 
   current_assets_detail?: ApiCurrentAssetsDetail;
   non_current_assets_detail?: ApiPpeDetail;
+  overdraft?: number; // NEW
+  current_liabilities_detail?: ApiCurrentLiabilitiesDetail; 
 
   equityBreakdown?: {
     opening?: number | string;
@@ -201,6 +203,15 @@ interface BalanceSheetData {
     totalEquityAndLiabilities: number;
     diff: number;
   };
+}
+
+interface ApiLiabilityDetailRow {
+  section: string;
+  label: string;
+  amount: number;
+}
+interface ApiCurrentLiabilitiesDetail {
+  rows: ApiLiabilityDetailRow[];
 }
 
 interface ApiIncomeStatementSection {
@@ -546,6 +557,9 @@ lines.push({
     const assets: BalanceSheetLineItem[] = [];
     const liabilities: BalanceSheetLineItem[] = [];
     const equity: BalanceSheetLineItem[] = [];
+    const overdraft = num((response as any)?.overdraft ?? 0);
+    const cliabDetail = response.current_liabilities_detail?.rows ?? [];
+
 
     if (!response) {
       return {
@@ -635,13 +649,28 @@ const diffFinal                  = Number((totalAssetsFinal - totalEquityAndLiab
     assets.push({ item: 'TOTAL ASSETS', amount: displayTotalAssets, isTotal: true, isSubheader: true });
 
     // ----- Liabilities -----
-    liabilities.push({ item: 'Current Liabilities', amount: 0, isSubheader: true });
-    if (nonZero(currentLiabs)) liabilities.push({ item: '  Current Liabilities (total)', amount: currentLiabs });
-    liabilities.push({ item: 'Total Current Liabilities', amount: currentLiabs, isTotal: true });
+// ----- Liabilities -----
+// ----- Liabilities (show detail if provided, incl. overdraft) -----
+liabilities.push({ item: 'Current Liabilities', amount: 0, isSubheader: true });
 
-    liabilities.push({ item: 'Non-Current Liabilities', amount: 0, isSubheader: true });
-    if (nonZero(nonCurrentLiabs)) liabilities.push({ item: '  Non-Current Liabilities (total)', amount: nonCurrentLiabs });
-    liabilities.push({ item: 'Total Non-Current Liabilities', amount: nonCurrentLiabs, isTotal: true });
+if (Array.isArray(cliabDetail) && cliabDetail.length > 0) {
+  cliabDetail
+    .filter(r => nonZero(num(r.amount)))
+    .forEach(r => liabilities.push({ item: `  ${r.label}`, amount: num(r.amount) }));
+} else if (nonZero(currentLiabs)) {
+  // fallback
+  liabilities.push({ item: '  Current Liabilities (total)', amount: currentLiabs });
+}
+
+liabilities.push({ item: 'Total Current Liabilities', amount: currentLiabs, isTotal: true });
+
+liabilities.push({ item: 'Non-Current Liabilities', amount: 0, isSubheader: true });
+if (nonZero(nonCurrentLiabs)) {
+  liabilities.push({ item: '  Non-Current Liabilities (total)', amount: nonCurrentLiabs });
+}
+liabilities.push({ item: 'Total Non-Current Liabilities', amount: nonCurrentLiabs, isTotal: true });
+
+
 
     liabilities.push({ item: 'TOTAL LIABILITIES', amount: displayTotalLiabs, isTotal: true, isSubheader: true });
 

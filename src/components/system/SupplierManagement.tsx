@@ -76,28 +76,40 @@ export function SupplierManagement() {
     return token ? { 'Authorization': `Bearer ${token}` } : {};
   }, []);
 
-  const fetchSuppliers = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch('https://quantnow-sa1e.onrender.com/api/suppliers', {
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(), // Add authorization header
-        },
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
+
+  function withBust(url: string) {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}__ts=${Date.now()}`;
+}
+
+
+const fetchSuppliers = useCallback(async () => {
+  setLoading(true);
+  setError(null);
+  const ac = new AbortController();
+  try {
+    const response = await fetch(
+      withBust('https://quantnow-sa1e.onrender.com/api/suppliers'),
+      {
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        cache: 'no-store',
+        signal: ac.signal,
       }
-      const data: Supplier[] = await response.json();
-      setSuppliers(data);
-    } catch (err) {
+    );
+    if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+    const data: Supplier[] = await response.json();
+    setSuppliers(data);
+  } catch (err: any) {
+    if (err?.name !== 'AbortError') {
       console.error('Failed to fetch suppliers:', err);
       setError('Failed to load suppliers. Please try again.');
-    } finally {
-      setLoading(false);
     }
-  }, [getAuthHeaders]);
+  } finally {
+    setLoading(false);
+  }
+  return () => ac.abort();
+}, [getAuthHeaders]);
+
 
   useEffect(() => {
     fetchSuppliers();
@@ -145,71 +157,84 @@ export function SupplierManagement() {
     }
   };
 
-  const handleUpdateSupplier = async (id: string, supplierData: SupplierSaveData) => {
-    setLoading(true); // Indicate loading for the specific action
-    try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/suppliers/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(), // Add authorization header
-        },
-        body: JSON.stringify(supplierData)
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.json();
-        throw new Error(errorBody.message || 'Failed to update supplier.');
-      }
-
-      toast({
-        title: 'Success',
-        description: 'Supplier updated successfully.',
-      });
-      setIsFormDialogOpen(false);
-      setCurrentSupplier(undefined); // Clear current supplier
-      await fetchSuppliers(); // Refresh data after successful update
-    } catch (err) {
-      console.error('Error updating supplier:', err);
-      toast({
-        title: 'Error',
-        description: `Failed to update supplier: ${err instanceof Error ? err.message : String(err)}`,
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
+const handleUpdateSupplier = async (id: string, supplierData: SupplierSaveData) => {
+  setLoading(true);
+  try {
+    const res = await fetch(`https://quantnow-sa1e.onrender.com/api/suppliers/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(supplierData),
+    });
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => ({}));
+      throw new Error(errorBody.message || 'Failed to update supplier.');
     }
-  };
 
-  const handleDeleteSupplier = async (id: string) => {
-    setLoading(true); // Indicate loading for the specific action
-    try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/suppliers/${id}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders(), // Add authorization header
-      });
+    const updated: Supplier = await res.json();
 
-      if (!response.ok) {
-        const errorBody = await response.json();
-        throw new Error(errorBody.message || 'Failed to delete supplier.');
-      }
+    // ✅ Optimistic replace by id
+    setSuppliers(prev =>
+      prev.map(s => (String(s.id) === String(id) ? (updated ?? {
+        ...s,
+        name: supplierData.name,
+        email: supplierData.email,
+        phone: supplierData.phone,
+        address: supplierData.address,
+        vatNumber: supplierData.vatNumber,
+        source: s.source ?? 'api/suppliers',
+      }) : s))
+    );
 
-      toast({
-        title: 'Success',
-        description: 'Supplier deleted successfully.',
-      });
-      await fetchSuppliers(); // Refresh data after successful deletion
-    } catch (err) {
-      console.error('Error deleting supplier:', err);
-      toast({
-        title: 'Error',
-        description: `Failed to delete supplier: ${err instanceof Error ? err.message : String(err)}`,
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
+    toast({ title: 'Success', description: 'Supplier updated successfully.' });
+    setIsFormDialogOpen(false);
+    setCurrentSupplier(undefined);
+
+    // Background reconcile
+    fetchSuppliers();
+  } catch (err) {
+    console.error('Error updating supplier:', err);
+    toast({
+      title: 'Error',
+      description: `Failed to update supplier: ${err instanceof Error ? err.message : String(err)}`,
+      variant: 'destructive',
+    });
+  } finally {
+    setLoading(false);
+  }
+};
+
+
+const handleDeleteSupplier = async (id: string) => {
+  setLoading(true);
+  try {
+    const res = await fetch(`https://quantnow-sa1e.onrender.com/api/suppliers/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => ({}));
+      throw new Error(errorBody.message || 'Failed to delete supplier.');
     }
-  };
+
+    // ✅ Optimistic remove
+    setSuppliers(prev => prev.filter(s => String(s.id) !== String(id)));
+
+    toast({ title: 'Success', description: 'Supplier deleted successfully.' });
+
+    // Background reconcile
+    fetchSuppliers();
+  } catch (err) {
+    console.error('Error deleting supplier:', err);
+    toast({
+      title: 'Error',
+      description: `Failed to delete supplier: ${err instanceof Error ? err.message : String(err)}`,
+      variant: 'destructive',
+    });
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   const handleEditSupplier = (supplier: Supplier) => {
     setCurrentSupplier(supplier);

@@ -83,8 +83,10 @@ interface Customer {
 interface QuotationFormProps {
   quotation?: Quotation;
   onClose: () => void;
-  onSubmitSuccess: () => void;
+  // BEFORE: onSubmitSuccess: () => void
+  onSubmitSuccess: (saved: Quotation, mode: 'create' | 'update') => void;
 }
+
 
 // ===== Helpers =====
 const generateQuotationNumber = () => {
@@ -490,9 +492,10 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
   };
 
   // ===== Submit =====
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
+const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (isLoading) return;               // ⬅️ guard against double-clicks
+  setIsLoading(true);
 
     if (!isAuthenticated || !token) {
       toast({
@@ -574,49 +577,54 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
       delete (payload as any).customer_name_manual;
     }
 
-    const url = quotation ? `${API_BASE_URL}/api/quotations/${quotation.id}` : `${API_BASE_URL}/api/quotations`;
-    const method = quotation ? 'PUT' : 'POST';
+     const url = quotation ? `${API_BASE_URL}/api/quotations/${quotation.id}` : `${API_BASE_URL}/api/quotations`;
+  const method = quotation ? 'PUT' : 'POST';
 
-    try {
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-
-      if (saveBankAsDefault) {
-        try {
-          localStorage.setItem(QUOTATION_BANK_LOCAL_KEY, JSON.stringify(bankDetails));
-        } catch {}
-      }
-
-      toast({
-        title: quotation ? 'Quotation Updated' : 'Quotation Created',
-        description: `Quotation ${formData.quotation_number} has been successfully ${quotation ? 'updated' : 'created'}.`,
-        variant: 'default',
-      });
-
-      onSubmitSuccess();
-      onClose();
-    } catch (e: any) {
-      console.error('Submission error:', e);
-      toast({
-        title: 'Submission Failed',
-        description: `Failed to ${quotation ? 'update' : 'create'} quotation: ${e?.message || String(e)}.`,
-        variant: 'destructive',
-      });
-    } finally {
-      setIsLoading(false);
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
     }
-  };
+    
 
+    const saved: Quotation = await res.json();
+    
+    
+    // ⬅️ get server’s version
+
+    if (saveBankAsDefault) {
+      try { localStorage.setItem(QUOTATION_BANK_LOCAL_KEY, JSON.stringify(bankDetails)); } catch {}
+    }
+
+    toast({
+      title: quotation ? 'Quotation Updated' : 'Quotation Created',
+      description: `Quotation ${formData.quotation_number} has been successfully ${quotation ? 'updated' : 'created'}.`,
+    });
+   
+    // ⬅️ Tell the parent exactly what was saved so it can update instantly
+    onSubmitSuccess(saved, quotation ? 'update' : 'create');
+
+    // optional: let parent close; if you still want to close here, keep this:
+    onClose();
+  } catch (e: any) {
+    console.error('Submission error:', e);
+    toast({
+      title: 'Submission Failed',
+      description: `Failed to ${quotation ? 'update' : 'create'} quotation: ${e?.message || String(e)}.`,
+      variant: 'destructive',
+    });
+  } finally {
+    setIsLoading(false);
+  }
+};
   // ===== Render =====
   return (
     <form onSubmit={handleSubmit} className="space-y-6">

@@ -162,6 +162,12 @@ function applyTokens(text: string, tokens: TokenDict): string {
   }, text);
 }
 
+
+function withBust(url: string) {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}__ts=${Date.now()}`;
+}
+
 // --- NEW: client-side mail-merge & cleanup ---
 function personalize(
   text: string,
@@ -234,33 +240,40 @@ export function CustomerManagement() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, []);
 
-  const fetchCustomersWithClusterData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const headers = getAuthHeaders();
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/cluster-data`, {
-        headers: {
-          'Content-Type': 'application/json',
-          ...headers,
-        },
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Backend response for ${response.status}:`, errorText);
-        throw new Error(`HTTP error! Status: ${response.status}`);
+const fetchCustomersWithClusterData = useCallback(async () => {
+  setLoading(true);
+  setError(null);
+  const ac = new AbortController();
+  try {
+    const headers = getAuthHeaders();
+    const response = await fetch(
+      withBust(`https://quantnow-sa1e.onrender.com/api/customers/cluster-data`),
+      {
+        headers: { 'Content-Type': 'application/json', ...headers },
+        cache: 'no-store',
+        signal: ac.signal,
       }
+    );
 
-      const data: Customer[] = await response.json();
-      setCustomers(data);
-    } catch (err) {
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Backend response for ${response.status}:`, errorText);
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+
+    const data: Customer[] = await response.json();
+    setCustomers(data);
+  } catch (err) {
+    if ((err as any)?.name !== 'AbortError') {
       console.error('Failed to fetch clustered customers:', err);
       setError('Failed to load customers. Please try again.');
-    } finally {
-      setLoading(false);
     }
-  }, [getAuthHeaders]);
+  } finally {
+    setLoading(false);
+  }
+  return () => ac.abort();
+}, [getAuthHeaders]);
+
 
   useEffect(() => {
     fetchCustomersWithClusterData();
@@ -662,113 +675,130 @@ export function CustomerManagement() {
     }
   };
 
-  const handleCreateCustomer = async (customerData: CustomerSaveData) => {
-    setLoading(true);
-    try {
-      const response = await fetch('https://quantnow-sa1e.onrender.com/api/customers', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(),
-        },
-        body: JSON.stringify(customerData),
-      });
+const handleCreateCustomer = async (customerData: CustomerSaveData) => {
+  setLoading(true);
+  try {
+    const response = await fetch('https://quantnow-sa1e.onrender.com/api/customers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(customerData),
+    });
 
-      if (!response.ok) {
-        const errorBody = await response.json();
-        throw new Error(errorBody.error || 'Failed to create customer.');
-      }
-
-      toast({
-        title: 'Success',
-        description: 'Customer created successfully.',
-      });
-      setIsFormDialogOpen(false);
-      setCurrentCustomer(undefined);
-      await fetchCustomersWithClusterData();
-    } catch (err) {
-      console.error('Error creating customer:', err);
-      toast({
-        title: 'Error',
-        description: `Failed to create customer: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
+    if (!response.ok) {
+      const errorBody = await response.json();
+      throw new Error(errorBody.error || 'Failed to create customer.');
     }
-  };
 
-  const handleUpdateCustomer = async (id: string, customerData: CustomerSaveData) => {
-    setLoading(true);
-    try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(),
-        },
-        body: JSON.stringify(customerData),
-      });
+    const created: Customer = await response.json();
 
-      if (!response.ok) {
-        const errorBody = await response.json();
-        throw new Error(errorBody.error || 'Failed to update customer.');
-      }
+    // ✅ Optimistic insert
+    setCustomers(prev => [created, ...prev]);
 
-      toast({
-        title: 'Success',
-        description: 'Customer updated successfully.',
-      });
-      setIsFormDialogOpen(false);
-      setCurrentCustomer(undefined);
-      await fetchCustomersWithClusterData();
-    } catch (err) {
-      console.error('Error updating customer:', err);
-      toast({
-        title: 'Error',
-        description: `Failed to update customer: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
+    // If current tab hides this customer, switch to All so user sees it
+    const inCurrentCluster = filterCustomersByCluster(activeCluster).some(c => c.id === created.id);
+    if (!inCurrentCluster && activeCluster !== 'All') {
+      setActiveCluster('All');
     }
-  };
 
-  const handleDeleteCustomer = async (id: string) => {
-    setLoading(true);
-    try {
-      const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/${id}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders(),
-      });
+    toast({ title: 'Success', description: 'Customer created successfully.' });
+    setIsFormDialogOpen(false);
+    setCurrentCustomer(undefined);
 
-      if (!response.ok) {
-        const errorBody = await response.json();
-        throw new Error(errorBody.error || 'Failed to delete customer.');
-      }
+    // background reconcile (fresh)
+    fetchCustomersWithClusterData();
+  } catch (err) {
+    console.error('Error creating customer:', err);
+    toast({
+      title: 'Error',
+      description: `Failed to create customer: ${err instanceof Error ? err.message : String(err)}`,
+      variant: 'destructive',
+    });
+  } finally {
+    setLoading(false);
+  }
+};
 
-      toast({
-        title: 'Success',
-        description: 'Customer deleted successfully.',
-      });
-      await fetchCustomersWithClusterData();
-    } catch (err) {
-      console.error('Error deleting customer:', err);
-      toast({
-        title: 'Error',
-        description: `Failed to delete customer: ${
-          err instanceof Error ? err.message : err
-        }`,
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
+
+const handleUpdateCustomer = async (id: string, customerData: CustomerSaveData) => {
+  setLoading(true);
+  try {
+    const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(customerData),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json();
+      throw new Error(errorBody.error || 'Failed to update customer.');
     }
-  };
+
+    const updated: Customer = await response.json();
+
+    // ✅ Optimistic replace
+    setCustomers(prev => prev.map(c => (String(c.id) === String(id) ? updated : c)));
+
+    // Cluster visibility hint
+    const inCurrentCluster = filterCustomersByCluster(activeCluster).some(c => c.id === updated.id);
+    if (!inCurrentCluster && activeCluster !== 'All') {
+      toast({
+        title: 'Customer updated',
+        description: 'This customer is not in the current cluster; showing All.',
+      });
+      setActiveCluster('All');
+    }
+
+    toast({ title: 'Success', description: 'Customer updated successfully.' });
+    setIsFormDialogOpen(false);
+    setCurrentCustomer(undefined);
+
+    // background reconcile
+    fetchCustomersWithClusterData();
+  } catch (err) {
+    console.error('Error updating customer:', err);
+    toast({
+      title: 'Error',
+      description: `Failed to update customer: ${err instanceof Error ? err.message : String(err)}`,
+      variant: 'destructive',
+    });
+  } finally {
+    setLoading(false);
+  }
+};
+
+
+const handleDeleteCustomer = async (id: string) => {
+  setLoading(true);
+  try {
+    const response = await fetch(`https://quantnow-sa1e.onrender.com/api/customers/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json();
+      throw new Error(errorBody.error || 'Failed to delete customer.');
+    }
+
+    // ✅ Optimistic remove
+    setCustomers(prev => prev.filter(c => String(c.id) !== String(id)));
+
+    toast({ title: 'Success', description: 'Customer deleted successfully.' });
+
+    // background reconcile
+    fetchCustomersWithClusterData();
+  } catch (err) {
+    console.error('Error deleting customer:', err);
+    toast({
+      title: 'Error',
+      description: `Failed to delete customer: ${err instanceof Error ? err.message : String(err)}`,
+      variant: 'destructive',
+    });
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   const handleEditCustomer = (customer: Customer) => {
     setCurrentCustomer(customer);

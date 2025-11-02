@@ -53,10 +53,18 @@ finance: {
 
 customers: {
   label: 'Customers',
-  description: 'CLV share, overdue risk, churn watch',
+  description: 'value share, overdue risk, churn watch',
   color: 'green',
   icon: <PieChartOutlined />,
-  chartIds: ['cust-clv-donut', 'cust-overdue-bubbles', 'cust-churn-buckets'],
+  // wherever you define DASHBOARDS['customers']
+chartIds: [
+  'cust-clv-donut',
+  'cust-overdue-bubbles',
+  'cust-churn-buckets',
+  'ar-aging-totals-donut',     // <-- add
+  'ar-aging-top-stacked'       // <-- add
+],
+
 },
 
 };

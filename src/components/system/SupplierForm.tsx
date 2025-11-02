@@ -4,35 +4,34 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { DialogFooter } from '@/components/ui/dialog';
+import { Loader2 } from 'lucide-react';
 
-// This interface reflects the *full* Supplier object, including optional id and source-specific fields
+// Full Supplier object (for editing)
 interface Supplier {
   id?: string;
   name: string;
   email?: string;
   phone?: string;
   address?: string;
-  vatNumber?: string; // From /api/suppliers
-  totalPurchased?: number; // Not editable in this form
-  contactPerson?: string; // From /vendors
-  taxId?: string; // From /vendors
-  source?: 'api/suppliers' | 'vendors'; // To track the origin
+  vatNumber?: string;       // /api/suppliers
+  totalPurchased?: number;  // not editable here
+  contactPerson?: string;   // legacy /vendors
+  taxId?: string;           // legacy /vendors
+  source?: 'api/suppliers' | 'vendors';
 }
 
-// This interface defines the data structure that the form will *emit* when saved.
-// It aligns with the /api/suppliers endpoint's expected payload for creation/update.
+// Payload shape the backend expects for create/update
 interface SupplierFormData {
   name: string;
   email?: string;
   phone?: string;
   address?: string;
-  vatNumber?: string; // This field will capture both vatNumber and taxId from the UI
+  vatNumber?: string;
 }
 
 interface SupplierFormProps {
-  supplier?: Supplier; // The existing supplier data passed in for editing
-  // The onSave prop now expects data that matches what the backend expects for creation/update
-  onSave: (supplierData: SupplierFormData) => void;
+  supplier?: Supplier;
+  onSave: (supplierData: SupplierFormData) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -41,82 +40,110 @@ export function SupplierForm({
   onSave,
   onCancel
 }: SupplierFormProps) {
-  // Initialize formData with current supplier data or empty strings.
-  // For vatNumber, prioritize supplier.vatNumber, then supplier.taxId.
   const [formData, setFormData] = useState<SupplierFormData>({
     name: supplier?.name || '',
     email: supplier?.email || '',
     phone: supplier?.phone || '',
     address: supplier?.address || '',
-    vatNumber: supplier?.vatNumber || supplier?.taxId || '' // Crucial: use taxId if vatNumber is missing
+    // prefer vatNumber, fall back to legacy taxId
+    vatNumber: supplier?.vatNumber || supplier?.taxId || ''
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Pass only the data relevant for saving (excluding id, totalPurchased, contactPerson, taxId, source)
-    // The `vatNumber` in formData will contain the value from either original vatNumber or taxId.
-    onSave(formData);
+    if (isSubmitting) return; // hard guard against double-click
+
+    setSubmitError(null);
+    setIsSubmitting(true);
+
+    try {
+      await Promise.resolve(onSave(formData));
+      // parent typically closes dialog; if not, we re-enable:
+      setIsSubmitting(false);
+    } catch (err: any) {
+      setSubmitError(err?.message || 'Failed to save supplier.');
+      setIsSubmitting(false);
+    }
   };
 
   return (
-    <form onSubmit={handleSubmit} className='space-y-4'>
-      <div className='grid grid-cols-2 gap-4'>
+    <form onSubmit={handleSubmit} className="space-y-4" aria-busy={isSubmitting}>
+      <div className="grid grid-cols-2 gap-4">
         <div>
-          <Label htmlFor='name'>Company Name *</Label>
+          <Label htmlFor="name">Company Name *</Label>
           <Input
-            id='name'
+            id="name"
+            required
             value={formData.name}
             onChange={e => setFormData({ ...formData, name: e.target.value })}
-            required
+            disabled={isSubmitting}
           />
         </div>
         <div>
-          <Label htmlFor='email'>Email</Label> {/* Made optional in backend, so no '*' here */}
+          <Label htmlFor="email">Email</Label>
           <Input
-            id='email'
-            type='email'
+            id="email"
+            type="email"
             value={formData.email}
             onChange={e => setFormData({ ...formData, email: e.target.value })}
+            disabled={isSubmitting}
           />
         </div>
       </div>
 
-      <div className='grid grid-cols-2 gap-4'>
+      <div className="grid grid-cols-2 gap-4">
         <div>
-          <Label htmlFor='phone'>Phone</Label>
+          <Label htmlFor="phone">Phone</Label>
           <Input
-            id='phone'
+            id="phone"
             value={formData.phone}
             onChange={e => setFormData({ ...formData, phone: e.target.value })}
+            disabled={isSubmitting}
           />
         </div>
         <div>
-          <Label htmlFor='vatNumber'>VAT Number / Tax ID</Label> {/* Updated label */}
+          <Label htmlFor="vatNumber">VAT Number / Tax ID</Label>
           <Input
-            id='vatNumber'
+            id="vatNumber"
             value={formData.vatNumber}
-            onChange={e =>
-              setFormData({ ...formData, vatNumber: e.target.value })
-            }
+            onChange={e => setFormData({ ...formData, vatNumber: e.target.value })}
+            disabled={isSubmitting}
           />
         </div>
       </div>
 
       <div>
-        <Label htmlFor='address'>Address</Label>
+        <Label htmlFor="address">Address</Label>
         <Textarea
-          id='address'
+          id="address"
+          rows={3}
           value={formData.address}
           onChange={e => setFormData({ ...formData, address: e.target.value })}
-          rows={3}
+          disabled={isSubmitting}
         />
       </div>
 
+      {submitError && (
+        <p className="text-sm text-red-600">{submitError}</p>
+      )}
+
       <DialogFooter>
-        <Button type='button' variant='outline' onClick={onCancel}>
+        <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
           Cancel
         </Button>
-        <Button type='submit'>{supplier ? 'Update' : 'Create'} Supplier</Button>
+        <Button type="submit" disabled={isSubmitting} className="min-w-[160px]">
+          {isSubmitting ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {supplier ? 'Updating…' : 'Creating…'}
+            </>
+          ) : (
+            <>{supplier ? 'Update' : 'Create'} Supplier</>
+          )}
+        </Button>
       </DialogFooter>
     </form>
   );

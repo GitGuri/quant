@@ -197,6 +197,14 @@ const ProductsPage = () => {
     })();
   }, []);
 
+  // put this right under API_BASE/api object
+const withBust = (url: string, bust?: boolean) => {
+  if (!bust) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}__ts=${Date.now()}`;
+};
+
+
   // ---------- LOAD (with cache) ----------
   const mapBackendToProduct = (p: any): ProductWithBranch => ({
     id: p.id,
@@ -216,36 +224,45 @@ const ProductsPage = () => {
     branch_name: p.branch_name ?? null,
   });
 
-  const fetchProducts = useCallback(async () => {
-    if (!isUserAuthenticated) {
-      setProducts([]);
-      setLoading(false);
-      messageApi.warning('Please log in to load products.');
-      return;
-    }
-    setLoading(true);
-    try {
-      const { data, fromCache, error } = await fetchWithCache<any[]>(
-        `products:list:${selectedBranchId ?? 'ALL'}`, // cache key per branch filter
-        api.list(selectedBranchId || undefined),
-        { headers: { ...getAuthHeaders() } }
-      );
-      if (data) {
-        const transformed: ProductWithBranch[] = data.map(mapBackendToProduct);
-        setProducts(transformed);
-        if (fromCache) {
-          messageApi.info('Showing cached products (offline).');
-        } else {
-          messageApi.success('Products loaded.');
-        }
-      } else {
-        setProducts([]);
-        if (error) messageApi.error('Failed to load products.');
+// REPLACE your current fetchProducts with this version
+const fetchProducts = useCallback(async (fresh = false) => {
+  if (!isUserAuthenticated) {
+    setProducts([]);
+    setLoading(false);
+    messageApi.warning('Please log in to load products.');
+    return;
+  }
+  setLoading(true);
+  try {
+    const url = withBust(api.list(selectedBranchId || undefined), fresh);
+
+    // IMPORTANT: change the cache key when forcing fresh
+    const keyBase = `products:list:${selectedBranchId ?? 'ALL'}`;
+    const cacheKey = fresh ? `${keyBase}:bust:${Date.now()}` : keyBase;
+
+    const { data, fromCache, error } = await fetchWithCache<any[]>(
+      cacheKey,
+      url,
+      { headers: { ...getAuthHeaders() }, fetchInit: { cache: 'no-store' } }
+    );
+
+    if (data) {
+      const transformed: ProductWithBranch[] = data.map(mapBackendToProduct);
+      setProducts(transformed);
+      if (!fresh) {
+        if (fromCache) messageApi.info('Showing cached products (offline).');
+        else messageApi.success('Products loaded.');
       }
-    } finally {
-      setLoading(false);
+    } else {
+      setProducts([]);
+      if (error) messageApi.error('Failed to load products.');
     }
-  }, [isUserAuthenticated, messageApi, selectedBranchId]);
+  } finally {
+    setLoading(false);
+  }
+}, [isUserAuthenticated, messageApi, selectedBranchId]);
+
+
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
@@ -408,13 +425,29 @@ const ProductsPage = () => {
         return;
       }
 
-      const data = await res.json();
-      optimisticMerge(data);
-      messageApi.success(`Product ${isNew ? 'added' : 'updated'} successfully.`);
-      closeForm();
+const data = await res.json();
 
-      await flushQueue();
-      await fetchProducts();
+// optimistic update so the row appears instantly
+optimisticMerge(data);
+
+// close UI
+closeForm();
+
+// if product was created in a different branch than the current filter,
+// switch the filter so you can see it immediately
+const createdBranch = data?.branch_id ?? null;
+if (hasBranches && selectedBranchId && createdBranch && createdBranch !== selectedBranchId) {
+  setSelectedBranchId(createdBranch);
+  localStorage.setItem('products.selected_branch_id', createdBranch);
+}
+
+messageApi.success(`Product ${isNew ? 'added' : 'updated'} successfully.`);
+
+// flush any queued writes and then force a truly fresh reload
+await flushQueue();
+await fetchProducts(true);
+
+
     } catch (err: any) {
       if (isNetworkError(err)) {
         await enqueueRequest(endpoint, method, body, headers);
@@ -454,10 +487,11 @@ const ProductsPage = () => {
         return;
       }
 
-      optimisticRemove();
-      messageApi.success('Deleted successfully.');
-      await flushQueue();
-      await fetchProducts();
+optimisticRemove();
+messageApi.success('Deleted successfully.');
+await flushQueue();
+await fetchProducts(true);   // <— force fresh
+
     } catch (err: any) {
       if (isNetworkError(err)) {
         await enqueueRequest(endpoint, 'DELETE', null, headers);
@@ -549,12 +583,13 @@ const ProductsPage = () => {
         return;
       }
 
-      optimisticRestock();
-      setRestockModalVisible(false);
-      setRestockProduct(null);
-      messageApi.success('Product restocked successfully!');
-      await flushQueue();
-      await fetchProducts(); // pulls the **new avg cost** back from API
+optimisticRestock();
+setRestockModalVisible(false);
+setRestockProduct(null);
+messageApi.success('Product restocked successfully!');
+await flushQueue();
+await fetchProducts(true);   // <— force fresh (pulls new avg cost)
+ // pulls the **new avg cost** back from API
     } catch (err: any) {
       if (isNetworkError(err)) {
         await enqueueRequest(endpoint, 'POST', payload, headers);
@@ -762,7 +797,7 @@ const ProductsPage = () => {
             <Col span={12}>
               <Form.Item
                 name="sellingPrice"
-                label="Selling Price"
+                label="Selling Price (per unit)"
                 rules={[{ required: true }]}
                 style={{ marginBottom: 0 }}
               >
@@ -772,7 +807,7 @@ const ProductsPage = () => {
             <Col span={12}>
               <Form.Item
                 name="purchasePrice"
-                label="Purchase Price (Net)"
+                label="Purchase Price (per unit)"
                 tooltip="A reference cost. Stock valuation will use the Initial Stock Receipt values below."
                 rules={[{ required: true }]}
                 style={{ marginBottom: 0 }}
@@ -878,14 +913,7 @@ const ProductsPage = () => {
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item
-                  name="initUnitCostIncl"
-                  label="Unit Cost"
-                  tooltip="Per unit incl VAT used to value the initial stock receipt"
-                  rules={[{ required: true, message: 'Enter unit cost incl VAT for initial stock' }]}
-                >
-                  <InputNumber min={0} style={{ width: '100%' }} formatter={moneyFormatter} parser={moneyParser} />
-                </Form.Item>
+
               </Col>
             </Row>
 
