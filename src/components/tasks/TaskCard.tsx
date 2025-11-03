@@ -1,4 +1,3 @@
-// TaskCard.tsx
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -43,9 +42,8 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { TaskFormData } from './TaskForm';
 
-
 // ---------- Config ----------
-const API_BASE = 'https://quantnow-sa1e.onrender.com'
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 // ---------- Types ----------
 interface TaskStep {
@@ -290,7 +288,6 @@ const StepsDialog = ({
   const remove = (i: number) =>
     setSteps((prev) => prev.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, position: idx })));
 
-  // derive progress live
   const totalW = steps.reduce((sum, s) => sum + (s.weight ?? 0), 0);
   const doneW = steps.filter((s) => s.is_done).reduce((sum, s) => sum + (s.weight ?? 0), 0);
   const stepPct = totalW > 0 ? Math.round((doneW / totalW) * 100) : 0;
@@ -420,6 +417,35 @@ const ProgressOptionsDialog = ({
     });
   };
 
+  function CustomIncrement({
+    disabled,
+    onApply,
+  }: { disabled?: boolean; onApply: (n: number) => void }) {
+    const [val, setVal] = useState<string>('');
+    const apply = () => {
+      const n = Number(val);
+      if (!Number.isFinite(n) || n === 0) return;
+      onApply(n);
+      setVal('');
+    };
+    return (
+      <div className="flex items-center gap-2">
+        <Input
+          type="number"
+          inputMode="numeric"
+          placeholder="Custom increment (e.g. 7 or -3)"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          className="flex-1"
+          disabled={disabled}
+        />
+        <Button onClick={apply} disabled={disabled || val.trim() === ''}>
+          Apply
+        </Button>
+      </div>
+    );
+  }
+
   const manualSave = async () => {
     setIsSaving(true);
     try {
@@ -436,18 +462,24 @@ const ProgressOptionsDialog = ({
   const inc = async (n: number) => {
     setIsSaving(true);
     try {
-      // optimistic new % if we're in target mode and have goal/current
       let newPct: number | null = null;
-      if (task.progress_mode === 'target' && task.progress_goal) {
-        const newCurrent = Math.min((task.progress_current ?? 0) + n, task.progress_goal);
-        newPct = Math.round((newCurrent / task.progress_goal) * 100);
+      if (task.progress_mode === 'target' && task.progress_goal != null) {
+        const curr = task.progress_current ?? 0;
+        const goal = task.progress_goal;
+        const next = Math.max(0, Math.min(goal, curr + n)); // clamp to [0, goal]
+        const delta = next - curr;
+        if (delta === 0) {
+          setIsSaving(false);
+          return;
+        }
+        newPct = Math.round((next / goal) * 100);
+        await onIncrementProgress(task.id, delta);
+      } else {
+        await onIncrementProgress(task.id, n);
       }
-      await onIncrementProgress(task.id, n);
-      if (newPct !== null) {
-        await putStatusForPct(newPct);
-      }
+      if (newPct !== null) await putStatusForPct(newPct);
       onTaskUpdate?.();
-      onClose();
+      // keep dialog open for repeated clicks
     } finally {
       setIsSaving(false);
     }
@@ -466,7 +498,7 @@ const ProgressOptionsDialog = ({
         <div className="grid gap-4 py-4">
           {task.progress_mode === 'manual' && (
             <div className="space-y-2">
-              <Label>Manual Progress (%)</Label>
+              <Label>Percentage Based Progress (%)</Label>
               <div className="flex items-center gap-2">
                 <Input
                   type="number"
@@ -487,15 +519,21 @@ const ProgressOptionsDialog = ({
           {task.progress_mode === 'target' && (
             <div className="space-y-2">
               <Label>Target-Based</Label>
-              <div className="flex gap-2">
+
+              <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={openTarget} disabled={isSaving}>
                   <Target className="h-4 w-4 mr-2" />
                   Adjust Target
                 </Button>
-                <Button onClick={() => inc(1)} disabled={isSaving}>
-                  +1 current
-                </Button>
+
+                <Button onClick={() => inc(2)} disabled={isSaving}>+2</Button>
+                <Button onClick={() => inc(5)} disabled={isSaving}>+5</Button>
+                <Button onClick={() => inc(10)} disabled={isSaving}>+10</Button>
+                <Button variant="outline" onClick={() => inc(-2)} disabled={isSaving}>−2</Button>
               </div>
+
+              <CustomIncrement disabled={isSaving} onApply={(n) => inc(n)} />
+
               <p className="text-xs text-gray-500">
                 Current: {task.progress_current ?? 0} / {task.progress_goal ?? '—'}
               </p>
@@ -527,7 +565,10 @@ const ProgressOptionsDialog = ({
               aria-valuemin={0}
               aria-valuemax={100}
             >
-              <div className="bg-blue-600 h-1.5 rounded-full" style={{ width: `${Math.max(0, Math.min(100, Math.round(task.progress_percentage || 0)))}%` }} />
+              <div
+                className="bg-blue-600 h-1.5 rounded-full"
+                style={{ width: `${Math.max(0, Math.min(100, Math.round(task.progress_percentage || 0)))}%` }}
+              />
             </div>
           </div>
         </div>
@@ -571,7 +612,17 @@ export function TaskCard({
     opacity: isDragging ? 0.8 : 1,
   } as const;
 
-  // derive step-based percentage for display if steps mode
+  // helpers for inline quick buttons
+  const canAdd = (k: number) =>
+    task.progress_goal != null && task.progress_current != null
+      ? task.progress_current + k <= task.progress_goal
+      : true;
+
+  const canDec = (k: number) => (task.progress_current ?? 0) - k >= 0;
+
+  const applyDelta = (n: number) => incrementProgress(task.id, n).then(() => onTaskUpdate?.());
+
+  // derive step-based percentage if in steps mode
   const derivedFromSteps = useMemo(() => {
     if (task.progress_mode !== 'steps' || !task.steps?.length) return null;
     const total = task.steps.reduce((s, st) => s + (st.weight ?? 0), 0);
@@ -580,11 +631,7 @@ export function TaskCard({
     return Math.round((done / total) * 100);
   }, [task.progress_mode, task.steps]);
 
-  // final % we render on the card
-  const displayPct = Math.max(
-    0,
-    Math.min(100, Math.round(derivedFromSteps ?? task.progress_percentage ?? 0))
-  );
+  const displayPct = Math.max(0, Math.min(100, Math.round(derivedFromSteps ?? task.progress_percentage ?? 0)));
 
   const handleEditSave = (updatedFormTask: TaskFormData) => {
     onEdit({
@@ -859,23 +906,72 @@ export function TaskCard({
                 <span className="text-xs text-gray-500">
                   {task.progress_current ?? 0} / {task.progress_goal}
                 </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-6 px-2 text-xs"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // use hook instance defined at top (fixed)
-                    incrementProgress(task.id, 1).then(() => onTaskUpdate?.());
-                  }}
-                  disabled={
-                    task.progress_current !== null &&
-                    task.progress_goal !== null &&
-                    task.progress_current >= task.progress_goal
-                  }
-                >
-                  +1
-                </Button>
+
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      applyDelta(2);
+                    }}
+                    disabled={!canAdd(2)}
+                  >
+                    +2
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      applyDelta(5);
+                    }}
+                    disabled={!canAdd(5)}
+                  >
+                    +5
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      applyDelta(10);
+                    }}
+                    disabled={!canAdd(10)}
+                  >
+                    +10
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      applyDelta(-2);
+                    }}
+                    disabled={!canDec(2)}
+                  >
+                    −2
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowProgressOptionsDialog(true);
+                    }}
+                  >
+                    Custom…
+                  </Button>
+                </div>
               </div>
             )}
 

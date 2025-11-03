@@ -213,7 +213,7 @@ const Transactions: React.FC = () => {
 
   // Loading
   const [loading, setLoading] = useState(false);
-  const [computingDups, setComputingDups] = useState(false);
+
   const [deleteDupBusy, setDeleteDupBusy] = useState(false);
   const [dupGroupsPreview, setDupGroupsPreview] = useState<
     { survivor: UnifiedTxViewRow; duplicates: UnifiedTxViewRow[] }[]
@@ -321,72 +321,60 @@ const Transactions: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---------- On-demand duplicate computation ----------
-  useEffect(() => {
-    if (!showDupOnly || unifiedRows.length === 0) return;
+  const annotatedRows = useMemo(() => {
+    if (!showDupOnly || unifiedRows.length === 0) return unifiedRows;
 
-    let cancelled = false;
-    (async () => {
-      try {
-        setComputingDups(true);
+    const byAmount = new Map<number, UnifiedTxViewRow[]>();
+    for (const r of unifiedRows) {
+      const key = Number(r.amount.toFixed(2));
+      const list = byAmount.get(key) || [];
+      list.push(r);
+      byAmount.set(key, list);
+    }
 
-        const byAmount = new Map<number, UnifiedTxViewRow[]>();
-        for (const r of unifiedRows) {
-          const key = Number(r.amount.toFixed(2));
-          const list = byAmount.get(key) || [];
-          list.push(r);
-          byAmount.set(key, list);
-        }
+    const next = unifiedRows.map(r => ({ ...r, dupCount: 0, dupMatches: [] as DupView[] }));
 
-        const next = unifiedRows.map(r => ({ ...r, dupCount: 0, dupMatches: [] as DupView[] }));
+    for (const [, list] of byAmount) {
+      if (list.length < 2) continue;
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i], b = list[j];
+          const { isDup, score } = isPotentialDuplicate(a, b);
+          if (!isDup) continue;
 
-        for (const [_amt, list] of byAmount) {
-          if (list.length < 2) continue;
-          for (let i = 0; i < list.length; i++) {
-            for (let j = i + 1; j < list.length; j++) {
-              const a = list[i], b = list[j];
-              const { isDup, score } = isPotentialDuplicate(a, b);
-              if (!isDup) continue;
+          const ai = next.findIndex(x => x.id === a.id);
+          const bi = next.findIndex(x => x.id === b.id);
 
-              const ai = next.findIndex(x => x.id === a.id);
-              const bi = next.findIndex(x => x.id === b.id);
-              if (ai >= 0) {
-                (next[ai].dupMatches as DupView[]).push({
-                  id: Number(b.sourceId),
-                  date: b.date,
-                  memo: b.description,
-                  amount: b.amount,
-                  score,
-                });
-                next[ai].dupCount = (next[ai].dupMatches as DupView[]).length;
-              }
-              if (bi >= 0) {
-                (next[bi].dupMatches as DupView[]).push({
-                  id: Number(a.sourceId),
-                  date: a.date,
-                  memo: a.description,
-                  amount: a.amount,
-                  score,
-                });
-                next[bi].dupCount = (next[bi].dupMatches as DupView[]).length;
-              }
-            }
+          if (ai >= 0) {
+            (next[ai].dupMatches as DupView[]).push({
+              id: Number(b.sourceId),
+              date: b.date,
+              memo: b.description,
+              amount: b.amount,
+              score,
+            });
+            next[ai].dupCount = (next[ai].dupMatches as DupView[]).length;
+          }
+          if (bi >= 0) {
+            (next[bi].dupMatches as DupView[]).push({
+              id: Number(a.sourceId),
+              date: a.date,
+              memo: a.description,
+              amount: a.amount,
+              score,
+            });
+            next[bi].dupCount = (next[bi].dupMatches as DupView[]).length;
           }
         }
-
-        for (const r of next) {
-          if (r.dupMatches && r.dupMatches.length) {
-            r.dupMatches.sort((x, y) => y.score - x.score);
-          }
-        }
-
-        if (!cancelled) setUnifiedRows(next);
-      } finally {
-        if (!cancelled) setComputingDups(false);
       }
-    })();
+    }
 
-    return () => { cancelled = true; };
+    for (const r of next) {
+      if (r.dupMatches && r.dupMatches.length) {
+        r.dupMatches.sort((x, y) => y.score - x.score);
+      }
+    }
+    return next;
   }, [showDupOnly, unifiedRows]);
 
   // ---------- Build / preview groups and delete dups (keep 1) ----------
@@ -412,7 +400,6 @@ const Transactions: React.FC = () => {
       if (!dupGroupsPreview.length) return;
     }
     const totalDeletes = dupGroupsPreview.reduce((n, g) => n + g.duplicates.length, 0);
-    // native confirm kept for speed; swap to shadcn AlertDialog later if you want
     if (!confirm(`Delete ${totalDeletes} duplicate entr${totalDeletes === 1 ? 'y' : 'ies'} across ${dupGroupsPreview.length} group(s)? This cannot be undone.`)) {
       return;
     }
@@ -456,7 +443,7 @@ const Transactions: React.FC = () => {
   );
 
   const filteredRows = useMemo(() => {
-    let r = unifiedRows;
+    let r = annotatedRows;
 
     if (selectedAccountFilter !== 'all' && selectedAccountFilter) {
       const filterId = Number(selectedAccountFilter);
@@ -476,20 +463,7 @@ const Transactions: React.FC = () => {
       );
     }
     return r;
-  }, [unifiedRows, selectedAccountFilter, showDupOnly, searchTerm, resolveAccountLabel]);
-
-  // ---------- Select / Bulk delete ----------
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const n = new Set(prev);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
-    });
-  };
-  const allVisibleSelected =
-    filteredRows.length > 0 &&
-    filteredRows.every(r => selectedIds.has(r.id));
+  }, [annotatedRows, selectedAccountFilter, showDupOnly, searchTerm, resolveAccountLabel]);
 
   // ---------- Delete ----------
   const deleteOne = async (unifiedId: string, _sourceType: TransactionSourceType) => {
@@ -764,9 +738,8 @@ const Transactions: React.FC = () => {
                   onClick={() => setShowDupOnly(v => !v)}
                   className="w-full"
                   disabled={loading}
-                  title={computingDups ? 'Finding duplicates…' : undefined}
                 >
-                  {computingDups ? 'Finding dups…' : (showDupOnly ? 'Showing Duplicates' : 'Duplicates Only')}
+                  {showDupOnly ? 'Showing Duplicates' : 'Duplicates Only'}
                 </Button>
               </div>
             </div>
@@ -795,7 +768,7 @@ const Transactions: React.FC = () => {
               <Button
                 variant="outline"
                 onClick={previewDuplicateGroups}
-                disabled={loading || computingDups || deleteDupBusy}
+                disabled={loading || deleteDupBusy}
                 title="Preview duplicate groups (keep 1 per group)"
               >
                 Preview dups
@@ -803,7 +776,7 @@ const Transactions: React.FC = () => {
               <Button
                 variant="destructive"
                 onClick={deleteDuplicatesKeepOne}
-                disabled={loading || computingDups || deleteDupBusy || !unifiedRows.length}
+                disabled={loading || deleteDupBusy || !unifiedRows.length}
                 title="Delete duplicates and keep one per group"
               >
                 {deleteDupBusy ? 'Deleting…' : 'Delete dups (keep 1)'}
@@ -824,7 +797,7 @@ const Transactions: React.FC = () => {
         {/* Top actions */}
         <div className="flex flex-wrap gap-2 items-center justify-between">
           <div className="text-sm text-muted-foreground">
-            {loading ? 'Loading…' : `${filteredRows.length} transaction(s)`}{computingDups ? ' (scanning dups…)': ''}
+            {loading ? 'Loading…' : `${filteredRows.length} transaction(s)`}
           </div>
           <div className="flex gap-2 items-center">
             {selectedIds.size > 0 && (

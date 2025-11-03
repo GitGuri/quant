@@ -1,3 +1,4 @@
+// src/App.tsx
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar';
 import { AppSidebar } from './components/layout/AppSidebar';
@@ -26,118 +27,245 @@ import SuperAgentDashboard from './pages/SuperAgentDashboard';
 import AgentDashboard from './pages/AgentDashboard';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
 import ResetPassword from '@/pages/ResetPassword';
-// ✅ Unified Auth Page (Login + Register)
 import { AuthPage, AuthProvider, useAuth } from './AuthPage';
 import { Header } from './components/layout/Header';
 import { CurrencyProvider } from './contexts/CurrencyContext';
-
-// NEW: Import POS sub-pages from the recommended structure
 import POSScreen from './pages/POS';
 import ProductsPage from './pages/pos/ProductsPage';
 import CreditPaymentsScreen from './pages/pos/CreditPaymentsScreen';
 import CashInScreen from './pages/pos/CashInScreen';
 import OAuthCallback from './pages/OAuthCallback';
 import VerifyEmail from './pages/VerifyEmail';
+import RequireRoles from '@/components/auth/RequireRoles';
 import './lib/fetch-patch';
 
-// ✅ PrivateRoute wrapper
-const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useAuth();
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" />;
-};
-
-const AppContent = () => {
-  const { isAuthenticated } = useAuth();
-
-  // ✅ Role-based route protection
-  const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: string[] }> = ({ 
-    children, 
-    allowedRoles 
-  }) => {
-    const { isAuthenticated, userRoles } = useAuth();
-    
-    if (!isAuthenticated) {
-      return <Navigate to="/login" />;
-    }
-    
-    if (!allowedRoles || allowedRoles.length === 0) {
-      return <>{children}</>;
-    }
-    
-    const hasAccess = userRoles?.some((role: string) => allowedRoles.includes(role));
-    
-    if (!hasAccess) {
-      return <Navigate to="/unauthorized" replace />;
-    }
-    
-    return <>{children}</>;
-  };
-
-  // ✅ Unauthorized page component
-
-const Unauthorized = () => (
+const Forbidden = () => (
   <div className="flex-1 space-y-4 p-4 md:p-6 lg:p-8">
-    {/* ✅ Reuse the exact same Header */}
-    <Header title="Welcome" />
-
+    <Header title="Access denied" />
     <div className="flex items-center justify-center mt-10">
       <div className="text-center max-w-lg">
-        <p className="text-gray-600 text-lg">
-          Welcome to <span className="font-semibold">QxAnalytix</span>.  
-          Please select any of the tabs on the left to get started.
+        <h1 className="text-3xl font-bold mb-2">403 • Forbidden</h1>
+        <p className="text-gray-600">
+          You don’t have permission to view this page.
         </p>
       </div>
     </div>
   </div>
 );
 
+const AppContent = () => {
+  const { isAuthenticated } = useAuth();
+
   return (
     <div className="min-h-screen flex w-full">
       {isAuthenticated && <AppSidebar />}
       <SidebarInset className="flex-1">
-
         <FinancialsProvider>
-
           <Routes>
-            {/* ✅ Unified Login/Register Page */}
+            {/* Public / auth */}
             <Route path="/login" element={<AuthPage />} />
-
-            {/* ✅ Protected Routes with role restrictions */}
-            <Route path="/unauthorized" element={<Unauthorized />} />
-            <Route 
-              path="/" 
-              element={
-                <ProtectedRoute allowedRoles={['admin','user','dashboard','ceo', 'manager', 'cashier']}>
-                  <Dashboard />
-                </ProtectedRoute>
-              } 
-            />
             <Route path="/auth" element={<AuthPage />} />
             <Route path="/reset-password" element={<ResetPassword />} />
-            <Route path="/tasks" element={<PrivateRoute><Tasks /></PrivateRoute>} />
-            <Route path="/transactions" element={<PrivateRoute><Transactions /></PrivateRoute>} />
-            <Route path="/financials" element={<PrivateRoute><Financials /></PrivateRoute>} />
-            <Route path="/analytics" element={<PrivateRoute><AnalyticsHub /></PrivateRoute>} />
-            <Route path="/analytics/:dashKey" element={<PrivateRoute><AnalyticsDashboard /></PrivateRoute>} />
-            <Route path="/import" element={<PrivateRoute><ImportScreen /></PrivateRoute>} />
-            <Route path="/invoice-quote" element={<PrivateRoute><InvoiceQuote /></PrivateRoute>} />
-            <Route path="/payroll" element={<PrivateRoute><PayrollDashboard /></PrivateRoute>} />
-            <Route path="/quant-chat" element={<PrivateRoute><QuantChat /></PrivateRoute>} />
-            <Route path="/projections" element={<PrivateRoute><Projections /></PrivateRoute>} />
-            <Route path="/accounting" element={<PrivateRoute><Accounting /></PrivateRoute>} />
-            <Route path="/user-management" element={<PrivateRoute><UserManagementPage /></PrivateRoute>} />
-            <Route path="/pos" element={<PrivateRoute><POSScreen /></PrivateRoute>} />
-            <Route path="/pos/products" element={<PrivateRoute><ProductsPage /></PrivateRoute>} />
-            <Route path="/pos/credits" element={<PrivateRoute><CreditPaymentsScreen /></PrivateRoute>} />
-            <Route path="/pos/cash" element={<PrivateRoute><CashInScreen /></PrivateRoute>} />
-            <Route path="/documents" element={<PrivateRoute><DocumentManagement /></PrivateRoute>} />
-            <Route path="/personel-setup" element={<PrivateRoute><PersonelSetup /></PrivateRoute>} />
-            <Route path="/profile-setup" element={<PrivateRoute><ProfileSetup /></PrivateRoute>} />
-            <Route path="/agent-signup" element={<PrivateRoute><AgentSignup /></PrivateRoute>} />
-            <Route path="/agent-dashboard" element={<PrivateRoute><AgentDashboard /></PrivateRoute>} />
-            <Route path="/oauth-callback" element={<OAuthCallback />} />
             <Route path="/verify-email" element={<VerifyEmail />} />
-            <Route path="/super-agent-dashboard" element={<PrivateRoute><SuperAgentDashboard /></PrivateRoute>} />
+            <Route path="/oauth-callback" element={<OAuthCallback />} />
+
+            {/* 403 */}
+            <Route path="/403" element={<Forbidden />} />
+
+            {/* Dashboard */}
+            <Route
+              path="/"
+              element={
+                <RequireRoles anyOf={['admin','user','dashboard','ceo','manager','cashier']}>
+                  <Dashboard />
+                </RequireRoles>
+              }
+            />
+
+            {/* Core modules */}
+            <Route
+              path="/tasks"
+              element={
+                <RequireRoles anyOf={['manager','tasks','admin','user']}>
+                  <Tasks />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/transactions"
+              element={
+                <RequireRoles anyOf={['manager','accountant','transactions','admin','user']}>
+                  <Transactions />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/financials"
+              element={
+                <RequireRoles anyOf={['admin','manager','accountant','financials']}>
+                  <Financials />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/analytics"
+              element={
+                <RequireRoles anyOf={['admin','manager','accountant','data-analytics','user']}>
+                  <AnalyticsHub />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/analytics/:dashKey"
+              element={
+                <RequireRoles anyOf={['admin','manager','accountant','data-analytics','user']}>
+                  <AnalyticsDashboard />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/import"
+              element={
+                <RequireRoles anyOf={['manager','import','admin','user']}>
+                  <ImportScreen />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/invoice-quote"
+              element={
+                <RequireRoles anyOf={['manager','accountant','invoice','admin','user']}>
+                  <InvoiceQuote />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/payroll"
+              element={
+                <RequireRoles anyOf={['manager','payroll','accountant','admin','user']}>
+                  <PayrollDashboard />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/quant-chat"
+              element={
+                <RequireRoles anyOf={['admin','manager','user','cashier','accountant','ceo','chat']}>
+                  <QuantChat />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/projections"
+              element={
+                <RequireRoles anyOf={['admin','manager','accountant','projections','user']}>
+                  <Projections />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/accounting"
+              element={
+                <RequireRoles anyOf={['admin','accountant','accounting','user','ceo']}>
+                  <Accounting />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/user-management"
+              element={
+                <RequireRoles anyOf={['admin','ceo','user-management','user']}>
+                  <UserManagementPage />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/documents"
+              element={
+                <RequireRoles anyOf={['admin','manager','user','cashier','accountant','ceo','documents']}>
+                  <DocumentManagement />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/personel-setup"
+              element={
+                <RequireRoles anyOf={['admin','manager','accountant','personel-setup','user','ceo']}>
+                  <PersonelSetup />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/profile-setup"
+              element={
+                <RequireRoles anyOf={['admin','user','profile-setup','ceo']}>
+                  <ProfileSetup />
+                </RequireRoles>
+              }
+            />
+
+            {/* POS */}
+            <Route
+              path="/pos"
+              element={
+                <RequireRoles anyOf={['cashier','user','pos-transact','accountant','admin']}>
+                  <POSScreen />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/pos/products"
+              element={
+                <RequireRoles anyOf={['manager','pos-admin','accountant','user','admin','ceo']}>
+                  <ProductsPage />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/pos/credits"
+              element={
+                <RequireRoles anyOf={['manager','pos-admin','accountant','user','admin']}>
+                  <CreditPaymentsScreen />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/pos/cash"
+              element={
+                <RequireRoles anyOf={['manager','pos-admin','accountant','user','admin']}>
+                  <CashInScreen />
+                </RequireRoles>
+              }
+            />
+
+            {/* Zororo */}
+            <Route
+              path="/agent-signup"
+              element={
+                <RequireRoles anyOf={['agent','super-agent','admin','user']}>
+                  <AgentSignup />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/agent-dashboard"
+              element={
+                <RequireRoles anyOf={['agent','admin','user']}>
+                  <AgentDashboard />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/super-agent-dashboard"
+              element={
+                <RequireRoles anyOf={['super-agent','admin','user']}>
+                  <SuperAgentDashboard />
+                </RequireRoles>
+              }
+            />
+
+            {/* Fallbacks */}
+            <Route path="/unauthorized" element={<Navigate to="/403" replace />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </FinancialsProvider>
@@ -154,7 +282,7 @@ const App = () => (
       <AuthProvider>
         <SidebarProvider>
           <CurrencyProvider>
-          <AppContent />
+            <AppContent />
           </CurrencyProvider>
         </SidebarProvider>
       </AuthProvider>

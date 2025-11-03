@@ -1,4 +1,4 @@
-// TaskForm.tsx
+// src/components/tasks/TaskForm.tsx
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,10 +28,11 @@ export type TaskFormData = {
   assignee_id?: string | null;
   assignee_ids?: string[];
 
-  // only "target" or "steps"
-  progress_mode?: 'target' | 'steps';
-  progress_goal?: number | null;
-  progress_current?: number | null;
+  // 'manual' | 'target' | 'steps'
+  progress_mode?: 'manual' | 'target' | 'steps';
+  progress_goal?: number | null;       // target mode
+  progress_current?: number | null;    // target mode
+  progress_percentage?: number | null; // manual mode
 };
 
 type Props = {
@@ -68,8 +69,15 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
     Array.isArray(task?.assignee_ids) ? task!.assignee_ids! : (assigneeId ? [assigneeId] : [])
   );
 
-  // progress
-  const [mode, setMode] = useState<TaskFormData['progress_mode']>(task?.progress_mode ?? 'target');
+  // progress mode + values
+  const [mode, setMode] = useState<TaskFormData['progress_mode']>(task?.progress_mode ?? 'manual');
+
+  // manual %
+  const [manualPct, setManualPct] = useState<number>(
+    typeof task?.progress_percentage === 'number' ? Math.max(0, Math.min(100, Math.round(task.progress_percentage!))) : 0
+  );
+
+  // target
   const [goal, setGoal] = useState<number | ''>(task?.progress_goal ?? '');
   const [current, setCurrent] = useState<number>(Number(task?.progress_current ?? 0));
 
@@ -124,10 +132,13 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
       progress_mode: mode,
     };
 
-    if (mode === 'target') {
+    if (mode === 'manual') {
+      payload.progress_percentage = Math.max(0, Math.min(100, Math.round(manualPct)));
+    } else if (mode === 'target') {
       payload.progress_goal = goal === '' ? null : Number(goal);
       payload.progress_current = Number(current || 0);
     }
+    // mode === 'steps' → handled via initialSteps below
 
     try {
       setIsSaving(true);
@@ -267,14 +278,16 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
       {/* Progress */}
       <Card className="p-4">
         <div className="grid gap-4">
+          {/* Mode selector */}
           <div className="grid grid-cols-4 items-center gap-4">
             <Label className="text-right">Progress mode</Label>
             <div className="col-span-3">
-              <Select value={mode ?? 'target'} onValueChange={(v) => setMode(v as any)}>
+              <Select value={mode ?? 'manual'} onValueChange={(v) => setMode(v as any)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select mode" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="manual">Percentage based (%)</SelectItem>
                   <SelectItem value="target">Target (goal/current)</SelectItem>
                   <SelectItem value="steps">Steps</SelectItem>
                 </SelectContent>
@@ -282,6 +295,39 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
             </div>
           </div>
 
+          {/* Manual */}
+          {mode === 'manual' && (
+            <>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right">Progress (%)</Label>
+                <div className="col-span-3 flex items-center gap-3">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={manualPct}
+                    onChange={(e) => setManualPct(Math.max(0, Math.min(100, Number(e.target.value || 0))))}
+                    className="w-28"
+                  />
+                  <div className="flex-1 bg-gray-200 rounded-full h-2.5">
+                    <div
+                      className="h-2.5 rounded-full"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, manualPct))}%`,
+                        background: `linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)`,
+                      }}
+                    />
+                  </div>
+                  <span className="text-sm w-10 text-right">{Math.round(manualPct)}%</span>
+                </div>
+              </div>
+              <p className="text-xs text-gray-500 pl-4">
+                Use this when the task doesn’t have a numeric goal or discrete steps.
+              </p>
+            </>
+          )}
+
+          {/* Target */}
           {mode === 'target' && (
             <>
               <div className="grid grid-cols-4 items-center gap-4">
@@ -305,6 +351,7 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
             </>
           )}
 
+          {/* Steps */}
           {mode === 'steps' && (
             <div className="grid grid-cols-4 items-start gap-4">
               <Label className="text-right mt-2">Seed steps</Label>
@@ -350,7 +397,7 @@ export function TaskForm({ task, projects, users, onSave, onCancel }: Props) {
       <div className="flex items-center justify-end gap-2 sticky bottom-0 bg-white/80 py-2 backdrop-blur">
         <Button variant="outline" onClick={onCancel}>Cancel</Button>
         <Button onClick={handleSave} disabled={!canSave || isSaving}>
-          {isSaving ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" />{task?.id ? 'Saving…' : 'Creating…'}</>) 
+          {isSaving ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" />{task?.id ? 'Saving…' : 'Creating…'}</>)
             : (task?.id ? 'Save changes' : 'Create task')}
         </Button>
       </div>

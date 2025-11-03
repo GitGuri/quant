@@ -161,6 +161,31 @@ interface PurchaseSale {
   items: PurchaseItem[];
 }
 
+// ---------- NEW: A/R Aging types ----------
+interface ARAgingRow {
+  customer_id: number;
+  customer_name: string;
+  current: number;
+  '1_30': number;
+  '31_60': number;
+  '61_90': number;
+  over_90: number;
+  total_due: number;
+}
+interface ARAgingInvoiceDetail {
+  customer_id: number;
+  customer_name: string;
+  invoice_id: number;
+  invoice_number: string;
+  invoice_date: string;   // yyyy-mm-dd
+  due_date: string;       // yyyy-mm-dd
+  gross: number;
+  paid_to_date: number;
+  balance: number;
+  days_past_due: number;
+  bucket: 'zero' | 'current' | '1_30' | '31_60' | '61_90' | 'over_90';
+}
+
 // ---------- API base ----------
 const API = 'https://quantnow-sa1e.onrender.com';
 
@@ -205,7 +230,18 @@ export default function AnalyticsDashboard() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyFor, setHistoryFor] = useState<CustomerClusterData | null>(null);
   const [historyData, setHistoryData] = useState<PurchaseSale[] | null>(null);
-  
+
+  // ---------- NEW: A/R Aging UI state ----------
+  const [arAging, setArAging] = useState<{
+    rows: ARAgingRow[];
+    totals: { current: number; '1_30': number; '31_60': number; '61_90': number; over_90: number; total_due: number };
+  } | null>(null);
+
+  const [agingDetailOpen, setAgingDetailOpen] = useState(false);
+  const [agingDetailLoading, setAgingDetailLoading] = useState(false);
+  const [agingDetailFor, setAgingDetailFor] = useState<ARAgingRow | null>(null);
+  const [agingInvoices, setAgingInvoices] = useState<ARAgingInvoiceDetail[]>([]);
+
   // Parses a Response but guards against HTML/error pages
   const parseJson = async <T,>(res: Response, name: string): Promise<T> => {
     if (!res.ok) {
@@ -430,8 +466,9 @@ export default function AnalyticsDashboard() {
       error: 'No daily sales data available.',
     };
 
-    if (Array.isArray(heatmapJson) && heatmapJson.length) {
-      const ds = heatmapJson;
+    const dsArr = heatmapJson;
+    if (Array.isArray(dsArr) && dsArr.length) {
+      const ds = dsArr;
       const dates = ds.map((d) => new Date(d.date));
       const minDate = new Date(Math.min(...dates.map((d) => d.getTime())));
       const maxDate = new Date(Math.max(...dates.map((d) => d.getTime())));
@@ -867,7 +904,7 @@ const fetchFinance = useCallback(async () => {
       id: 'cust-clv-donut',
       title: 'Share of Lifetime Value (Top 10 + Others)',
       config: {
-        title: { text: 'Customer CLV Share' },
+        title: { text: 'Customer Share' },
         tooltip: { pointFormat: 'R <b>{point.y:,.2f}</b> ({point.percentage:.1f}%)' },
         plotOptions: { pie: { innerSize: '60%', dataLabels: { enabled: true, format: '{point.name}: {point.percentage:.1f}%'} } },
         series: [{
@@ -916,20 +953,86 @@ const fetchFinance = useCallback(async () => {
       else if (d <= 90) buckets['61–90'] += 1;
       else buckets['> 90'] += 1;
     });
-    const churnBuckets: ChartData = {
-      id: 'cust-churn-buckets',
-      title: `Churn Watch — Inactive by Days Since Last Purchase (>${churnJson.months} months)`,
-      config: {
-        chart: { type: 'column' },
-        title: { text: 'Churn Buckets' },
-        xAxis: { categories: Object.keys(buckets), title: { text: 'Inactivity bucket' } },
-        yAxis: { title: { text: 'Customers (count)' }, allowDecimals: false },
-        tooltip: { pointFormat: '<b>{point.y}</b> customers' },
-        series: [{ type: 'column', name: 'Customers', data: Object.values(buckets) }],
-      },
-    };
 
-    setCharts([clvDonut, overdueBubbles, churnBuckets]);
+
+    // ---------- NEW: Fetch A/R Aging summary (as of end date) ----------
+    let agingRows: ARAgingRow[] = [];
+    let agingTotals = { current: 0, '1_30': 0, '31_60': 0, '61_90': 0, over_90: 0, total_due: 0 };
+    try {
+      const asOfUrl = new URL(`/api/reports/ar-aging`, API);
+      asOfUrl.searchParams.set('asOf', endISO);
+      const agingRes = await fetch(asOfUrl.toString(), { headers });
+      if (agingRes.ok) {
+        const j = await agingRes.json();
+        const rows = Array.isArray(j?.data) ? (j.data as ARAgingRow[]) : (Array.isArray(j) ? (j as ARAgingRow[]) : []);
+        agingRows = rows.map(r => ({
+          ...r,
+          current: Number(r.current || 0),
+          '1_30': Number(r['1_30'] || 0),
+          '31_60': Number(r['31_60'] || 0),
+          '61_90': Number(r['61_90'] || 0),
+          over_90: Number(r.over_90 || 0),
+          total_due: Number(r.total_due || 0),
+        }));
+        agingTotals = agingRows.reduce((acc, r) => {
+          acc.current += r.current; acc['1_30'] += r['1_30']; acc['31_60'] += r['31_60'];
+          acc['61_90'] += r['61_90']; acc.over_90 += r.over_90; acc.total_due += r.total_due;
+          return acc;
+        }, { current: 0, '1_30': 0, '31_60': 0, '61_90': 0, over_90: 0, total_due: 0 });
+      }
+    } catch {
+      // ignore aging errors; the rest of customers page still works
+    }
+    setArAging(agingRows.length ? { rows: agingRows, totals: agingTotals } : null);
+
+    // ---------- NEW: Build A/R Aging charts (added on top of existing) ----------
+    const agingCharts: ChartData[] = [];
+    if (agingRows.length) {
+      agingCharts.push({
+        id: 'ar-aging-totals-donut',
+        title: `A/R Aging Totals (As of ${endISO})`,
+        config: {
+          title: { text: `A/R Aging Totals (As of ${endISO})` },
+          plotOptions: { pie: { innerSize: '60%', dataLabels: { enabled: true, format: '{point.name}: {point.percentage:.1f}%'} } },
+          tooltip: { pointFormat: 'R <b>{point.y:,.2f}</b> ({point.percentage:.1f}%)' },
+          series: [{
+            type: 'pie',
+            name: 'Amount',
+            data: [
+              { name: 'Current',  y: agingTotals.current },
+              { name: '1–30',    y: agingTotals['1_30'] },
+              { name: '31–60',   y: agingTotals['31_60'] },
+              { name: '61–90',   y: agingTotals['61_90'] },
+              { name: '> 90',    y: agingTotals.over_90 },
+            ],
+          }],
+        },
+      });
+
+      const top = [...agingRows].sort((a,b) => b.total_due - a.total_due).slice(0, 12);
+      agingCharts.push({
+        id: 'ar-aging-top-stacked',
+        title: 'Top Debtors by Aging Bucket',
+        config: {
+          chart: { type: 'column' },
+          title: { text: 'Top Debtors by Aging Bucket' },
+          xAxis: { categories: top.map(r => r.customer_name), labels: { rotation: -25 } },
+          yAxis: { title: { text: 'Amount (ZAR)' }, stackLabels: { enabled: true } },
+          tooltip: { shared: true, valuePrefix: 'R ' },
+          plotOptions: { column: { stacking: 'normal' } },
+          series: [
+            { type: 'column', name: 'Current', data: top.map(r => r.current) },
+            { type: 'column', name: '1–30',   data: top.map(r => r['1_30']) },
+            { type: 'column', name: '31–60',  data: top.map(r => r['31_60']) },
+            { type: 'column', name: '61–90',  data: top.map(r => r['61_90']) },
+            { type: 'column', name: '> 90',   data: top.map(r => r.over_90)  },
+          ],
+        },
+      });
+    }
+
+    // Keep existing three charts and append aging charts (do not remove anything)
+    setCharts([clvDonut, overdueBubbles,  ...agingCharts]);
 
     // KPIs
     const atRiskCount = churnItems.filter(x => x.is_churn_risk).length;
@@ -962,6 +1065,25 @@ const fetchFinance = useCallback(async () => {
 
     setCustomerDetails({ clusterData, churnRiskSoon, longTermInactive });
   }, [headers, startISO, endISO]);
+
+  // ---------- NEW: open aging invoices drawer ----------
+  const openAgingDetail = async (row: ARAgingRow) => {
+    setAgingDetailFor(row);
+    setAgingDetailOpen(true);
+    setAgingDetailLoading(true);
+    try {
+      const url = `${API}/api/reports/ar-aging/${row.customer_id}/invoices?asOf=${endISO}`;
+      const res = await fetch(url, { headers });
+      ensureOk(res, 'ar-aging invoice detail');
+      const list: ARAgingInvoiceDetail[] = await res.json();
+      setAgingInvoices(Array.isArray(list) ? list : []);
+    } catch (e) {
+      console.error(e);
+      setAgingInvoices([]);
+    } finally {
+      setAgingDetailLoading(false);
+    }
+  };
 
   // ------------------------ FETCHER multiplexer ------------------------
   const fetchData = useCallback(async () => {
@@ -1297,6 +1419,126 @@ const fetchFinance = useCallback(async () => {
           </Col>
         </Row>
 
+        {/* ---------- NEW: Debtors Aging Table ---------- */}
+        {arAging && (
+          <Card className="mb-4" title={`Debtors Aging (as of ${endISO})`}>
+            <Table<ARAgingRow>
+              rowKey={(r) => String(r.customer_id)}
+              dataSource={arAging.rows}
+              pagination={{ pageSize: 10, showSizeChanger: true }}
+              scroll={{ x: 900 }}
+              columns={[
+                {
+                  title: 'Customer',
+                  dataIndex: 'customer_name',
+                  key: 'customer_name',
+                  sorter: (a, b) => a.customer_name.localeCompare(b.customer_name),
+                },
+                {
+                  title: 'Current',
+                  dataIndex: 'current',
+                  key: 'current',
+                  align: 'right' as const,
+                  render: (v: number) => v.toLocaleString('en-ZA', { minimumFractionDigits: 2 }),
+                  sorter: (a, b) => a.current - b.current,
+                },
+                {
+                  title: '1–30',
+                  dataIndex: '1_30',
+                  key: '1_30',
+                  align: 'right' as const,
+                  render: (v: number) => v.toLocaleString('en-ZA', { minimumFractionDigits: 2 }),
+                  sorter: (a, b) => a['1_30'] - b['1_30'],
+                },
+                {
+                  title: '31–60',
+                  dataIndex: '31_60',
+                  key: '31_60',
+                  align: 'right' as const,
+                  render: (v: number) => v.toLocaleString('en-ZA', { minimumFractionDigits: 2 }),
+                  sorter: (a, b) => a['31_60'] - b['31_60'],
+                },
+                {
+                  title: '61–90',
+                  dataIndex: '61_90',
+                  key: '61_90',
+                  align: 'right' as const,
+                  render: (v: number) => v.toLocaleString('en-ZA', { minimumFractionDigits: 2 }),
+                  sorter: (a, b) => a['61_90'] - b['61_90'],
+                },
+                {
+                  title: '> 90',
+                  dataIndex: 'over_90',
+                  key: 'over_90',
+                  align: 'right' as const,
+                  render: (v: number) => v.toLocaleString('en-ZA', { minimumFractionDigits: 2 }),
+                  sorter: (a, b) => a.over_90 - b.over_90,
+                },
+                {
+                  title: 'Total Due',
+                  dataIndex: 'total_due',
+                  key: 'total_due',
+                  align: 'right' as const,
+                  render: (v: number) => (
+                    <strong>R {v.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</strong>
+                  ),
+                  sorter: (a, b) => a.total_due - b.total_due,
+                },
+                {
+                  title: 'Actions',
+                  key: 'actions',
+                  render: (_: any, row: ARAgingRow) => (
+                    <Space>
+                      <Button size="small" onClick={() => openAgingDetail(row)}>
+                        View Invoices
+                      </Button>
+                    </Space>
+                  ),
+                },
+              ]}
+              summary={() => (
+                <Table.Summary.Row>
+                  <Table.Summary.Cell index={0}>
+                    <strong>Totals</strong>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={1} align="right">
+                    <strong>
+                      {arAging.totals.current.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}
+                    </strong>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={2} align="right">
+                    <strong>
+                      {arAging.totals['1_30'].toLocaleString('en-ZA', { minimumFractionDigits: 2 })}
+                    </strong>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={3} align="right">
+                    <strong>
+                      {arAging.totals['31_60'].toLocaleString('en-ZA', { minimumFractionDigits: 2 })}
+                    </strong>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={4} align="right">
+                    <strong>
+                      {arAging.totals['61_90'].toLocaleString('en-ZA', { minimumFractionDigits: 2 })}
+                    </strong>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={5} align="right">
+                    <strong>
+                      {arAging.totals.over_90.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}
+                    </strong>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={6} align="right">
+                    <strong>
+                      R {arAging.totals.total_due.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}
+                    </strong>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={7} />
+                </Table.Summary.Row>
+              )}
+            />
+          </Card>
+        )}
+
+        {/* Existing Purchase History Drawer */}
         <Drawer
           title={historyFor ? `Purchase History — ${historyFor.name}` : 'Purchase History'}
           open={historyOpen}
@@ -1334,6 +1576,55 @@ const fetchFinance = useCallback(async () => {
                 />
               </Card>
             ))
+          )}
+        </Drawer>
+
+        {/* ---------- NEW: Aging Invoices Drawer ---------- */}
+        <Drawer
+          title={
+            agingDetailFor
+              ? `Aging Invoices — ${agingDetailFor.customer_name}`
+              : 'Aging Invoices'
+          }
+          open={agingDetailOpen}
+          onClose={() => setAgingDetailOpen(false)}
+          width={860}
+        >
+          {agingDetailLoading ? (
+            <Spin />
+          ) : !agingInvoices.length ? (
+            <Empty description="No invoices" />
+          ) : (
+            <Table<ARAgingInvoiceDetail>
+              rowKey={(r) => String(r.invoice_id)}
+              dataSource={agingInvoices}
+              pagination={{ pageSize: 10 }}
+              columns={[
+                { title: 'Invoice #', dataIndex: 'invoice_number', key: 'invoice_number' },
+                { title: 'Invoice Date', dataIndex: 'invoice_date', key: 'invoice_date' },
+                { title: 'Due Date', dataIndex: 'due_date', key: 'due_date' },
+                {
+                  title: 'Gross (R)',
+                  dataIndex: 'gross',
+                  align: 'right' as const,
+                  render: (v: number) => v.toLocaleString('en-ZA', { minimumFractionDigits: 2 }),
+                },
+                {
+                  title: 'Paid to Date (R)',
+                  dataIndex: 'paid_to_date',
+                  align: 'right' as const,
+                  render: (v: number) => v.toLocaleString('en-ZA', { minimumFractionDigits: 2 }),
+                },
+                {
+                  title: 'Balance (R)',
+                  dataIndex: 'balance',
+                  align: 'right' as const,
+                  render: (v: number) => v.toLocaleString('en-ZA', { minimumFractionDigits: 2 }),
+                },
+                { title: 'Days Past Due', dataIndex: 'days_past_due', align: 'right' as const },
+                { title: 'Bucket', dataIndex: 'bucket', key: 'bucket' },
+              ]}
+            />
           )}
         </Drawer>
       </>

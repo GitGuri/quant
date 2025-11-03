@@ -129,6 +129,10 @@ const sourceUidOf = (t: Transaction) => {
   return `${d}|${a}|${hx}`;
 };
 
+const round2 = (n: number) => Math.round(Number(n || 0) * 100) / 100;
+const MIN_CENTS = 0.01;
+
+
 async function stageSelected(API_BASE_URL: string, authHeaders: any, rows: Array<{sourceUid:string; date:string; description:string; amount:number;}>) {
   const res = await fetch(`${API_BASE_URL}/imports/bank/stage`, {
     method: 'POST',
@@ -609,10 +613,11 @@ const EditableTransactionTable = ({
   const [localForceCash, setLocalForceCash] = useState(!!forceCash);
   const [confirmClicked, setConfirmClicked] = useState(false);
   const [confirmationInitiated, setConfirmationInitiated] = useState(false);
-  const hasZeroSelected = useMemo(
-    () => transactions.some(t => t.includeInImport !== false && Number(t.amount) === 0),
-    [transactions]
-  );
+const hasZeroSelected = useMemo(
+  () => transactions.some(t => t.includeInImport !== false && Number(t.amount) === 0),
+  [transactions]
+);
+
   const zeroSelectedCount = useMemo(
     () => transactions.filter(t => t.includeInImport !== false && Number(t.amount) === 0).length,
     [transactions]
@@ -633,14 +638,13 @@ useEffect(() => {
 }, [initialTransactions, confirmationInitiated]);
 
 const handleConfirmOnce = () => {
-  // hard guard against double triggers (and block zero amounts)
-  if (clickedRef.current || confirmClicked || isBusy || hasZeroSelected) return;
-  clickedRef.current = true; // blocks any immediate second click
-  setConfirmClicked(true); // visually disable + change label
-  setConfirmationInitiated(true); // Mark that the process started from a click
-
-  onConfirm(transactions); // kick off parent flow (sets importBusy)
+  if (clickedRef.current || confirmClicked || isBusy) return; // ⬅️ removed hasZeroSelected guard
+  clickedRef.current = true;
+  setConfirmClicked(true);
+  setConfirmationInitiated(true);
+  onConfirm(transactions);
 };
+
 
   // sticky horizontal bar sync
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
@@ -748,11 +752,13 @@ const handleConfirmOnce = () => {
         Heads-up: amounts of <strong>0</strong> are not allowed. Edit the amount or uncheck <em>“Import?”</em> to skip a row.
       </div>
 
-      {hasZeroSelected && (
-        <div className="mb-3 p-2 rounded-md border border-red-200 bg-red-50 text-red-700 text-sm">
-          {zeroSelectedCount} selected row{zeroSelectedCount > 1 ? 's have' : ' has'} an amount of 0. Fix before submitting.
-        </div>
-      )}
+{hasZeroSelected && (
+  <div className="mb-3 p-2 rounded-md border border-amber-200 bg-amber-50 text-amber-900 text-sm">
+    {zeroSelectedCount} selected row{zeroSelectedCount > 1 ? 's have' : ' has'} an amount of 0.
+    They’ll be <strong>skipped</strong> at submit.
+  </div>
+)}
+
 
       {/* Cash override toggle */}
       <div className="mb-3 flex items-center gap-2">
@@ -1022,13 +1028,13 @@ const handleConfirmOnce = () => {
           </Button>
 <Button
   onClick={handleConfirmOnce}
-  disabled={isCancelled || isBusy || confirmClicked || hasZeroSelected} // This should now work as intended
-  aria-disabled={isCancelled || isBusy || confirmClicked || hasZeroSelected}
+  disabled={isCancelled || isBusy || confirmClicked}      // ⬅️ removed hasZeroSelected
+  aria-disabled={isCancelled || isBusy || confirmClicked} // ⬅️ removed hasZeroSelected
   aria-busy={isBusy}
-  title={hasZeroSelected ? 'Fix zero-amount rows first' : undefined}
 >
-  {isBusy ? 'Working…' : confirmClicked ? 'Submitted' : 'Confirm & Submit Selected'} 
+  {isBusy ? 'Working…' : confirmClicked ? 'Submitted' : 'Confirm & Submit Selected'}
 </Button>
+
         </div>
       </div>
     </div>
@@ -2122,9 +2128,10 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
   // show the progress widget once
   addAssistantMessage(<ImportProgressBubble />);
 
-  const toSubmit = (transactionsToSave || [])
-    .filter(t => t.includeInImport !== false)
-    .filter(t => t.source !== 'sales-preview');
+const toSubmit = (transactionsToSave || [])
+  .filter(t => t.includeInImport !== false)
+  .filter(t => t.source !== 'sales-preview');
+
 
   const salesOnlyQueue = [...pendingSalesRef.current];
 
@@ -2174,34 +2181,43 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
   }
 
   // ---- PRECHECK: Block zero-amount rows before any API calls ----
-  const zeroRows = toSubmit.filter(t => Number(t.amount) === 0);
-  if (zeroRows.length) {
-    addAssistantMessage(
-      <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
-        <div className="font-semibold mb-1">Amounts can’t be zero</div>
-        <div>{zeroRows.length} selected row{zeroRows.length > 1 ? 's' : ''} have an amount of 0. Update the amount or uncheck “Import?”.</div>
-        <ul className="list-disc ml-5 mt-1">
-          {zeroRows.slice(0,5).map((t, i) => (
-            <li key={i}>{t.date} — {t.description}</li>
-          ))}
-        </ul>
-        {zeroRows.length > 5 && <div className="mt-1">…and {zeroRows.length - 5} more.</div>}
-      </div>
-    );
-    setImportBusy(false);
-    sendProgress('posting', 'error');
-    return;
-  }
+// ---- SKIP zeros instead of blocking ----
+// ---- Round first, then filter out near-zero rows ----
+const toSubmitRounded = (toSubmit || []).map(t => ({
+  ...t,
+  _amt: round2(Number(t.amount || 0)),
+}));
+
+const zeroRows = toSubmitRounded.filter(t => Math.abs(t._amt) < MIN_CENTS);
+const toSubmitFiltered = toSubmitRounded.filter(t => Math.abs(t._amt) >= MIN_CENTS);
+
+
+if (zeroRows.length) {
+  addAssistantMessage(
+    <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
+      <div className="font-semibold mb-1">Zero-amount rows will be skipped</div>
+      <div>{zeroRows.length} selected row{zeroRows.length > 1 ? 's' : ''} have amount 0. They won’t be sent to the server.</div>
+      <ul className="list-disc ml-5 mt-1">
+        {zeroRows.slice(0,5).map((t, i) => (
+          <li key={i}>{t.date} — {t.description}</li>
+        ))}
+      </ul>
+      {zeroRows.length > 5 && <div className="mt-1">…and {zeroRows.length - 5} more.</div>}
+    </div>
+  );
+}
+
 
   try {
     // STAGING
     sendProgress('staging', 'running');
-    const rows = toSubmit.map(tx => ({
-      sourceUid:   sourceUidOf(tx),
-      date:        tx.date || new Date().toISOString().slice(0,10),
-      description: tx.description || 'Imported',
-      amount:      Number(tx.amount || 0),
-    }));
+const rows = toSubmitFiltered.map(tx => ({
+  sourceUid:   sourceUidOf(tx),
+  date:        tx.date || new Date().toISOString().slice(0,10),
+  description: tx.description || 'Imported',
+  amount:      tx._amt, // ← already rounded to 2dp
+}));
+
     const staged = await stageSelected(API_BASE_URL_REAL, authHeaders, rows);
     sendProgress('staging', 'done');
     addAssistantMessage(`Stage complete (batch ${staged.batchId}). Inserted: ${staged.inserted}, duplicates skipped: ${staged.duplicates}.`);
@@ -2259,7 +2275,7 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
     const unmappedRows: Array<{ date: string; description: string; reason: string }> = [];
 
     for (const p of preview.items) {
-      const original = toSubmit.find(t => sourceUidOf(t) === p.sourceUid);
+      const original = toSubmitFiltered.find(t => sourceUidOf(t) === p.sourceUid);
       if (!original) continue;
 
       // “other leg” (what user selected in the table)
@@ -2345,7 +2361,7 @@ const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction
     const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
 
     // Build pretty confirmations per imported row
-    const prettyLines = toSubmit.map(t => {
+    const prettyLines = toSubmitFiltered.map(t => {
       const amt = Number(t.amount || 0).toFixed(2);
       const d   = t.date || new Date().toISOString().slice(0,10);
       if (t.type === 'expense') return `Paid ${t.description} — ${fmt(Number(t.amount || 0))} on ${d}`;

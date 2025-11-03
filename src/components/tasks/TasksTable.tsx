@@ -1,4 +1,3 @@
-// src/components/tasks/TasksTable.tsx
 import React, { useEffect, useMemo, useState, useCallback, useRef, memo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -504,6 +503,17 @@ function ProgressOptionsDialog({
   const [manualProgress, setManualProgress] = useState<number>(task.progress_percentage || 0);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Helpers for target-mode buttons (disable at bounds)
+  const canAdd = (k: number) =>
+    task.progress_mode === 'target' && task.progress_goal != null && task.progress_current != null
+      ? task.progress_current + k <= task.progress_goal
+      : true;
+
+  const canDec = (k: number) =>
+    task.progress_mode === 'target'
+      ? (task.progress_current ?? 0) - k >= 0
+      : true;
+
   const manualSave = async () => {
     setIsSaving(true);
     try {
@@ -530,27 +540,71 @@ function ProgressOptionsDialog({
     setIsSaving(true);
     try {
       let newPct: number | null = null;
-      if (task.progress_mode === 'target' && task.progress_goal && task.progress_goal > 0) {
-        const newCurrent = Math.min((task.progress_current ?? 0) + n, task.progress_goal);
-        newPct = Math.round((newCurrent / task.progress_goal) * 100);
-        newPct = Math.max(0, Math.min(100, newPct));
-      }
-      await incrementProgress(task.id, n);
-      if (newPct !== null) await putStatusForPct(task, newPct);
+      let nextCurrent: number | null = null;
 
+      if (task.progress_mode === 'target' && task.progress_goal && task.progress_goal > 0) {
+        const curr = task.progress_current ?? 0;
+        nextCurrent = Math.max(0, Math.min(task.progress_goal, curr + n)); // clamp
+        const delta = nextCurrent - curr;
+        if (delta === 0) { setIsSaving(false); return; }
+        newPct = Math.round((nextCurrent / task.progress_goal) * 100);
+        await incrementProgress(task.id, delta);
+      } else {
+        // Non-target: just let backend decide; we still call increment endpoint
+        await incrementProgress(task.id, n);
+      }
+
+      if (newPct !== null) {
+        await putStatusForPct(task, newPct);
+      }
+
+      // Apply local patch (keep dialog open for repeated clicks)
       onSaved({
         id: task.id,
-        progress_current: (task.progress_current ?? 0) + n,
+        progress_current: nextCurrent ?? task.progress_current ?? null,
         progress_percentage: newPct ?? task.progress_percentage,
-        status: task.status === 'Archived' ? task.status : newPct !== null ? computeStatusFromPct(newPct) : task.status,
+        status:
+          task.status === 'Archived'
+            ? task.status
+            : newPct !== null
+              ? computeStatusFromPct(newPct)
+              : task.status,
       });
-      onClose();
     } catch (error) {
       console.error('Failed to increment progress:', error);
     } finally {
       setIsSaving(false);
     }
   };
+
+  function CustomIncrement({
+    disabled,
+    onApply,
+  }: { disabled?: boolean; onApply: (n: number) => void }) {
+    const [val, setVal] = useState<string>('');
+    const apply = () => {
+      const n = Number(val);
+      if (!Number.isFinite(n) || n === 0) return;
+      onApply(n);
+      setVal('');
+    };
+    return (
+      <div className="flex items-center gap-2">
+        <Input
+          type="number"
+          inputMode="numeric"
+          placeholder="Custom increment (e.g. 7 or -3)"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          className="flex-1"
+          disabled={disabled}
+        />
+        <Button onClick={apply} disabled={disabled || val.trim() === ''}>
+          Apply
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -581,23 +635,33 @@ function ProgressOptionsDialog({
               <p className="text-xs text-gray-500">Current: {Math.round(task.progress_percentage || 0)}%</p>
             </div>
           )}
+
           {task.progress_mode === 'target' && (
             <div className="space-y-2">
               <Label>Target-Based</Label>
-              <div className="flex gap-2">
+
+              <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={openTarget} disabled={isSaving}>
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Adjust Target
                 </Button>
-                <Button onClick={() => inc(1)} disabled={isSaving}>
-                  +1 current
-                </Button>
+
+                {/* Quick presets */}
+                <Button onClick={() => inc(2)} disabled={isSaving || !canAdd(2)}>+2</Button>
+                <Button onClick={() => inc(5)} disabled={isSaving || !canAdd(5)}>+5</Button>
+                <Button onClick={() => inc(10)} disabled={isSaving || !canAdd(10)}>+10</Button>
+                <Button variant="outline" onClick={() => inc(-2)} disabled={isSaving || !canDec(2)}>−2</Button>
               </div>
+
+              {/* Custom increment (supports negatives) */}
+              <CustomIncrement disabled={isSaving} onApply={(n) => inc(n)} />
+
               <p className="text-xs text-gray-500">
                 Current: {task.progress_current ?? 0} / {task.progress_goal ?? '—'}
               </p>
             </div>
           )}
+
           {task.progress_mode === 'steps' && (
             <div className="space-y-2">
               <Label>Step-Based</Label>
@@ -610,6 +674,7 @@ function ProgressOptionsDialog({
               </p>
             </div>
           )}
+
           <div className="mt-2">
             <div className="flex items-center justify-between text-xs text-gray-500">
               <span>Progress</span>
@@ -714,9 +779,7 @@ const TaskRow = memo(function TaskRow({
       </TableCell>
       <TableCell className="text-right">
         <div className="flex items-center justify-end gap-2">
-
-
-                    <Button
+          <Button
             variant="ghost"
             size="sm"
             onClick={() => onOpenProgress(t)}
@@ -737,8 +800,6 @@ const TaskRow = memo(function TaskRow({
               <Archive className="h-4 w-4 text-orange-600" />
             </Button>
           )}
-
-
 
           {/* ★ NEW: send reminder */}
           <Button
@@ -861,17 +922,32 @@ export function TasksTable({
 
   const formatDate = useStableFormatDate();
 
-  const normalize = (t: any): FullTask => ([
-    'manual','target','steps'
-  ].includes(t.progress_mode) ? t : { ...t, progress_mode: 'manual' }) && ({
+const normalize = (t: any): FullTask => {
+  const rawSteps = t?.steps;
+  let steps: TaskStep[] = [];
+  if (Array.isArray(rawSteps)) steps = rawSteps as TaskStep[];
+  else if (typeof rawSteps === 'string') {
+    try { steps = JSON.parse(rawSteps) ?? []; } catch { steps = []; }
+  }
+
+  const rawAssignees = t?.assignees;
+  const assignees = Array.isArray(rawAssignees)
+    ? rawAssignees
+    : typeof rawAssignees === 'string'
+      ? (() => { try { return JSON.parse(rawAssignees) ?? []; } catch { return []; } })()
+      : [];
+
+  return {
     ...t,
-    progress_mode: t.progress_mode ?? 'manual',
+    progress_mode: (['manual','target','steps'].includes(t.progress_mode) ? t.progress_mode : 'manual'),
     progress_goal: t.progress_goal ?? null,
     progress_current: t.progress_current ?? 0,
-    steps: Array.isArray(t.steps) ? t.steps : [],
-    assignees: Array.isArray(t.assignees) ? t.assignees : [],
+    steps,
+    assignees,
     priority: (t.priority ?? 'Medium') as FullTask['priority'],
-  });
+  };
+};
+
 
   const fetchTasks = useCallback(async () => {
     inFlight.current?.abort();
@@ -1030,6 +1106,20 @@ export function TasksTable({
     [tasks, patchTask, toast, onChanged]
   );
 
+    const fetchTaskById = useCallback(async (id: string): Promise<FullTask | null> => {
+    try {
+      const r = await fetch(`${API_BASE}/api/tasks/${id}?ts=${Date.now()}`, {
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        cache: 'no-store',
+      });
+      if (!r.ok) return null;
+      const t = await r.json();
+      return normalize(t);
+    } catch {
+      return null;
+    }
+  }, []);
+
   // update priority (optimistic)
   const onChangePriority = useCallback(
     async (id: string, p: Priority) => {
@@ -1054,10 +1144,16 @@ export function TasksTable({
     [patchTask, tasks, toast, onChanged]
   );
 
-  const onEdit = useCallback((task: FullTask) => {
-    setTaskToEdit(task);
-    setShowTaskForm(true);
-  }, []);
+const onEdit = useCallback(async (task: FullTask) => {
+  setShowTaskForm(true);
+  // show something immediately so the dialog opens fast
+  setTaskToEdit(task);
+
+  // now fetch the fully hydrated task (includes steps)
+  const full = await fetchTaskById(task.id);
+  if (full) setTaskToEdit(full);
+}, [fetchTaskById]);
+
 
   const onArchive = useCallback(
     async (id: string) => {
@@ -1068,7 +1164,7 @@ export function TasksTable({
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ status: 'Archived' }),
         });
-        if (!updateResponse.ok) throw new Error('Failed to archive task');
+        if (!updateResponse.ok) throw new Error('Only tasks creator or Company owner can archive task');
         toast({ title: 'Task archived' });
         onChanged?.();
         notifyTasksChanged(); // 🔔
@@ -1206,19 +1302,7 @@ export function TasksTable({
   );
 
   /* ---------- fetch full task (with steps) before opening progress ---------- */
-  const fetchTaskById = useCallback(async (id: string): Promise<FullTask | null> => {
-    try {
-      const r = await fetch(`${API_BASE}/api/tasks/${id}?ts=${Date.now()}`, {
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        cache: 'no-store',
-      });
-      if (!r.ok) return null;
-      const t = await r.json();
-      return normalize(t);
-    } catch {
-      return null;
-    }
-  }, []);
+
 
   const onOpenProgress = useCallback(
     async (t: FullTask) => {
@@ -1500,8 +1584,8 @@ export function TasksTable({
       >
         <DialogContent className="sm:max-w-[720px]">
           <DialogHeader>
-            <DialogTitle>{taskToEdit ? 'Edit Task' : 'New Task'}</DialogTitle>
-          </DialogHeader>
+            {taskToEdit ? 'Edit Task' : 'New Task'}</DialogHeader>
+          
           <TaskForm
             task={taskToEdit as any}
             onCancel={() => {

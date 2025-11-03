@@ -72,75 +72,42 @@ const zororoItems: NavigationItem[] = [
   { title: 'Agents Overview', url: '/super-agent-dashboard', icon: Users2, allowedRoles: ['super-agent', 'admin', 'user']},
 ];
 
-// ----------------------------------------------------------------------
-// ACTIVE RAIL ANIMATION COMPONENT (NEW)
-// ----------------------------------------------------------------------
-const ActiveRail: React.FC<{ currentPath: string; sidebarContentRef: React.RefObject<HTMLDivElement> }> = ({ currentPath, sidebarContentRef }) => {
-  const { state } = useSidebar();
-  const [railTop, setRailTop] = useState<number | null>(null);
-  const [railHeight, setRailHeight] = useState<number | null>(null);
+type ActiveWashBGProps = {
+  /** how far the shadow visually extends (px) */
+  bleed?: number; // e.g. 8–12 usually looks right
+  baseRadius?: number; // radius of the target element in px (rounded-md ~ 6)
+};
+
+const ActiveWashBG: React.FC<ActiveWashBGProps> = ({
+  bleed = 10,
+  baseRadius = 6,
+}) => (
+  <motion.span
+    layoutId="activeWash"
+    className="absolute pointer-events-none"
+    style={{
+      // expand to cover the shadow area
+      inset: `-${bleed}px`,
+      borderRadius: `${baseRadius + bleed}px`,
+      background:
+        "linear-gradient(90deg, rgba(99,102,241,0.25) 0%, rgba(168,85,247,0.22) 45%, rgba(236,72,153,0.20) 70%)",
+      // keep the same look; you can increase blur since we expanded the element
+      boxShadow:
+        "inset 0 0 0 1px rgba(236,72,153,0.15), 0 10px 18px rgba(99,102,241,0.10)",
+      zIndex: 0,
+      willChange: "transform",
+    }}
+    transition={{ type: "spring", stiffness: 420, damping: 34 }}
+  />
+);
+
+
 
   // Hook to calculate the position of the active link
-  useEffect(() => {
-    const recalculatePosition = () => {
-        if (!sidebarContentRef.current) return;
-        
-        // Find the active NavLink element (aria-current="page" is automatically added by NavLink)
-        const activeLink = sidebarContentRef.current.querySelector(
-          `a[href="${currentPath}"][aria-current="page"]`
-        );
-
-        if (activeLink) {
-          // Get the position of the active link relative to the sidebar content
-          const contentRect = sidebarContentRef.current.getBoundingClientRect();
-          const linkRect = activeLink.getBoundingClientRect();
-
-          // Calculate the 'top' position relative to the scrollable container
-          // Adjustments (+4, -8) are to visually center the rail inside the link item's padding
-          setRailTop(linkRect.top - contentRect.top + sidebarContentRef.current.scrollTop + 4); 
-          setRailHeight(linkRect.height - 8); 
-        } else {
-          setRailTop(null);
-          setRailHeight(null);
-        }
-    };
-
-    // 1. Initial calculation and when path changes
-    recalculatePosition();
-
-    // 2. Recalculate when the sidebar expands/collapses (after transition)
-    const handler = setTimeout(recalculatePosition, 300);
-
-    // 3. Recalculate on window resize (to handle responsive layout changes)
-    window.addEventListener('resize', recalculatePosition);
-
-    return () => {
-      clearTimeout(handler);
-      window.removeEventListener('resize', recalculatePosition);
-    };
-
-  }, [currentPath, state, sidebarContentRef]); // Depend on path and sidebar state
+ // Depend on path and sidebar state
 
   // Use the extracted railTop/railHeight states to animate the rail
-  return railTop !== null && railHeight !== null ? (
-    <motion.div
-      initial={false}
-      animate={{
-        y: railTop,
-        height: railHeight,
-        opacity: 1,
-      }}
-      transition={{ type: 'spring', stiffness: 350, damping: 30 }}
-      // Tailwind classes for the visual style
-      className='absolute left-0 top-0 w-1 rounded-r-sm bg-blue-600 z-10'
-      style={{
-        // Set initial state before the animation
-        opacity: 0,
-        height: 0,
-      }}
-    />
-  ) : null;
-};
+
 // ----------------------------------------------------------------------
 
 export function AppSidebar() {
@@ -451,14 +418,17 @@ export function AppSidebar() {
   }, [isAIWidgetVisible, canSeeAI]);
 
   // Active nav styling - REMOVED 'relative' and 'getActiveRail' logic
-  const getNavCls = (active: boolean) =>
-    [
-      'flex items-center w-full rounded-md transition-colors duration-200',
-      'px-3 py-2',
-      active
-        ? 'bg-blue-600/10 text-blue-700 dark:text-blue-200 font-semibold ring-1 ring-inset ring-blue-600/20'
-        : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-50'
-    ].join(' ');
+const getNavCls = (active: boolean) =>
+  [
+    'relative flex items-center w-full rounded-md transition-colors duration-150',
+    'px-3 py-2',
+    active
+      ? 'text-gray-900 dark:text-white font-semibold' // crisp over gradient
+      : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white'
+  ].join(' ');
+
+
+
     
   // The 'getActiveRail' function is removed entirely.
 
@@ -487,14 +457,20 @@ export function AppSidebar() {
           <div className="pl-6 py-1">
             {item.children?.filter((child) => hasAccess(child.allowedRoles)).map((child, childIndex) => (
               <motion.div key={child.title} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, delay: childIndex * 0.05 }}>
-                <SidebarMenuItem>
-                  <SidebarMenuButton asChild>
-                    <NavLink to={child.url} className={({ isActive }) => getNavCls(isActive)}> {/* Cleaned up */}
-                      <child.icon className='h-5 w-5' />
-                      {state === 'expanded' && <span className="ml-2">{child.title}</span>}
-                    </NavLink>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
+<SidebarMenuItem>
+  <SidebarMenuButton asChild>
+    <NavLink to={child.url} className={({ isActive }) => getNavCls(isActive)}>
+      {({ isActive }) => (
+        <div className="relative flex items-center w-full">
+          {isActive && <ActiveWashBG />}
+          <child.icon className="h-5 w-5" />
+          {state === 'expanded' && <span className="ml-2">{child.title}</span>}
+        </div>
+      )}
+    </NavLink>
+  </SidebarMenuButton>
+</SidebarMenuItem>
+
               </motion.div>
             ))}
           </div>
@@ -503,18 +479,37 @@ export function AppSidebar() {
     </motion.div>
   );
 
-  const renderMenuItem = (item: NavigationItem, index: number, _total: number, delayBase: number) => (
-    <motion.div key={item.title} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.3, delay: (index + delayBase) * 0.05 }}>
-      <SidebarMenuItem>
-        <SidebarMenuButton asChild>
-          <NavLink to={item.url} className={({ isActive }) => getNavCls(isActive)}> {/* Cleaned up */}
-            {item.icon === MoneyCollectFilled ? <MoneyCollectFilled style={{ fontSize: '20px' }} /> : <item.icon className='h-5 w-5' />}
-            {state === 'expanded' && <span className="ml-2">{item.title}</span>}
-          </NavLink>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
-    </motion.div>
-  );
+const renderMenuItem = (item: NavigationItem, index: number, _total: number, delayBase: number) => (
+  <motion.div
+    key={item.title}
+    initial={{ opacity: 0, x: -20 }}
+    animate={{ opacity: 1, x: 0 }}
+    whileHover={{ x: 2 }}
+    transition={{ type: 'spring', stiffness: 500, damping: 40, delay: (index + delayBase) * 0.05 }}
+  >
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild>
+<NavLink to={item.url} className={({ isActive }) => getNavCls(isActive)}>
+  {({ isActive }) => (
+    <div className="relative flex items-center w-full">
+      {isActive && <ActiveWashBG />}
+      <div className="relative z-10 flex items-center">
+        {item.icon === MoneyCollectFilled
+          ? <MoneyCollectFilled style={{ fontSize: 20 }} />
+          : <item.icon className="h-5 w-5" />
+        }
+        {state === 'expanded' && <span className="ml-2">{item.title}</span>}
+      </div>
+    </div>
+  )}
+</NavLink>
+
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  </motion.div>
+);
+
+
 
   // ---------------------------
   // Switch company (new token) with authorization guard
@@ -776,7 +771,7 @@ const switchCompany = async (id: string) => {
           ref={sidebarContentRef}
         >
           {/* 🎯 THE ACTIVE RAIL COMPONENT 🎯 */}
-          <ActiveRail currentPath={currentPath} sidebarContentRef={sidebarContentRef} />
+          
 
           <SidebarGroup>
             <SidebarGroupLabel>Main Navigation</SidebarGroupLabel>
@@ -838,8 +833,10 @@ const switchCompany = async (id: string) => {
 
         </SidebarContent>
 
+
+
+  {/* Keep your profile + logout items */}
 <SidebarFooter className='p-3 border-t border-gray-200 dark:border-gray-700'>
-  {/* Footer header row: user info + QxBot toggle */}
   <div className='flex items-center justify-between mb-2'>
     <div className='flex items-center space-x-2 text-sm text-muted-foreground'>
       <User className='h-5 w-5' />
@@ -853,7 +850,6 @@ const switchCompany = async (id: string) => {
       )}
     </div>
 
-    {/* QxBot toggle lives here */}
     {canSeeAI && (
       <button
         onClick={() => setIsAIWidgetVisible(v => !v)}
@@ -866,9 +862,8 @@ const switchCompany = async (id: string) => {
     )}
   </div>
 
-  {/* Keep your profile + logout items */}
   <SidebarMenu>
- <SidebarMenuItem>
+    <SidebarMenuItem>
       <SidebarMenuButton onClick={handleLogout}>
         <LogOut className='h-5 w-5 text-red-500' />
         {state === 'expanded' && <span className="ml-2 text-red-500">Log Out</span>}
@@ -876,6 +871,7 @@ const switchCompany = async (id: string) => {
     </SidebarMenuItem>
   </SidebarMenu>
 </SidebarFooter>
+
 
       </Sidebar>
     </>
