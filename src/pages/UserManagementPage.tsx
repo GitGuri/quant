@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Pencil, Trash2, Plus, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Pencil, Trash2, Plus, Loader2, Search as SearchIcon, X as XIcon, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../AuthPage';
 import { Header } from '../components/layout/Header';
@@ -8,21 +8,18 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/components/ui/use-toast';
 import { Badge } from '@/components/ui/badge';
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
-// Define an interface for the user data
 interface User {
-  id: string;            // users.id (uuid)
+  id: string;
   displayName: string;
   email: string;
   roles: string[];
   officeCode?: string;
-  // optional for display: memberships fetched lazily
   branches?: Array<{ id: string; code: string; name: string; is_primary: boolean }>;
 }
 
@@ -50,25 +47,31 @@ export default function UserManagementPage() {
   const [editFormData, setEditFormData] = useState<Partial<User>>({});
   const [editUserRoles, setEditUserRoles] = useState<string[]>([]);
 
-  // Branch selection state for the edit modal
   const [selectedBranchIds, setSelectedBranchIds] = useState<string[]>([]);
   const [primaryBranchId, setPrimaryBranchId] = useState<string | null>(null);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [newUserData, setNewUserData] = useState({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
+  const [newUserData, setNewUserData] = useState({
+    displayName: '',
+    email: '',
+    password: '',
+    officeCode: '',
+    roles: [] as string[],
+  });
 
-  // 🔹 NEW: loading states for the action buttons
+  const [searchText, setSearchText] = useState('');
+  const [searchApplied, setSearchApplied] = useState('');
+
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [isSavingAdd, setIsSavingAdd] = useState(false);
+  const [isHardRefreshing, setIsHardRefreshing] = useState(false);
 
-  // A predefined list of roles for the select dropdowns
   const allRoles = [
     'admin','ceo','manager','cashier','accountant','pos-transact','transactions','financials','import','tasks',
     'agent','super-agent','data-analytics','dashboard','invoice','payroll','pos-admin','projections','accounting',
     'documents','chat','user-management','personel-setup','profile-setup',
   ];
 
-  // ---------- helpers (no-cache fetch + optimistic state) ----------
   const fetchJson = async (url: string, init?: RequestInit) => {
     const r = await fetch(url, {
       cache: 'no-store',
@@ -80,7 +83,6 @@ export default function UserManagementPage() {
   };
 
   const makeTempId = () => {
-    // crypto.randomUUID() fallback
     try { return crypto.randomUUID(); } catch { return `tmp_${Date.now()}_${Math.random().toString(16).slice(2)}`; }
   };
 
@@ -93,17 +95,16 @@ export default function UserManagementPage() {
       return copy;
     });
 
-  const removeUser = (id: string) =>
-    setUsers(prev => prev.filter(u => u.id !== id));
+  const removeUser = (id: string) => setUsers(prev => prev.filter(u => u.id !== id));
 
-  // ---------- fetchers ----------
+  // --- Fetchers --------------------------------------------------------------
+
   const fetchUsers = useCallback(async () => {
     if (!token) {
       setUsers([]);
       setLoading(false);
       return;
     }
-    setLoading(true);
     setError(null);
     try {
       const data = await fetchJson(`${API_BASE_URL}/users`, {
@@ -111,10 +112,8 @@ export default function UserManagementPage() {
       });
       setUsers(Array.isArray(data) ? data : []);
     } catch (err: any) {
-      console.error("Error fetching users:", err);
+      console.error('Error fetching users:', err);
       setError(`Failed to load users: ${err.message}.`);
-    } finally {
-      setLoading(false);
     }
   }, [token]);
 
@@ -130,61 +129,118 @@ export default function UserManagementPage() {
     }
   }, [token]);
 
-  // initial load + focus refetch
-  useEffect(() => {
-    if (isAuthenticated && token) {
-      fetchUsers();
-      fetchBranches();
-    } else {
-      setUsers([]);
-      setBranches([]);
-      setLoading(false);
-    }
-  }, [isAuthenticated, token, fetchUsers, fetchBranches]);
-
-  useEffect(() => {
-    if (!isAuthenticated || !token) return;
-    const onFocus = () => fetchUsers();
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [isAuthenticated, token, fetchUsers]);
-
-  // optional light polling (30s)
-  useEffect(() => {
-    if (!isAuthenticated || !token) return;
-    const id = setInterval(() => fetchUsers(), 30000);
-    return () => clearInterval(id);
-  }, [isAuthenticated, token, fetchUsers]);
-
-  // Load a single user's memberships when opening the edit modal
-  const loadUserMemberships = useCallback(async (userId: string) => {
-    if (!token) return;
+  // Hydrate each user's memberships (branches) so the table updates instantly
+  const hydrateUserMemberships = useCallback(async (userId: string) => {
+    if (!token) return [];
     try {
       const r = await fetch(`${API_BASE_URL}/api/users/${userId}/branches`, {
         headers: { Authorization: `Bearer ${token}` },
         cache: 'no-store',
       });
-      if (!r.ok) return;
+      if (!r.ok) return [];
       const data = await r.json();
-      const memberships: Array<{ branch_id: string; is_primary: boolean }> = data?.memberships || [];
-      setSelectedBranchIds(memberships.map(m => m.branch_id));
-      const primary = memberships.find(m => m.is_primary);
-      setPrimaryBranchId(primary ? primary.branch_id : null);
+      const items: Array<{ branch_id: string; is_primary: boolean; code?: string; name?: string }> = data?.memberships || [];
+      // Map membership to the known branch list for code/name
+      return items.map(m => {
+        const meta = branches.find(b => b.id === m.branch_id);
+        return {
+          id: m.branch_id,
+          code: meta?.code || '',
+          name: meta?.name || '',
+          is_primary: m.is_primary,
+        };
+      });
     } catch (e) {
-      console.error('loadUserMemberships error', e);
+      console.error('hydrateUserMemberships error', e);
+      return [];
     }
-  }, [token]);
+  }, [token, branches]);
+
+  // Hard refresh: fetch users, then hydrate branches for all of them
+  const hardRefreshUsers = useCallback(async () => {
+    if (!token) return;
+    setIsHardRefreshing(true);
+    setLoading(true);
+    try {
+      await fetchUsers();
+      // After users are in state, hydrate memberships in parallel
+      const list = await fetchJson(`${API_BASE_URL}/users`, {
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      });
+
+      const array: User[] = Array.isArray(list) ? list : [];
+      const hydrated = await Promise.all(
+        array.map(async (u) => {
+          const branchesForU = await hydrateUserMemberships(u.id);
+          return { ...u, branches: branchesForU };
+        })
+      );
+      setUsers(hydrated);
+    } catch (e) {
+      // fetchUsers already sets error if it fails
+    } finally {
+      setIsHardRefreshing(false);
+      setLoading(false);
+    }
+  }, [token, fetchUsers, hydrateUserMemberships]);
+
+  // Initial load
+  useEffect(() => {
+    if (isAuthenticated && token) {
+      (async () => {
+        setLoading(true);
+        await Promise.all([fetchUsers(), fetchBranches()]);
+        // first hydration
+        await hardRefreshUsers();
+      })();
+    } else {
+      setUsers([]);
+      setBranches([]);
+      setLoading(false);
+    }
+  }, [isAuthenticated, token, fetchUsers, fetchBranches, hardRefreshUsers]);
+
+  // Revalidate on focus, online, and visibility change
+  useEffect(() => {
+    if (!isAuthenticated || !token) return;
+    const onFocus = () => hardRefreshUsers();
+    const onOnline = () => hardRefreshUsers();
+    const onVisibility = () => { if (document.visibilityState === 'visible') hardRefreshUsers(); };
+
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [isAuthenticated, token, hardRefreshUsers]);
+
+  // Optional light polling (30s)
+  useEffect(() => {
+    if (!isAuthenticated || !token) return;
+    const id = setInterval(() => hardRefreshUsers(), 30000);
+    return () => clearInterval(id);
+  }, [isAuthenticated, token, hardRefreshUsers]);
+
+  // --- Edit modal helpers ----------------------------------------------------
+
+  const loadUserMemberships = useCallback(async (userId: string) => {
+    const memberships = await hydrateUserMemberships(userId);
+    setSelectedBranchIds(memberships.map(m => m.id));
+    const primary = memberships.find(m => m.is_primary);
+    setPrimaryBranchId(primary ? primary.id : null);
+  }, [hydrateUserMemberships]);
 
   const openDeleteModal = (user: User) => {
     setUserToDelete(user);
     setIsDeleteModalOpen(true);
   };
 
-  // optimistic delete
   const confirmDeleteUser = async () => {
     if (!userToDelete || !token) return;
     setLoading(true);
-
     const deletedId = userToDelete.id;
     const snapshot = users;
     removeUser(deletedId);
@@ -199,11 +255,12 @@ export default function UserManagementPage() {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.error || `HTTP ${response.status}`);
       }
-      toast({ title: "User Deleted", description: `User ${userToDelete.displayName} has been successfully deleted.` });
+      toast({ title: 'User Deleted', description: `User ${userToDelete.displayName} has been successfully deleted.` });
+      await hardRefreshUsers(); // make sure table reflects server truth
     } catch (e: any) {
-      console.error("Error deleting user:", e);
+      console.error('Error deleting user:', e);
       setUsers(snapshot); // rollback
-      toast({ title: "Deletion Failed", description: e.message, variant: "destructive" });
+      toast({ title: 'Deletion Failed', description: e.message, variant: 'destructive' });
     } finally {
       setIsDeleteModalOpen(false);
       setUserToDelete(null);
@@ -215,8 +272,6 @@ export default function UserManagementPage() {
     setUserToEdit(user);
     setEditFormData({ id: user.id, displayName: user.displayName, email: user.email });
     setEditUserRoles(Array.from(new Set(user.roles)));
-
-    // Load current memberships
     await loadUserMemberships(user.id);
     setIsEditModalOpen(true);
   };
@@ -227,12 +282,9 @@ export default function UserManagementPage() {
   };
 
   const handleRoleToggle = (role: string) => {
-    setEditUserRoles(prev =>
-      prev.includes(role) ? prev.filter(r => r !== role) : [...prev, role]
-    );
+    setEditUserRoles(prev => prev.includes(role) ? prev.filter(r => r !== role) : [...prev, role]);
   };
 
-  // Branch checkbox toggle
   const toggleBranch = (branchId: string) => {
     setSelectedBranchIds(prev => {
       if (prev.includes(branchId)) {
@@ -243,7 +295,6 @@ export default function UserManagementPage() {
     });
   };
 
-  // Pick a primary (must also be selected)
   const pickPrimary = (branchId: string) => {
     if (!selectedBranchIds.includes(branchId)) {
       setSelectedBranchIds(prev => [...prev, branchId]);
@@ -251,14 +302,13 @@ export default function UserManagementPage() {
     setPrimaryBranchId(branchId);
   };
 
-  // ✅ Branch is NOT compulsory anymore
   const saveUserEdit = async () => {
     if (!userToEdit || !token) return;
-    setIsSavingEdit(true); // 🔹 start loading
+    setIsSavingEdit(true);
     try {
       const uniqueRoles = Array.from(new Set(editUserRoles));
 
-      // optimistic update for list
+      // optimistic UI
       upsertUser({
         ...userToEdit,
         displayName: editFormData.displayName || userToEdit.displayName,
@@ -267,30 +317,34 @@ export default function UserManagementPage() {
       });
 
       // 1) basic details
-      const updateDetailsResponse = await fetch(`${API_BASE_URL}/users/${userToEdit.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ displayName: editFormData.displayName, email: editFormData.email }),
-        cache: 'no-store',
-      });
-      if (!updateDetailsResponse.ok) {
-        const errorData = await updateDetailsResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP ${updateDetailsResponse.status}`);
+      {
+        const res = await fetch(`${API_BASE_URL}/users/${userToEdit.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ displayName: editFormData.displayName, email: editFormData.email }),
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP ${res.status}`);
+        }
       }
 
       // 2) roles
-      const updateRolesResponse = await fetch(`${API_BASE_URL}/users/${userToEdit.id}/roles`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ roles: uniqueRoles }),
-        cache: 'no-store',
-      });
-      if (!updateRolesResponse.ok) {
-        const errorData = await updateRolesResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP ${updateRolesResponse.status}`);
+      {
+        const res = await fetch(`${API_BASE_URL}/users/${userToEdit.id}/roles`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ roles: uniqueRoles }),
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP ${res.status}`);
+        }
       }
 
-      // 3) branches (OPTIONAL NOW)
+      // 3) branches (optional)
       if (selectedBranchIds.length > 0) {
         const effectivePrimary =
           primaryBranchId && selectedBranchIds.includes(primaryBranchId)
@@ -314,47 +368,49 @@ export default function UserManagementPage() {
         }
       }
 
-      toast({ title: "User Updated", description: `User ${editFormData.displayName || userToEdit.displayName} has been successfully updated.` });
-      await fetchUsers();
+      toast({ title: 'User Updated', description: `User ${editFormData.displayName || userToEdit.displayName} has been successfully updated.` });
+
+      // hard refresh to hydrate memberships so the table reflects changes instantly
+      await hardRefreshUsers();
     } catch (e: any) {
-      console.error("Error updating user:", e);
-      toast({ title: "Update Failed", description: e.message, variant: "destructive" });
-      await fetchUsers();
+      console.error('Error updating user:', e);
+      toast({ title: 'Update Failed', description: e.message, variant: 'destructive' });
+      await hardRefreshUsers();
     } finally {
-      setIsSavingEdit(false); // 🔹 stop loading
+      setIsSavingEdit(false);
       setIsEditModalOpen(false);
       setUserToEdit(null);
     }
   };
 
   const openAddModal = () => {
-    setNewUserData({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
+    setNewUserData({ displayName: '', email: '', password: '', officeCode: '', roles: [] });
     setIsAddModalOpen(true);
   };
 
-  // optimistic add
   const addNewUser = async () => {
     if (!token) return;
-    setIsSavingAdd(true); // 🔹 start loading
+    setIsSavingAdd(true);
 
     const tempId = makeTempId();
     const tempUser: User = {
       id: tempId,
       displayName: newUserData.displayName,
       email: newUserData.email,
-      roles: [newUserData.role],
+      roles: [...(newUserData.roles || [])],
       officeCode: newUserData.officeCode || undefined,
     };
     setUsers(prev => [tempUser, ...prev]);
 
     try {
       const payload = {
-        displayName: newUserData.displayName,
-        email: newUserData.email,
+        displayName: newUserData.displayName.trim(),
+        email: newUserData.email.trim().toLowerCase(),
         password: newUserData.password,
-        role: newUserData.role,
-        officeCode: newUserData.officeCode,
+        roles: newUserData.roles,
+        officeCode: newUserData.officeCode?.trim() || null,
       };
+
       const response = await fetch(`${API_BASE_URL}/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -366,51 +422,64 @@ export default function UserManagementPage() {
 
       if (!response.ok) {
         const msg = body?.error || `HTTP error! status: ${response.status}`;
-        // rollback optimistic
         removeUser(tempId);
-
-        if (
-          response.status === 409 ||
-          /duplicate|unique constraint|users_email_key/i.test(msg)
-        ) {
+        if (response.status === 409 || /duplicate|unique constraint|users_email_key/i.test(msg)) {
           toast({
-            title: "Email Already Exists",
-            description: "A user with this email address already exists in the system. Please use a different email address.",
-            variant: "destructive"
+            title: 'Email Already Exists',
+            description: 'A user with this email address already exists in the system. Please use a different email address.',
+            variant: 'destructive',
           });
           return;
         }
-
         throw new Error(msg);
       }
 
       const created: User | undefined = body?.user || body;
       if (created?.id) {
         setUsers(prev =>
-          prev.map(u => (u.id === tempId || u.email === created.email ? { ...u, ...created } : u))
+          prev.map(u =>
+            (u.id === tempId || u.email === created.email)
+              ? { ...u, ...created, roles: u.roles?.length ? u.roles : (created.roles || []) }
+              : u
+          )
         );
-      } else {
-        await fetchUsers();
       }
 
-      toast({
-        title: "User Added Successfully",
-        description: `The user "${newUserData.displayName}" has been created.`
-      });
+      toast({ title: 'User Added Successfully', description: `The user "${newUserData.displayName}" has been created.` });
+
       setIsAddModalOpen(false);
-      setNewUserData({ displayName: '', email: '', password: '', role: 'user', officeCode: '' });
+      setNewUserData({ displayName: '', email: '', password: '', officeCode: '', roles: [] });
+
+      // hard refresh so we immediately show branch & role truth from the server
+      await hardRefreshUsers();
     } catch (e: any) {
-      console.error("Error adding new user:", e);
+      console.error('Error adding new user:', e);
       removeUser(tempId);
       toast({
-        title: "Add User Failed",
-        description: e.message || "An unexpected error occurred while adding the user. Please try again.",
-        variant: "destructive"
+        title: 'Add User Failed',
+        description: e.message || 'An unexpected error occurred while adding the user. Please try again.',
+        variant: 'destructive',
       });
     } finally {
-      setIsSavingAdd(false); // 🔹 stop loading
+      setIsSavingAdd(false);
     }
   };
+
+  // --- Search ----------------------------------------------------------------
+
+  const displayedUsers = useMemo(() => {
+    const q = (searchApplied || '').trim().toLowerCase();
+    if (!q) return users;
+    return users.filter(u => {
+      const inName = (u.displayName || '').toLowerCase().includes(q);
+      const inEmail = (u.email || '').toLowerCase().includes(q);
+      const inRoles = (u.roles || []).some(r => r.toLowerCase().includes(q));
+      return inName || inEmail || inRoles;
+    });
+  }, [users, searchApplied]);
+
+  const onApplySearch = () => setSearchApplied(searchText);
+  const onClearSearch = () => { setSearchText(''); setSearchApplied(''); };
 
   return (
     <div className='flex-1 space-y-4 p-4 md:p-6 lg:p-8'>
@@ -418,13 +487,50 @@ export default function UserManagementPage() {
 
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className='space-y-6'>
         <Card>
-          <CardHeader className='flex flex-row justify-between items-center'>
-            <CardTitle>User Accounts</CardTitle>
-            <Button onClick={openAddModal}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add New User
-            </Button>
+          <CardHeader className='flex flex-col gap-3 md:flex-row md:justify-between md:items-center'>
+            <div className='flex items-center gap-3 w-full md:w-auto'>
+              <CardTitle>User Accounts</CardTitle>
+              <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                {displayedUsers.length} / {users.length}
+              </span>
+              <Button variant="ghost" size="sm" onClick={hardRefreshUsers} disabled={isHardRefreshing}>
+                {isHardRefreshing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+                Refresh
+              </Button>
+            </div>
+
+            <div className='flex w-full md:w-auto items-center gap-2'>
+              <div className="relative w-full md:w-72">
+                <Input
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  placeholder="Search name, email or role..."
+                  className="pr-9"
+                />
+                {searchText && (
+                  <button
+                    type="button"
+                    onClick={onClearSearch}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 opacity-70 hover:opacity-100"
+                    aria-label="Clear search"
+                    title="Clear"
+                  >
+                    <XIcon className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              <Button variant="secondary" onClick={onApplySearch}>
+                <SearchIcon className="h-4 w-4 mr-1" />
+                Search
+              </Button>
+
+              <Button onClick={openAddModal}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add New User
+              </Button>
+            </div>
           </CardHeader>
+
           <CardContent>
             {loading ? (
               <div className="flex items-center justify-center h-64">
@@ -447,14 +553,14 @@ export default function UserManagementPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.length === 0 ? (
+                    {displayedUsers.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="text-center py-12 text-muted-foreground">
                           No users found.
                         </td>
                       </tr>
                     ) : (
-                      users.map((user) => (
+                      displayedUsers.map((user) => (
                         <motion.tr
                           key={user.id}
                           initial={{ opacity: 0, y: 20 }}
@@ -464,14 +570,18 @@ export default function UserManagementPage() {
                         >
                           <td className='p-3 font-medium'>{user.displayName}</td>
                           <td className='p-3 text-muted-foreground'>{user.email}</td>
-                          <td className='p-3 text-muted-foreground'>{user.roles.join(', ')}</td>
+                          <td className='p-3 text-muted-foreground'>
+                            {user.roles?.length ? user.roles.join(', ') : <span className="text-xs italic text-muted-foreground">none</span>}
+                          </td>
                           <td className='p-3'>
                             <div className="flex flex-wrap gap-1">
-                              {user.branches?.map(b => (
-                                <Badge key={b.id} variant={b.is_primary ? 'default' : 'secondary'}>
-                                  {b.code || b.name}{b.is_primary ? ' • primary' : ''}
-                                </Badge>
-                              )) || null}
+                              {user.branches?.length
+                                ? user.branches.map(b => (
+                                    <Badge key={b.id} variant={b.is_primary ? 'default' : 'secondary'}>
+                                      {b.code || b.name}{b.is_primary ? ' • primary' : ''}
+                                    </Badge>
+                                  ))
+                                : <span className="text-xs italic text-muted-foreground">—</span>}
                             </div>
                           </td>
                           <td className='p-3 text-right'>
@@ -506,12 +616,8 @@ export default function UserManagementPage() {
               <div className='space-y-4'>
                 <p>Are you sure you want to delete user <strong>{userToDelete.displayName}</strong>? This action cannot be undone.</p>
                 <div className='flex justify-end gap-2 mt-4'>
-                  <Button variant='outline' onClick={() => setIsDeleteModalOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button variant='destructive' onClick={confirmDeleteUser}>
-                    Delete
-                  </Button>
+                  <Button variant='outline' onClick={() => setIsDeleteModalOpen(false)}>Cancel</Button>
+                  <Button variant='destructive' onClick={confirmDeleteUser}>Delete</Button>
                 </div>
               </div>
             </DialogContent>
@@ -522,12 +628,9 @@ export default function UserManagementPage() {
       {/* Edit User Modal */}
       <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Edit User</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Edit User</DialogTitle></DialogHeader>
           {userToEdit && (
             <div className='space-y-6 py-2'>
-              {/* Basic fields */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <Label htmlFor='edit-name'>Name</Label>
@@ -539,26 +642,18 @@ export default function UserManagementPage() {
                 </div>
               </div>
 
-              {/* Roles */}
               <div className="space-y-2">
                 <Label>Roles</Label>
                 <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto p-2 border rounded-md">
                   {allRoles.map(role => (
                     <div key={role} className="flex items-center space-x-2">
-                      <Checkbox
-                        id={`role-${role}`}
-                        checked={editUserRoles.includes(role)}
-                        onCheckedChange={() => handleRoleToggle(role)}
-                      />
-                      <Label htmlFor={`role-${role}`} className="capitalize">
-                        {role}
-                      </Label>
+                      <Checkbox id={`role-${role}`} checked={editUserRoles.includes(role)} onCheckedChange={() => handleRoleToggle(role)} />
+                      <Label htmlFor={`role-${role}`} className="capitalize">{role}</Label>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Branch assignments */}
               <div className="space-y-2">
                 <Label>Branches (optional)</Label>
                 <div className="border rounded-md p-2 max-h-60 overflow-y-auto">
@@ -570,37 +665,22 @@ export default function UserManagementPage() {
                     return (
                       <div key={b.id} className="flex items-center justify-between py-1 px-1">
                         <div className="flex items-center gap-2">
-                          <Checkbox
-                            id={`branch-${b.id}`}
-                            checked={checked}
-                            onCheckedChange={() => toggleBranch(b.id)}
-                          />
+                          <Checkbox id={`branch-${b.id}`} checked={checked} onCheckedChange={() => toggleBranch(b.id)} />
                           <Label htmlFor={`branch-${b.id}`}>{b.name} <span className="text-xs text-muted-foreground">({b.code})</span></Label>
                         </div>
                         <div className="flex items-center gap-2">
-                          <input
-                            type="radio"
-                            name="primaryBranch"
-                            checked={isPrimary}
-                            onChange={() => pickPrimary(b.id)}
-                            disabled={!checked}
-                            aria-label="Primary"
-                          />
+                          <input type="radio" name="primaryBranch" checked={isPrimary} onChange={() => pickPrimary(b.id)} disabled={!checked} aria-label="Primary" />
                           <span className="text-xs">{isPrimary ? 'Primary' : 'Set primary'}</span>
                         </div>
                       </div>
                     );
                   })}
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  You can select multiple branches. If none are selected, we’ll simply leave memberships unchanged.
-                </div>
+                <div className="text-xs text-muted-foreground">You can select multiple branches. If none are selected, we’ll simply leave memberships unchanged.</div>
               </div>
 
               <div className='flex justify-end gap-2 mt-4'>
-                <Button variant='outline' onClick={() => setIsEditModalOpen(false)}>
-                  Cancel
-                </Button>
+                <Button variant='outline' onClick={() => setIsEditModalOpen(false)}>Cancel</Button>
                 <Button onClick={saveUserEdit} disabled={isSavingEdit}>
                   {isSavingEdit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save Changes
@@ -613,88 +693,71 @@ export default function UserManagementPage() {
 
       {/* Add New User Modal */}
       <Dialog open={isAddModalOpen} onOpenChange={setIsAddModalOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add New User</DialogTitle>
-          </DialogHeader>
-          <div className='space-y-4 py-4'>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>Add New User</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-4">
             <div>
-              <Label htmlFor='add-name'>Name</Label>
-              <Input
-                id='add-name'
-                type='text'
-                name='displayName'
-                value={newUserData.displayName}
-                onChange={(e) => setNewUserData({ ...newUserData, displayName: e.target.value })}
-                placeholder='User Name'
-              />
-            </div>
-            <div>
-              <Label htmlFor='add-email'>Email</Label>
-              <Input
-                id='add-email'
-                type='email'
-                name='email'
-                value={newUserData.email}
-                onChange={(e) => setNewUserData({ ...newUserData, email: e.target.value })}
-                placeholder='user@example.com'
-              />
-            </div>
-            <div>
-              <Label htmlFor='add-password'>Password</Label>
-              <Input
-                id='add-password'
-                type='password'
-                name='password'
-                value={newUserData.password}
-                onChange={(e) => setNewUserData({ ...newUserData, password: e.target.value })}
-                placeholder='Set a password'
-                required
-              />
-            </div>
-            <div>
-              <Label htmlFor='add-role'>Role</Label>
-              <Select
-                name='role'
-                value={newUserData.role}
-                onValueChange={(value) => setNewUserData({ ...newUserData, role: value })}
-              >
-                <SelectTrigger id='add-role'>
-                  <SelectValue placeholder='Select role' />
-                </SelectTrigger>
-                <SelectContent>
-                  {allRoles.map(role => (
-                    <SelectItem key={role} value={role}>
-                      {role}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {/* Optional legacy field; you can remove if you’re moving fully to branches */}
-            <div>
-              <Label htmlFor='add-office'>Office Code (legacy)</Label>
-              <Input
-                id='add-office'
-                type='text'
-                name='officeCode'
-                value={newUserData.officeCode}
-                onChange={(e) => setNewUserData({ ...newUserData, officeCode: e.target.value })}
-                placeholder='e.g. JHB-01'
-              />
+              <Label htmlFor="add-name">Name</Label>
+              <Input id="add-name" type="text" value={newUserData.displayName} onChange={(e) => setNewUserData({ ...newUserData, displayName: e.target.value })} placeholder="Full name" required />
             </div>
 
-            <div className='flex justify-end gap-2 mt-4'>
+            <div>
+              <Label htmlFor="add-email">Email</Label>
+              <Input id="add-email" type="email" value={newUserData.email} onChange={(e) => setNewUserData({ ...newUserData, email: e.target.value })} placeholder="user@example.com" required />
+            </div>
+
+            <div>
+              <Label htmlFor="add-password">Password</Label>
+              <Input id="add-password" type="password" value={newUserData.password} onChange={(e) => setNewUserData({ ...newUserData, password: e.target.value })} placeholder="Set a password" required />
+            </div>
+
+            <div className="space-y-2 border-2 border-red-500 rounded-md p-3 bg-red-50">
+              <Label className="text-red-700 font-semibold">Assign Roles <span className="text-red-500">*</span></Label>
+              <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                {allRoles.map((role) => (
+                  <div key={role} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`add-role-${role}`}
+                      checked={(newUserData.roles || []).includes(role)}
+                      onCheckedChange={() => {
+                        const roles = newUserData.roles || [];
+                        const updated = roles.includes(role) ? roles.filter((r) => r !== role) : [...roles, role];
+                        setNewUserData({ ...newUserData, roles: updated });
+                      }}
+                    />
+                    <Label htmlFor={`add-role-${role}`} className="capitalize">{role}</Label>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-red-700">Select at least one role before saving.</p>
+            </div>
+
+            <div>
+              <Label htmlFor="add-office">Office Code (optional)</Label>
+              <Input id="add-office" type="text" value={newUserData.officeCode} onChange={(e) => setNewUserData({ ...newUserData, officeCode: e.target.value })} placeholder="e.g. HQ-01" />
+            </div>
+
+            <div className="flex justify-end gap-2 mt-4">
               <Button
-                variant='outline'
+                variant="outline"
                 onClick={() => {
                   setIsAddModalOpen(false);
-                  setNewUserData({ displayName: '', email: '', role: 'user', password: '', officeCode: '' });
+                  setNewUserData({ displayName: '', email: '', password: '', officeCode: '', roles: [] });
                 }}
               >
                 Cancel
               </Button>
-              <Button onClick={addNewUser} disabled={isSavingAdd}>
+              <Button
+                onClick={() => {
+                  if (!newUserData.roles?.length) {
+                    toast({ title: 'Role Required', description: 'Please select at least one role for the new user.', variant: 'destructive' });
+                    return;
+                  }
+                  addNewUser();
+                }}
+                disabled={isSavingAdd}
+                className="bg-blue-600 hover:bg-blue-700 text-white"
+              >
                 {isSavingAdd && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Add User
               </Button>

@@ -26,6 +26,7 @@ import {
 import { useAuth } from '../AuthPage';
 import { Header } from '../components/layout/Header';
 import { useCurrency } from '../contexts/CurrencyContext';
+
 const useBreakpoint = Grid.useBreakpoint;
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -89,6 +90,9 @@ interface ProductDB {
   branch_id?: string | null; // DB column exists
   // local tag for offline custom items separation (only used if hasBranches)
   __branch_id?: string | null;
+  pricing_tiers?: PricingTier[];
+  combo_offers?: ComboOffer[];
+  promotions?: Promotion[];
 }
 
 interface CustomerFrontend {
@@ -121,10 +125,110 @@ interface CreditScoreInfo {
   color: ScoreColor;
 }
 
+type PricingTier = { min_qty: number; unit_price: number };
+type PromoType = 'percent' | 'fixed' | 'override';
+type Promotion = {
+  name: string;
+  type: PromoType;
+  value: number;
+  start_date?: string;
+  end_date?: string;
+};
+type ComboItem = { product_id: number; qty: number };
+type ComboOffer = { name: string; total_price: number; items: ComboItem[] };
+
+const cartQtyMap = (cart: CartItem[]) =>
+  cart.reduce<Record<string, number>>((m, it) => {
+    m[String(it.id)] = (m[String(it.id)] || 0) + it.quantity;
+    return m;
+  }, {});
+
+const comboSavingsExcl = (combo: ComboOffer, products: ProductDB[]) => {
+  // reference cost = sum(unit_price_excl * qty) using current product.unit_price
+  const ref = combo.items.reduce((s, it) => {
+    const p = products.find((pp) => Number(pp.id) === Number(it.product_id));
+    const u = Number(p?.unit_price ?? 0);
+    return s + u * it.qty;
+  }, 0);
+  return Math.max(0, +(ref - combo.total_price).toFixed(2));
+};
+
+const canFormTimes = (combo: ComboOffer, qtyMap: Record<string, number>) =>
+  Math.min(
+    ...combo.items.map((it) =>
+      Math.floor((qtyMap[String(it.product_id)] || 0) / it.qty)
+    )
+  );
+
+const isPromoActive = (p: Promotion, now = new Date()) => {
+  const s = p.start_date ? new Date(p.start_date + 'T00:00:00Z') : null;
+  const e = p.end_date ? new Date(p.end_date + 'T23:59:59Z') : null;
+  if (s && now < s) return false;
+  if (e && now > e) return false;
+  return true;
+};
+// helper: compare carts
+function sameCart(a: CartItem[], b: CartItem[]) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i],
+      y = b[i];
+    if (
+      String(x.id) !== String(y.id) ||
+      x.quantity !== y.quantity ||
+      x.unit_price !== y.unit_price ||
+      (x.tax_rate_value ?? 0) !== (y.tax_rate_value ?? 0) ||
+      x.subtotal !== y.subtotal
+    )
+      return false;
+  }
+  return true;
+}
+
+const resolveUnitPriceFE = ({
+  unit_price,
+  pricing_tiers,
+  promotions,
+  qty,
+  now = new Date(),
+}: {
+  unit_price: number;
+  pricing_tiers?: PricingTier[] | any;
+  promotions?: Promotion[] | any;
+  qty: number;
+  now?: Date;
+}) => {
+  let base = Number(unit_price || 0);
+  const tiers: PricingTier[] = Array.isArray(pricing_tiers)
+    ? [...pricing_tiers].sort(
+        (a, b) => Number(a.min_qty || 0) - Number(b.min_qty || 0)
+      )
+    : [];
+  for (const t of tiers) {
+    if (qty >= Number(t.min_qty || 0)) base = Number(t.unit_price || base);
+    else break;
+  }
+  const promos: Promotion[] = Array.isArray(promotions) ? promotions : [];
+  const active = promos.filter((p) => isPromoActive(p, now));
+  if (!active.length) return +base.toFixed(2);
+
+  let best = base;
+  for (const p of active) {
+    let candidate = base;
+    if (p.type === 'override') candidate = Math.max(0, Number(p.value));
+    else if (p.type === 'fixed') candidate = Math.max(0, base - Number(p.value));
+    else if (p.type === 'percent')
+      candidate = Math.max(0, base * (1 - Number(p.value) / 100));
+    if (candidate < best) best = candidate;
+  }
+  return +best.toFixed(2);
+};
+
 const MIN_SCORE = 60;
 
 // ---- ENV / API ----
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 const BRANCH_PICK_KEY = 'pos.selected_branch_id';
 
 // ===== Credit score helpers =====
@@ -183,8 +287,8 @@ export default function POSScreen() {
   const [messageApi, contextHolder] = message.useMessage();
   const screens = useBreakpoint();
   const isOnline = useOnline();
-  const { fmt, formatter: moneyFormatter, parser: moneyParser, symbol } = useCurrency();
-
+  const { fmt, formatter: moneyFormatter, parser: moneyParser, symbol } =
+    useCurrency();
 
   // Auth
   const { isAuthenticated } = useAuth();
@@ -301,6 +405,35 @@ export default function POSScreen() {
     })();
   }, [isAuthenticated, token, getAuthHeaders]);
 
+  // ---- Single source for effective unit price (EXCL VAT)
+  const getEffectiveUnit = useCallback(
+    async (product: ProductDB, qty: number): Promise<number> => {
+      if (isOnline && typeof product.id === 'number') {
+        try {
+          const r = await fetch(
+            `${API_BASE_URL}/products-services/${product.id}/price?qty=${qty}`,
+            {
+              headers: getAuthHeaders(),
+            }
+          );
+          if (r.ok) {
+            const j = await r.json(); // { qty, unit_price, total }
+            return Number(j.unit_price); // EXCL VAT
+          }
+        } catch {
+          /* fall back to FE */
+        }
+      }
+      return resolveUnitPriceFE({
+        unit_price: product.unit_price,
+        pricing_tiers: product.pricing_tiers,
+        promotions: product.promotions,
+        qty,
+      });
+    },
+    [isOnline, getAuthHeaders]
+  );
+
   // Outbox flush (sync queued sales)
   const flushOutbox = useCallback(async () => {
     if (!isAuthenticated || !token || !isOnline) return;
@@ -396,6 +529,8 @@ export default function POSScreen() {
           cost_price:
             p.cost_price != null ? parseFloat(p.cost_price as any) : null,
           stock_quantity: parseFloat(String(p.stock_quantity || 0)),
+          pricing_tiers: Array.isArray(p.pricing_tiers) ? p.pricing_tiers : [],
+          promotions: Array.isArray(p.promotions) ? p.promotions : [],
         }));
 
         setProducts(parsed);
@@ -425,6 +560,22 @@ export default function POSScreen() {
     selectedBranchId,
     hasBranches,
   ]);
+
+  const catalogCombos = useMemo(() => {
+    return products.flatMap((p) => (p.combo_offers ?? []).map((c) => ({ ...c })));
+  }, [products]);
+
+  const allCombos = useMemo(() => {
+    return products.flatMap((p) =>
+      (p.combo_offers ?? []).map((c, idx) => ({
+        productId: p.id,
+        key: `${p.id}:${idx}`,
+        name: c.name,
+        total_price: Number(c.total_price || 0), // EXCL VAT
+        items: c.items || [],
+      }))
+    );
+  }, [products]);
 
   // Re-fetch products when branch changes (online or cached)
   useEffect(() => {
@@ -488,186 +639,187 @@ export default function POSScreen() {
   const change = paymentType === 'Cash' ? amountPaid - totalIncl : 0;
 
   // Add product(s) to cart — includes custom create; branch_id used only if the user has branches
-  const addToCart = () => {
+  // Make sure this function is async because we await getEffectiveUnit(...)
+  const addToCart = async () => {
     if (!isAuthenticated) {
       messageApi.error('Authentication required to add items to cart.');
       return;
     }
+
     let itemToAdd: CartItem | null = null;
     let finalProduct: ProductDB | null = null;
 
     // ----- CUSTOM PRODUCT/SERVICE -----
     if (showCustomProductForm) {
-      customProductForm
-        .validateFields()
-        .then(async (values) => {
-          const customProductName = values.customProductName.trim();
-          const customProductUnitPrice = Number(values.customProductUnitPrice);
-          const customProductDescription = values.customProductDescription || null;
-          const customProductTaxRate = parseFloat(values.customProductTaxRate);
-          const isService = !!values.isService;
-          const qty = Math.max(1, Number(values.customProductQty || 1));
+      try {
+        const values = await customProductForm.validateFields();
+        const customProductName = values.customProductName.trim();
+        const customProductUnitPrice = Number(values.customProductUnitPrice);
+        const customProductDescription = values.customProductDescription || null;
+        const customProductTaxRate = parseFloat(values.customProductTaxRate);
+        const isService = !!values.isService;
+        const qty = Math.max(1, Number(values.customProductQty || 1));
 
-          setIsAddingCustomProduct(true);
-          try {
-            if (!isOnline) {
-              // OFFLINE: create local custom item (tag by branch only if branches exist)
-              finalProduct = {
-                id: `custom-${Date.now()}`,
-                name: customProductName,
-                description: customProductDescription,
-                unit_price: customProductUnitPrice,
-                cost_price: null,
-                sku: null,
-                is_service: isService,
-                stock_quantity: 0,
-                tax_rate_id: null,
-                category: null,
-                unit: isService ? 'service' : 'unit',
-                tax_rate_value: isVatRegistered
-                  ? Number(customProductTaxRate)
-                  : 0,
-                ...(hasBranches ? { __branch_id: selectedBranchId ?? null } : {}),
-              };
-            } else {
-              // ONLINE: if product with same name exists, reuse; otherwise create in current branch only if branches exist
-              const existingProduct = products.find(
-                (p) => (p.name || '').toLowerCase() === customProductName.toLowerCase()
-              );
-              if (existingProduct) {
-                finalProduct = existingProduct;
-                messageApi.info(
-                  `Product "${customProductName}" already exists. Using existing product.`
-                );
-              } else {
-                const createProductPayload: any = {
-                  name: customProductName,
-                  description: customProductDescription || null,
-                  unit_price: customProductUnitPrice,
-                  is_service: isService,
-                  stock_quantity: isService ? 0 : 0,
-                  tax_rate_value: isVatRegistered
-                    ? Number(customProductTaxRate)
-                    : 0,
-                  category: null,
-                  unit: isService ? 'service' : 'unit',
-                  cost_price: null,
-                };
-                if (hasBranches && selectedBranchId) {
-                  createProductPayload.branch_id = selectedBranchId;
-                }
-                const createProductResponse = await fetch(
-                  `${API_BASE_URL}/products-services`,
-                  {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      ...getAuthHeaders(),
-                    },
-                    body: JSON.stringify(createProductPayload),
-                  }
-                );
-                if (!createProductResponse.ok) {
-                  const errorData = await createProductResponse
-                    .json()
-                    .catch(() => ({}));
-                  throw new Error(
-                    errorData.error || 'Failed to create new product.'
-                  );
-                }
-                finalProduct = await createProductResponse.json();
-                finalProduct.unit_price = parseFloat(
-                  finalProduct.unit_price as any
-                );
-                if (finalProduct.cost_price != null) {
-                  finalProduct.cost_price = parseFloat(
-                    finalProduct.cost_price as any
-                  );
-                }
-                finalProduct.stock_quantity = parseFloat(
-                  String(finalProduct.stock_quantity || 0)
-                );
-                setProducts((prev) => {
-                  const next = [...prev, finalProduct!];
-                  writeJSON(
-                    ckeyProductsFor(selectedBranchId, hasBranches),
-                    next
-                  );
-                  return next;
-                });
-                messageApi.success(
-                  `New ${isService ? 'service' : 'product'} "${
-                    finalProduct!.name
-                  }" created.`
-                );
-              }
-            }
+        setIsAddingCustomProduct(true);
 
-            itemToAdd = {
-              ...finalProduct!,
-              quantity: qty,
-              subtotal:
-                qty *
-                finalProduct!.unit_price *
-                (1 + (finalProduct!.tax_rate_value ?? 0)),
+        if (!isOnline) {
+          // OFFLINE: create local custom item (tag by branch only if branches exist)
+          finalProduct = {
+            id: `custom-${Date.now()}`,
+            name: customProductName,
+            description: customProductDescription,
+            unit_price: customProductUnitPrice,
+            cost_price: null,
+            sku: null,
+            is_service: isService,
+            stock_quantity: 0,
+            tax_rate_id: null,
+            category: null,
+            unit: isService ? 'service' : 'unit',
+            tax_rate_value: isVatRegistered ? Number(customProductTaxRate) : 0,
+            ...(hasBranches ? { __branch_id: selectedBranchId ?? null } : {}),
+          };
+        } else {
+          // ONLINE: reuse if same name exists; else create (branch-aware if applicable)
+          const existingProduct = products.find(
+            (p) =>
+              (p.name || '').toLowerCase() ===
+              customProductName.toLowerCase()
+          );
+          if (existingProduct) {
+            finalProduct = existingProduct;
+            messageApi.info(
+              `Product "${customProductName}" already exists. Using existing product.`
+            );
+          } else {
+            const createProductPayload: any = {
+              name: customProductName,
+              description: customProductDescription || null,
+              unit_price: customProductUnitPrice,
+              is_service: isService,
+              stock_quantity: isService ? 0 : 0,
+              tax_rate_value: isVatRegistered
+                ? Number(customProductTaxRate)
+                : 0,
+              category: null,
+              unit: isService ? 'service' : 'unit',
+              cost_price: null,
             };
-
-            if (itemToAdd) {
-              const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
-              if (existingCartItem) {
-                setCart(
-                  cart.map((i) =>
-                    i.id === itemToAdd!.id
-                      ? {
-                          ...i,
-                          quantity: i.quantity + itemToAdd!.quantity,
-                          subtotal:
-                            (i.quantity + itemToAdd!.quantity) *
-                            i.unit_price *
-                            (1 + (i.tax_rate_value ?? 0)),
-                        }
-                      : i
-                  )
-                );
-              } else {
-                setCart([...cart, itemToAdd]);
-              }
-
-              // Keep modal open, reset for next custom item
-setSelectedProduct(null);
-setProductQty(1);
-setProductModal(false);           // 👈 auto-close modal
-setShowCustomProductForm(false);  // 👈 go back to list on next open
-messageApi.success(`"${itemToAdd.name}" (x${qty}) added to cart.`);
+            if (hasBranches && selectedBranchId) {
+              createProductPayload.branch_id = selectedBranchId;
             }
-          } catch (err: any) {
-            messageApi.error(err.message || 'Failed to process custom product.');
-          } finally {
-            setIsAddingCustomProduct(false);
+            const createProductResponse = await fetch(
+              `${API_BASE_URL}/products-services`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...getAuthHeaders(),
+                },
+                body: JSON.stringify(createProductPayload),
+              }
+            );
+            if (!createProductResponse.ok) {
+              const errorData = await createProductResponse
+                .json()
+                .catch(() => ({}));
+              throw new Error(
+                errorData.error || 'Failed to create new product.'
+              );
+            }
+            finalProduct = await createProductResponse.json();
+            finalProduct.unit_price = parseFloat(finalProduct.unit_price as any);
+            if (finalProduct.cost_price != null) {
+              finalProduct.cost_price = parseFloat(
+                finalProduct.cost_price as any
+              );
+            }
+            finalProduct.stock_quantity = parseFloat(
+              String(finalProduct.stock_quantity || 0)
+            );
+            setProducts((prev) => {
+              const next = [...prev, finalProduct!];
+              writeJSON(ckeyProductsFor(selectedBranchId, hasBranches), next);
+              return next;
+            });
+            messageApi.success(
+              `New ${isService ? 'service' : 'product'} "${
+                finalProduct!.name
+              }" created.`
+            );
           }
-        })
-        .catch(() => {
+        }
+
+        itemToAdd = {
+          ...finalProduct!,
+          quantity: qty,
+          subtotal:
+            qty *
+            finalProduct!.unit_price *
+            (1 + (finalProduct!.tax_rate_value ?? 0)),
+        };
+
+        if (itemToAdd) {
+          const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
+          if (existingCartItem) {
+            setCart(
+              cart.map((i) =>
+                i.id === itemToAdd!.id
+                  ? {
+                      ...i,
+                      quantity: i.quantity + itemToAdd!.quantity,
+                      subtotal:
+                        (i.quantity + itemToAdd!.quantity) *
+                        i.unit_price *
+                        (1 + (i.tax_rate_value ?? 0)),
+                    }
+                  : i
+              )
+            );
+          } else {
+            setCart([...cart, itemToAdd]);
+          }
+
+          // Reset & close
+          setSelectedProduct(null);
+          setProductQty(1);
+          setProductModal(false);
+          setShowCustomProductForm(false);
+          messageApi.success(
+            `"${itemToAdd.name}" (x${qty}) added to cart.`
+          );
+        }
+      } catch (err: any) {
+        if (err?.errorFields) {
           messageApi.error('Please fill in all required custom product fields.');
-        });
+        } else {
+          messageApi.error(err?.message || 'Failed to process custom product.');
+        }
+      } finally {
+        setIsAddingCustomProduct(false);
+      }
       return;
     }
 
     // ----- EXISTING PRODUCT -----
     if (!selectedProduct || productQty < 1) return;
 
+    // Services: keep simple (no tiering expected)
     if (selectedProduct.is_service) {
       const seededRate = isVatRegistered
         ? selectedProduct.tax_rate_value ?? defaultVatRate
         : 0;
-
       itemToAdd = {
         ...selectedProduct,
         tax_rate_value: seededRate,
         quantity: productQty,
         subtotal:
-          productQty * selectedProduct.unit_price * (1 + (seededRate || 0)),
+          productQty *
+          selectedProduct.unit_price *
+          (1 + (seededRate || 0)),
       };
     } else {
+      // Stock checks
       const availableQty = selectedProduct.stock_quantity ?? 0;
       const alreadyInCart =
         cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
@@ -679,82 +831,116 @@ messageApi.success(`"${itemToAdd.name}" (x${qty}) added to cart.`);
           content: `"${selectedProduct.name}" is out of stock (only ${availableQty} units available). Add anyway?`,
           okText: 'Yes, Add Anyway',
           cancelText: 'No, Cancel',
-          onOk: () => {
-            const item = {
-              ...selectedProduct,
-              quantity: productQty,
-              subtotal:
-                productQty *
-                selectedProduct.unit_price *
-                (1 + (selectedProduct.tax_rate_value ?? 0)),
-            };
-            const existingCartItem = cart.find((i) => i.id === item.id);
-            if (existingCartItem) {
+          onOk: async () => {
+            // Even when forcing, still respect tiered pricing based on combined qty
+            const combinedQty = alreadyInCart + productQty;
+            const effectiveUnit = await getEffectiveUnit(
+              selectedProduct,
+              combinedQty
+            );
+            const rate = isVatRegistered
+              ? typeof selectedProduct.tax_rate_value === 'number'
+                ? selectedProduct.tax_rate_value
+                : defaultVatRate
+              : 0;
+
+            const existing = cart.find((i) => i.id === selectedProduct.id);
+            if (existing) {
+              const newQty = existing.quantity + productQty;
+              const repricedUnit = await getEffectiveUnit(
+                selectedProduct,
+                newQty
+              );
+              const repricedSubtotal = +(
+                newQty * repricedUnit * (1 + (rate || 0))
+              ).toFixed(2);
               setCart(
                 cart.map((i) =>
-                  i.id === item.id
+                  i.id === selectedProduct.id
                     ? {
                         ...i,
-                        quantity: i.quantity + item.quantity,
-                        subtotal:
-                          (i.quantity + item.quantity) *
-                          i.unit_price *
-                          (1 + (i.tax_rate_value ?? 0)),
+                        quantity: newQty,
+                        unit_price: repricedUnit,
+                        subtotal: repricedSubtotal,
                       }
                     : i
                 )
               );
             } else {
-              setCart([...cart, item]);
+              const newLine: CartItem = {
+                ...selectedProduct,
+                unit_price: effectiveUnit,
+                quantity: productQty,
+                subtotal: +(
+                  productQty * effectiveUnit * (1 + (rate || 0))
+                ).toFixed(2),
+              };
+              setCart([...cart, newLine]);
             }
+
             setSelectedProduct(null);
             setProductQty(1);
             setProductModal(false);
             setShowCustomProductForm(false);
             messageApi.success(`"${selectedProduct.name}" added to cart.`);
           },
-          onCancel: () => {
-            messageApi.info('Adding item to cart cancelled.');
-          },
+          onCancel: () => messageApi.info('Adding item to cart cancelled.'),
         });
         return;
       }
 
-      // Allow exceeding stock if you want to (remove this block to hard-block)
       if (totalRequested > availableQty) {
         Modal.confirm({
           title: 'Quantity exceeds available stock',
           content: `You requested ${totalRequested}, but only ${availableQty} in stock. Add anyway?`,
           okText: 'Yes, Add Anyway',
           cancelText: 'No, Cancel',
-          onOk: () => {
-            const item = {
-              ...selectedProduct,
-              quantity: productQty,
-              subtotal:
-                productQty *
-                selectedProduct.unit_price *
-                (1 + (selectedProduct.tax_rate_value ?? 0)),
-            };
-            const existingCartItem = cart.find((i) => i.id === item.id);
-            if (existingCartItem) {
+          onOk: async () => {
+            const combinedQty = alreadyInCart + productQty;
+            const effectiveUnit = await getEffectiveUnit(
+              selectedProduct,
+              combinedQty
+            );
+            const rate = isVatRegistered
+              ? typeof selectedProduct.tax_rate_value === 'number'
+                ? selectedProduct.tax_rate_value
+                : defaultVatRate
+              : 0;
+
+            const existing = cart.find((i) => i.id === selectedProduct.id);
+            if (existing) {
+              const newQty = existing.quantity + productQty;
+              const repricedUnit = await getEffectiveUnit(
+                selectedProduct,
+                newQty
+              );
+              const repricedSubtotal = +(
+                newQty * repricedUnit * (1 + (rate || 0))
+              ).toFixed(2);
               setCart(
                 cart.map((i) =>
-                  i.id === item.id
+                  i.id === selectedProduct.id
                     ? {
                         ...i,
-                        quantity: i.quantity + item.quantity,
-                        subtotal:
-                          (i.quantity + item.quantity) *
-                          i.unit_price *
-                          (1 + (i.tax_rate_value ?? 0)),
+                        quantity: newQty,
+                        unit_price: repricedUnit,
+                        subtotal: repricedSubtotal,
                       }
                     : i
                 )
               );
             } else {
-              setCart([...cart, item]);
+              const newLine: CartItem = {
+                ...selectedProduct,
+                unit_price: effectiveUnit,
+                quantity: productQty,
+                subtotal: +(
+                  productQty * effectiveUnit * (1 + (rate || 0))
+                ).toFixed(2),
+              };
+              setCart([...cart, newLine]);
             }
+
             setSelectedProduct(null);
             setProductQty(1);
             setProductModal(false);
@@ -765,17 +951,52 @@ messageApi.success(`"${itemToAdd.name}" (x${qty}) added to cart.`);
         return;
       }
 
-      itemToAdd = {
+      // ✅ Tiered pricing path (no modal scenario)
+      const already = cart.find((i) => i.id === selectedProduct.id)?.quantity ?? 0;
+      const combinedQty = already + productQty;
+      const effectiveUnit = await getEffectiveUnit(selectedProduct, combinedQty);
+
+      const rate = isVatRegistered
+        ? typeof selectedProduct.tax_rate_value === 'number'
+          ? selectedProduct.tax_rate_value
+          : defaultVatRate
+        : 0;
+
+      const newLine: CartItem = {
         ...selectedProduct,
+        unit_price: effectiveUnit, // EXCL VAT
         quantity: productQty,
-        subtotal:
-          productQty *
-          selectedProduct.unit_price *
-          (1 + (selectedProduct.tax_rate_value ?? 0)),
+        subtotal: +(
+          productQty * effectiveUnit * (1 + (rate || 0))
+        ).toFixed(2),
       };
+
+      const existing = cart.find((i) => i.id === selectedProduct.id);
+      if (existing) {
+        const newQty = existing.quantity + productQty;
+        const repricedUnit = await getEffectiveUnit(selectedProduct, newQty);
+        const repricedSubtotal = +(
+          newQty * repricedUnit * (1 + (rate || 0))
+        ).toFixed(2);
+        setCart(
+          cart.map((i) =>
+            i.id === selectedProduct.id
+              ? {
+                  ...i,
+                  quantity: newQty,
+                  unit_price: repricedUnit,
+                  subtotal: repricedSubtotal,
+                }
+              : i
+          )
+        );
+      } else {
+        setCart([...cart, newLine]);
+      }
     }
 
-    if (itemToAdd) {
+    if (itemToAdd && selectedProduct?.is_service) {
+      // For service lines we still need to push/update after the non-service branch above.
       const existingCartItem = cart.find((i) => i.id === itemToAdd!.id);
       if (existingCartItem) {
         setCart(
@@ -795,19 +1016,119 @@ messageApi.success(`"${itemToAdd.name}" (x${qty}) added to cart.`);
       } else {
         setCart([...cart, itemToAdd]);
       }
-      setSelectedProduct(null);
-      setProductQty(1);
-      setProductModal(false);
-      setShowCustomProductForm(false);
-      messageApi.success(`"${itemToAdd.name}" added to cart.`);
     }
+
+    // Reset UI state for both paths
+    setSelectedProduct(null);
+    setProductQty(1);
+    setProductModal(false);
+    setShowCustomProductForm(false);
+    if (selectedProduct) messageApi.success(`"${selectedProduct.name}" added to cart.`);
   };
 
   const removeFromCart = (id: number | string) =>
     setCart(cart.filter((i) => i.id !== id));
 
+  async function addComboToCart(combo: {
+    key: string;
+    name: string;
+    total_price: number; // EXCL VAT
+    items: ComboItem[];
+  }) {
+    if (!isAuthenticated) {
+      messageApi.error('Authentication required.');
+      return;
+    }
+    if (!combo.items?.length) {
+      messageApi.warning('Combo has no items.');
+      return;
+    }
+
+    // Weight by current unit prices to split fairly
+    const enriched = combo.items
+      .map((it) => {
+        const p = products.find((pp) => Number(pp.id) === Number(it.product_id));
+        const unitEx = Number(p?.unit_price ?? 0); // EXCL VAT
+        return { ...it, ref: p, unitEx, lineEx: unitEx * it.qty };
+      })
+      .filter((x) => x.ref);
+
+    if (!enriched.length) {
+      messageApi.error('Combo items not found in your product list.');
+      return;
+    }
+
+    const totalRef = enriched.reduce((s, x) => s + x.lineEx, 0) || 1;
+    let remaining = +combo.total_price.toFixed(2);
+
+    // Build cart lines with allocated EXCL amounts
+    const newLines = enriched.map((x, i) => {
+      const share =
+        i < enriched.length - 1
+          ? Math.round((x.lineEx / totalRef) * combo.total_price * 100) / 100
+          : Math.round(remaining * 100) / 100;
+
+      remaining = Math.max(0, Math.round((remaining - share) * 100) / 100);
+
+      const unit_price_excl = +(share / x.qty).toFixed(2);
+      const rate = isVatRegistered
+        ? typeof x.ref!.tax_rate_value === 'number'
+          ? x.ref!.tax_rate_value
+          : defaultVatRate
+        : 0;
+
+      const subtotalIncl = +(
+        x.qty * unit_price_excl * (1 + (rate || 0))
+      ).toFixed(2);
+
+      return {
+        id: x.ref!.id,
+        name: `${x.ref!.name}`,
+        quantity: x.qty,
+        unit_price: unit_price_excl, // EXCL VAT
+        is_service: !!x.ref!.is_service,
+        tax_rate_value: rate,
+        subtotal: subtotalIncl,
+      } as CartItem;
+    });
+
+    // Merge into cart (blend unit price if same product already in cart)
+    setCart((prev) => {
+      const next = [...prev];
+      for (const nl of newLines) {
+        const idx = next.findIndex((i) => i.id === nl.id);
+        if (idx >= 0) {
+          const ex = next[idx];
+          const newQty = ex.quantity + nl.quantity;
+          const blendedUnit =
+            +(
+              (ex.unit_price * ex.quantity + nl.unit_price * nl.quantity) /
+              newQty
+            ).toFixed(2);
+          const rate =
+            typeof ex.tax_rate_value === 'number'
+              ? ex.tax_rate_value
+              : nl.tax_rate_value || 0;
+          const newSubtotal = +(
+            newQty * blendedUnit * (1 + (rate || 0))
+          ).toFixed(2);
+          next[idx] = {
+            ...ex,
+            quantity: newQty,
+            unit_price: blendedUnit,
+            subtotal: newSubtotal,
+          };
+        } else {
+          next.push(nl);
+        }
+      }
+      return next;
+    });
+
+    messageApi.success(`Combo "${combo.name}" added to cart.`);
+  }
+
   // Add new customer
-  const [newCustomerFormInstance] = Form.useForm();
   const handleAddCustomer = async (values: {
     name: string;
     phone: string;
@@ -966,7 +1287,12 @@ messageApi.success(`"${itemToAdd.name}" (x${qty}) added to cart.`);
       customer: selectedCustomer
         ? { id: selectedCustomer.id, name: selectedCustomer.name }
         : null,
-      amountPaid: paymentType === 'Cash' ? amountPaid : paymentType === 'Bank' ? totals.incl : 0,
+      amountPaid:
+        paymentType === 'Cash'
+          ? amountPaid
+          : paymentType === 'Bank'
+          ? totals.incl
+          : 0,
       change: paymentType === 'Cash' ? change : 0,
       dueDate: paymentType === 'Credit' ? dueDate : null,
       bankName: paymentType === 'Bank' ? bankName : null,
@@ -1061,46 +1387,44 @@ messageApi.success(`"${itemToAdd.name}" (x${qty}) added to cart.`);
     }
   };
 
-return (
-  <>
-    {contextHolder}
-    <div style={{ padding: 18, maxWidth: 650, margin: '0 auto' }}>
-      <Header
-        title="POS"
-        rightExtra={
-          <>
-            <Tag color={isOnline ? 'green' : 'red'}>
-              {isOnline ? 'Online' : 'Offline'}
-            </Tag>
+  return (
+    <>
+      {contextHolder}
+      <div style={{ padding: 18, maxWidth: 650, margin: '0 auto' }}>
+        <Header
+          title="POS"
+          rightExtra={
+            <>
+              <Tag color={isOnline ? 'green' : 'red'}>
+                {isOnline ? 'Online' : 'Offline'}
+              </Tag>
 
-            {hasBranches ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Text type="secondary">Branch</Text>
-                <Select
-                  size="small"
-                  value={selectedBranchId || undefined}
-                  style={{ minWidth: 170 }}
-                  onChange={(val) => {
-                    setSelectedBranchId(val);
-                    localStorage.setItem(BRANCH_PICK_KEY, val || '');
-                  }}
-                  disabled={!isAuthenticated || isLoading}
-                >
-                  {myBranches.map((b) => (
-                    <Option key={b.id} value={b.id}>
-                      {(b.code || b.name) + (b.is_primary ? ' • primary' : '')}
-                    </Option>
-                  ))}
-                </Select>
-              </div>
-            ) : (
-              <Tag color="default">No Branch</Tag>
-            )}
-          </>
-        }
-      />
-
-
+              {hasBranches ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Text type="secondary">Branch</Text>
+                  <Select
+                    size="small"
+                    value={selectedBranchId || undefined}
+                    style={{ minWidth: 170 }}
+                    onChange={(val) => {
+                      setSelectedBranchId(val);
+                      localStorage.setItem(BRANCH_PICK_KEY, val || '');
+                    }}
+                    disabled={!isAuthenticated || isLoading}
+                  >
+                    {myBranches.map((b) => (
+                      <Option key={b.id} value={b.id}>
+                        {(b.code || b.name) + (b.is_primary ? ' • primary' : '')}
+                      </Option>
+                    ))}
+                  </Select>
+                </div>
+              ) : (
+                <Tag color="default">No Branch</Tag>
+              )}
+            </>
+          }
+        />
 
         {/* Customer Select */}
         <Card
@@ -1114,9 +1438,7 @@ return (
         >
           <div>
             <Text strong>
-              {selectedCustomer
-                ? selectedCustomer.name
-                : 'Select Customer (Optional)'}
+              {selectedCustomer ? selectedCustomer.name : 'Select Customer (Optional)'}
             </Text>
             <div style={{ fontSize: 12, color: '#888' }}>
               {selectedCustomer?.phone}
@@ -1170,7 +1492,12 @@ return (
               {selectedProduct ? selectedProduct.name : 'Select Product'}
             </Text>
             <div style={{ fontSize: 12, color: '#888' }}>
-              Price: {fmt(selectedProduct?.unit_price || 0)}{' '}
+              Price:{' '}
+              {fmt(
+                selectedProduct?.unit_price
+                  ? Number(selectedProduct.unit_price)
+                  : 0
+              )}{' '}
               {selectedProduct?.is_service ? '(Service)' : ''}
             </div>
             {selectedProduct && (
@@ -1181,6 +1508,30 @@ return (
             )}
           </div>
           <ShoppingCartOutlined />
+        </Card>
+
+        <Card size="small" style={{ marginBottom: 12 }}>
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+            }}
+          >
+            <Text strong>Add Combo</Text>
+            <Select
+              showSearch
+              placeholder="Select a combo"
+              style={{ minWidth: 260 }}
+              options={allCombos.map((c) => ({ value: c.key, label: c.name }))}
+              onChange={(key) => {
+                const combo = allCombos.find((c) => c.key === key);
+                if (combo) addComboToCart(combo);
+              }}
+              disabled={!isAuthenticated || isLoading || allCombos.length === 0}
+            />
+          </div>
         </Card>
 
         {/* Quantity & Add */}
@@ -1250,12 +1601,13 @@ return (
 
         {/* Cart */}
         <Card title="Cart" style={{ marginBottom: 14 }}>
-          {isLoading && (
-            <Spin
-              tip="Loading products and customers..."
-              style={{ display: 'block', margin: '20px auto' }}
-            />
-          )}
+          {isLoading ? (
+            // ✅ Use nested Spin (no warning)
+            <Spin spinning tip="Loading products and customers...">
+              <div style={{ height: 80 }} />
+            </Spin>
+          ) : null}
+
           {!isLoading && screens.md ? (
             <Table
               dataSource={cart}
@@ -1370,15 +1722,15 @@ return (
                 <div style={{ marginBottom: 4 }}>
                   <Text>Amount Paid</Text>
                 </div>
-<InputNumber
-  min={0}
-  value={amountPaid}
-  onChange={(value) => setAmountPaid(value ?? 0)}
-  style={{ width: '100%' }}
-  formatter={moneyFormatter}
-   parser={moneyParser}
-   disabled={!isAuthenticated || isLoading}
- />
+                <InputNumber
+                  min={0}
+                  value={amountPaid}
+                  onChange={(value) => setAmountPaid(value ?? 0)}
+                  style={{ width: '100%' }}
+                  formatter={moneyFormatter}
+                  parser={moneyParser}
+                  disabled={!isAuthenticated || isLoading}
+                />
                 <div style={{ marginTop: 4 }}>
                   <Text strong>
                     Change:&nbsp;
@@ -1643,14 +1995,15 @@ return (
                         <div>
                           <Text strong>{p.name}</Text>
                           <div style={{ fontSize: 13, color: '#888' }}>
- Price: {fmt(typeof p.unit_price === 'number'
-  ? p.unit_price
-  : parseFloat(p.unit_price as any))}{' '}
+                            Price:{' '}
+                            {fmt(
+                              typeof p.unit_price === 'number'
+                                ? p.unit_price
+                                : parseFloat(p.unit_price as any)
+                            )}{' '}
                             {p.is_service ? '(Service)' : ''}
                           </div>
-                          <div style={{ fontSize: 13, color: '#888' }}>
-                            Stock: {p.stock_quantity ?? 0} {p.unit || ''}
-                          </div>
+
                           {String(p.id).startsWith('custom-') && (
                             <div style={{ fontSize: 12, color: '#999' }}>
                               custom item (local)
@@ -1712,15 +2065,15 @@ return (
                   { type: 'number', min: 0.01, message: 'Price must be positive!' },
                 ]}
               >
-<InputNumber
-  min={0.01}
-  step={0.01}
-  style={{ width: '100%' }}
-  formatter={moneyFormatter}
-  parser={moneyParser}
-  placeholder={`e.g. ${symbol} 0.00`}
-  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
-/>
+                <InputNumber
+                  min={0.01}
+                  step={0.01}
+                  style={{ width: '100%' }}
+                  formatter={moneyFormatter}
+                  parser={moneyParser}
+                  placeholder={`e.g. ${symbol} 0.00`}
+                  disabled={!isAuthenticated || isLoading || isAddingCustomProduct}
+                />
               </Form.Item>
 
               <Form.Item name="customProductDescription" label="Description (Optional)">

@@ -53,7 +53,7 @@ finance: {
 
 customers: {
   label: 'Customers',
-  description: 'value share, overdue risk, churn watch',
+  description: 'CLV share, overdue risk, churn watch',
   color: 'green',
   icon: <PieChartOutlined />,
   // wherever you define DASHBOARDS['customers']

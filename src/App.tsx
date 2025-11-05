@@ -102,7 +102,7 @@ const AppContent = () => {
             <Route
               path="/financials"
               element={
-                <RequireRoles anyOf={['admin','manager','accountant','financials']}>
+                <RequireRoles anyOf={['admin','manager','user','accountant','financials']}>
                   <Financials />
                 </RequireRoles>
               }

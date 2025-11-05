@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState,useMemo, useCallback } from 'react';
 import {
   Tabs,
   Select,
@@ -79,6 +79,11 @@ async function pingApi(base = API_BASE, headers = {}) {
 }
 
 // Types for the form
+type PricingTier = { min_qty: number; unit_price: number };
+type ComboItem   = { product_id: number; qty: number };
+type ComboOffer  = { name: string; total_price: number; items: ComboItem[] };
+type Promotion   = { name: string; type: 'percent'|'fixed'|'override'; value: number; start_date?: string; end_date?: string };
+
 type ProductFormValues = {
   name: string;
   type: 'product' | 'service';
@@ -96,6 +101,11 @@ type ProductFormValues = {
   initPaymentSource?: 'AP' | 'BANK' | 'CASH';
   initUnitCostIncl?: number;
   initSupplierName?: string;
+
+  // NEW: advanced pricing/marketing
+  pricing_tiers?: PricingTier[];
+  combo_offers?: ComboOffer[];
+  promotions?: Promotion[];
 };
 
 // Branch types
@@ -105,6 +115,10 @@ type MyBranch = { id: string; code: string; name: string; is_primary: boolean };
 type ProductWithBranch = Product & {
   branch_id?: string | null;
   branch_name?: string | null; // if your API returns it
+  // surface server jsonb (kept optional)
+  pricing_tiers?: PricingTier[];
+  combo_offers?: ComboOffer[];
+  promotions?: Promotion[];
 };
 
 function useProductSalesStats(products: Product[], isAuthenticated: boolean, messageApi: any) {
@@ -160,6 +174,25 @@ const ProductsPage = () => {
     return () => clearInterval(t);
   }, []);
 
+  // Build options for product picker (products only)
+const productOptions = useMemo(
+  () =>
+    products
+      .filter(p => p.type === 'product')
+      .map(p => ({
+        value: Number(p.id),
+        label: `${p.name} — ${fmt(p.unitPrice ?? p.price ?? 0)}${p.unit ? ` / ${p.unit}` : ''}`,
+        search: `${p.name} ${p.unit ?? ''}`.toLowerCase(),
+      })),
+  [products, fmt]
+);
+
+// Shared filter for <Select showSearch>
+const productFilterOption = (input: string, option?: any) =>
+  (option?.label as string)?.toLowerCase().includes(input.toLowerCase()) ||
+  (option?.search as string)?.includes(input.toLowerCase());
+
+
   // ---------- LOAD user branches ----------
   useEffect(() => {
     const token = getToken();
@@ -198,12 +231,11 @@ const ProductsPage = () => {
   }, []);
 
   // put this right under API_BASE/api object
-const withBust = (url: string, bust?: boolean) => {
-  if (!bust) return url;
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}__ts=${Date.now()}`;
-};
-
+  const withBust = (url: string, bust?: boolean) => {
+    if (!bust) return url;
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}__ts=${Date.now()}`;
+  };
 
   // ---------- LOAD (with cache) ----------
   const mapBackendToProduct = (p: any): ProductWithBranch => ({
@@ -222,47 +254,48 @@ const withBust = (url: string, bust?: boolean) => {
     maxQty: p.max_quantity ?? undefined,
     branch_id: p.branch_id ?? null,
     branch_name: p.branch_name ?? null,
+
+    // NEW passthroughs (server jsonb)
+    pricing_tiers: Array.isArray(p.pricing_tiers) ? p.pricing_tiers : [],
+    combo_offers: Array.isArray(p.combo_offers) ? p.combo_offers : [],
+    promotions: Array.isArray(p.promotions) ? p.promotions : [],
   });
 
-// REPLACE your current fetchProducts with this version
-const fetchProducts = useCallback(async (fresh = false) => {
-  if (!isUserAuthenticated) {
-    setProducts([]);
-    setLoading(false);
-    messageApi.warning('Please log in to load products.');
-    return;
-  }
-  setLoading(true);
-  try {
-    const url = withBust(api.list(selectedBranchId || undefined), fresh);
-
-    // IMPORTANT: change the cache key when forcing fresh
-    const keyBase = `products:list:${selectedBranchId ?? 'ALL'}`;
-    const cacheKey = fresh ? `${keyBase}:bust:${Date.now()}` : keyBase;
-
-    const { data, fromCache, error } = await fetchWithCache<any[]>(
-      cacheKey,
-      url,
-      { headers: { ...getAuthHeaders() }, fetchInit: { cache: 'no-store' } }
-    );
-
-    if (data) {
-      const transformed: ProductWithBranch[] = data.map(mapBackendToProduct);
-      setProducts(transformed);
-      if (!fresh) {
-        if (fromCache) messageApi.info('Showing cached products (offline).');
-        else messageApi.success('Products loaded.');
-      }
-    } else {
+  const fetchProducts = useCallback(async (fresh = false) => {
+    if (!isUserAuthenticated) {
       setProducts([]);
-      if (error) messageApi.error('Failed to load products.');
+      setLoading(false);
+      messageApi.warning('Please log in to load products.');
+      return;
     }
-  } finally {
-    setLoading(false);
-  }
-}, [isUserAuthenticated, messageApi, selectedBranchId]);
+    setLoading(true);
+    try {
+      const url = withBust(api.list(selectedBranchId || undefined), fresh);
 
+      const keyBase = `products:list:${selectedBranchId ?? 'ALL'}`;
+      const cacheKey = fresh ? `${keyBase}:bust:${Date.now()}` : keyBase;
 
+      const { data, fromCache, error } = await fetchWithCache<any[]>(
+        cacheKey,
+        url,
+        { headers: { ...getAuthHeaders() }, fetchInit: { cache: 'no-store' } }
+      );
+
+      if (data) {
+        const transformed: ProductWithBranch[] = data.map(mapBackendToProduct);
+        setProducts(transformed);
+        if (!fresh) {
+          if (fromCache) messageApi.info('Showing cached products (offline).');
+          else messageApi.success('Products loaded.');
+        }
+      } else {
+        setProducts([]);
+        if (error) messageApi.error('Failed to load products.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [isUserAuthenticated, messageApi, selectedBranchId]);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
@@ -298,6 +331,11 @@ const fetchProducts = useCallback(async (fresh = false) => {
           initPaymentSource: 'AP',
           initUnitCostIncl: editingProduct.purchasePrice ?? editingProduct.unitPurchasePrice ?? 0,
           initSupplierName: '',
+
+          // NEW: prefill arrays
+          pricing_tiers: editingProduct.pricing_tiers ?? [],
+          combo_offers: editingProduct.combo_offers ?? [],
+          promotions: editingProduct.promotions ?? [],
         });
         setFormType(editingProduct.type);
       } else {
@@ -310,6 +348,11 @@ const fetchProducts = useCallback(async (fresh = false) => {
           initPaymentSource: 'AP',
           initUnitCostIncl: 0,
           initSupplierName: '',
+
+          // NEW defaults
+          pricing_tiers: [],
+          combo_offers: [],
+          promotions: [],
         });
         setFormType('product');
       }
@@ -343,6 +386,10 @@ const fetchProducts = useCallback(async (fresh = false) => {
         initVatRate: 15,
         initPaymentSource: 'AP',
         initUnitCostIncl: 0,
+
+        pricing_tiers: [],
+        combo_offers: [],
+        promotions: [],
       });
       setFormType('product');
     }
@@ -364,6 +411,31 @@ const fetchProducts = useCallback(async (fresh = false) => {
 
     const initialQty = values.type === 'product' ? Number(values.qty || 0) : 0;
 
+    // NEW helpers to clean arrays
+    const cleanTiers = (arr?: PricingTier[]) =>
+      Array.isArray(arr) ? arr
+        .map(t => ({ min_qty: Number(t.min_qty||0), unit_price: Number(t.unit_price||0) }))
+        .filter(t => Number.isFinite(t.min_qty) && t.min_qty > 0 && Number.isFinite(t.unit_price) && t.unit_price >= 0)
+        .sort((a,b)=>a.min_qty-b.min_qty) : [];
+
+    const cleanCombos = (arr?: ComboOffer[]) =>
+      Array.isArray(arr) ? arr.map(c => ({
+        name: String(c?.name || 'Combo'),
+        total_price: Number(c?.total_price || 0),
+        items: Array.isArray(c?.items) ? c.items
+          .map(i => ({ product_id: Number(i?.product_id), qty: Number(i?.qty||0) }))
+          .filter(i => Number.isFinite(i.product_id) && i.product_id > 0 && i.qty > 0) : []
+      })).filter(c => c.total_price >= 0 && c.items.length > 0) : [];
+
+    const cleanPromos = (arr?: Promotion[]) =>
+      Array.isArray(arr) ? arr.map(p => ({
+        name: String(p?.name || 'Promo'),
+        type: (['percent','fixed','override'].includes(String(p?.type))) ? p.type : 'percent',
+        value: Number(p?.value || 0),
+        start_date: p?.start_date || undefined,
+        end_date: p?.end_date || undefined
+      })).filter(p => Number.isFinite(p.value) && p.value >= 0) : [];
+
     const body: any = {
       name: values.name,
       description: '',
@@ -378,6 +450,11 @@ const fetchProducts = useCallback(async (fresh = false) => {
       max_quantity: values.type === 'product' ? Number(values.maxQty || 0) : null,
       available_value: values.type === 'service' ? Number(values.availableValue || 0) : null,
       branch_id: hasBranches ? (values.branch_id ?? selectedBranchId ?? null) : null,
+
+      // NEW payloads
+      pricing_tiers: cleanTiers(values.pricing_tiers),
+      combo_offers: cleanCombos(values.combo_offers),
+      promotions: cleanPromos(values.promotions),
     };
 
     // Include initial_stock only when creating a PRODUCT with initial quantity
@@ -425,28 +502,27 @@ const fetchProducts = useCallback(async (fresh = false) => {
         return;
       }
 
-const data = await res.json();
+      const data = await res.json();
 
-// optimistic update so the row appears instantly
-optimisticMerge(data);
+      // optimistic update so the row appears instantly
+      optimisticMerge(data);
 
-// close UI
-closeForm();
+      // close UI
+      closeForm();
 
-// if product was created in a different branch than the current filter,
-// switch the filter so you can see it immediately
-const createdBranch = data?.branch_id ?? null;
-if (hasBranches && selectedBranchId && createdBranch && createdBranch !== selectedBranchId) {
-  setSelectedBranchId(createdBranch);
-  localStorage.setItem('products.selected_branch_id', createdBranch);
-}
+      // if product was created in a different branch than the current filter,
+      // switch the filter so you can see it immediately
+      const createdBranch = data?.branch_id ?? null;
+      if (hasBranches && selectedBranchId && createdBranch && createdBranch !== selectedBranchId) {
+        setSelectedBranchId(createdBranch);
+        localStorage.setItem('products.selected_branch_id', createdBranch);
+      }
 
-messageApi.success(`Product ${isNew ? 'added' : 'updated'} successfully.`);
+      messageApi.success(`Product ${isNew ? 'added' : 'updated'} successfully.`);
 
-// flush any queued writes and then force a truly fresh reload
-await flushQueue();
-await fetchProducts(true);
-
+      // flush any queued writes and then force a truly fresh reload
+      await flushQueue();
+      await fetchProducts(true);
 
     } catch (err: any) {
       if (isNetworkError(err)) {
@@ -487,10 +563,10 @@ await fetchProducts(true);
         return;
       }
 
-optimisticRemove();
-messageApi.success('Deleted successfully.');
-await flushQueue();
-await fetchProducts(true);   // <— force fresh
+      optimisticRemove();
+      messageApi.success('Deleted successfully.');
+      await flushQueue();
+      await fetchProducts(true);   // <— force fresh
 
     } catch (err: any) {
       if (isNetworkError(err)) {
@@ -583,13 +659,13 @@ await fetchProducts(true);   // <— force fresh
         return;
       }
 
-optimisticRestock();
-setRestockModalVisible(false);
-setRestockProduct(null);
-messageApi.success('Product restocked successfully!');
-await flushQueue();
-await fetchProducts(true);   // <— force fresh (pulls new avg cost)
- // pulls the **new avg cost** back from API
+      optimisticRestock();
+      setRestockModalVisible(false);
+      setRestockProduct(null);
+      messageApi.success('Product restocked successfully!');
+      await flushQueue();
+      await fetchProducts(true);   // <— force fresh (pulls new avg cost)
+      // pulls the **new avg cost** back from API
     } catch (err: any) {
       if (isNetworkError(err)) {
         await enqueueRequest(endpoint, 'POST', payload, headers);
@@ -623,14 +699,13 @@ await fetchProducts(true);   // <— force fresh (pulls new avg cost)
       render: (_: any, r: ProductWithBranch) =>
         r.branch_name ? r.branch_name : (r.branch_id ? `#${String(r.branch_id).slice(0, 6)}` : '—'),
     },
-{
-  title: 'Quantity',
-  dataIndex: 'qty',
-  key: 'qty',
-  render: (qty: any, rec: ProductWithBranch) =>
-    rec.unit ? `${formatQty(qty)} ${rec.unit}` : formatQty(qty),
-},
-
+    {
+      title: 'Quantity',
+      dataIndex: 'qty',
+      key: 'qty',
+      render: (qty: any, rec: ProductWithBranch) =>
+        rec.unit ? `${formatQty(qty)} ${rec.unit}` : formatQty(qty),
+    },
     {
       title: 'Min Qty',
       dataIndex: 'minQty',
@@ -727,6 +802,237 @@ await fetchProducts(true);   // <— force fresh (pulls new avg cost)
     },
   ];
 
+  // ---- Small inline editors for NEW sections ----
+  const BulkPricingEditor = () => (
+    <Card size="small" style={{ borderRadius: 10, marginTop: 12 }} title="Bulk Pricing (optional)">
+      <Form.List name="pricing_tiers">
+        {(fields, { add, remove }) => (
+          <>
+            {fields.map((field) => (
+              <Row gutter={12} key={field.key} style={{ marginBottom: 8 }}>
+                <Col span={10}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'min_qty']}
+                    fieldKey={[field.fieldKey!, 'min_qty']}
+                    label="Min Qty"
+                    rules={[{ required: true, message: 'Min Qty' }]}
+                  >
+                    <InputNumber min={1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={10}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'unit_price']}
+                    fieldKey={[field.fieldKey!, 'unit_price']}
+                    label="Unit Price"
+                    rules={[{ required: true, message: 'Unit Price' }]}
+                  >
+                    <InputNumber min={0} style={{ width: '100%' }} formatter={moneyFormatter} parser={moneyParser} />
+                  </Form.Item>
+                </Col>
+                <Col span={4} style={{ display: 'flex', alignItems: 'end' }}>
+                  <Button danger onClick={() => remove(field.name)} block>Remove</Button>
+                </Col>
+              </Row>
+            ))}
+            <Button onClick={() => add()} block type="dashed">Add Tier</Button>
+          </>
+        )}
+      </Form.List>
+      <p style={{ fontSize: 12, color: '#666', marginTop: 8 }}>
+        Example: “From 12 units → R18 each; from 100 units → R15 each”.
+      </p>
+    </Card>
+  );
+
+const ComboOffersEditor = () => (
+  <Card size="small" style={{ borderRadius: 10, marginTop: 12 }} title="Combo Offers (optional)">
+    <Form.List name="combo_offers">
+      {(fields, { add, remove }) => (
+        <>
+          {fields.map((field) => (
+            <Card key={field.key} size="small" style={{ marginBottom: 12 }}>
+              <Row gutter={12}>
+                <Col span={10}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'name']}
+                    fieldKey={[field.fieldKey!, 'name']}
+                    label="Combo Name"
+                    rules={[{ required: true, message: 'Combo name' }]}
+                  >
+                    <Input placeholder="e.g. Family Pack" />
+                  </Form.Item>
+                </Col>
+                <Col span={10}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'total_price']}
+                    fieldKey={[field.fieldKey!, 'total_price']}
+                    label="Total Price"
+                    rules={[{ required: true, message: 'Total price' }]}
+                  >
+                    <InputNumber
+                      min={0}
+                      style={{ width: '100%' }}
+                      formatter={moneyFormatter}
+                      parser={moneyParser}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={4} style={{ display: 'flex', alignItems: 'end' }}>
+                  <Button danger onClick={() => remove(field.name)} block>
+                    Remove
+                  </Button>
+                </Col>
+              </Row>
+
+              {/* Combo items with product SELECT instead of raw ID */}
+              <Form.List name={[field.name, 'items']}>
+                {(itemFields, itemOps) => (
+                  <>
+                    {itemFields.map((it) => (
+                      <Row gutter={12} key={it.key} style={{ marginBottom: 8 }}>
+                        <Col span={16}>
+                          <Form.Item
+                            {...it}
+                            name={[it.name, 'product_id']}
+                            fieldKey={[it.fieldKey!, 'product_id']}
+                            label="Product"
+                            rules={[{ required: true, message: 'Choose a product' }]}
+                          >
+                            <Select
+                              showSearch
+                              placeholder="Search product by name"
+                              options={productOptions}
+                              filterOption={productFilterOption}
+                              optionFilterProp="label"
+                              allowClear
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col span={8}>
+                          <Form.Item
+                            {...it}
+                            name={[it.name, 'qty']}
+                            fieldKey={[it.fieldKey!, 'qty']}
+                            label="Qty"
+                            rules={[{ required: true, message: 'Qty' }]}
+                          >
+                            <InputNumber min={1} style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                        <Col span={24} style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                          <Button danger onClick={() => itemOps.remove(it.name)}>
+                            Remove Item
+                          </Button>
+                        </Col>
+                      </Row>
+                    ))}
+                    <Button onClick={() => itemOps.add()} block type="dashed">
+                      Add Combo Item
+                    </Button>
+                  </>
+                )}
+              </Form.List>
+            </Card>
+          ))}
+          <Button onClick={() => add({ items: [] })} block type="dashed">
+            Add Combo
+          </Button>
+        </>
+      )}
+    </Form.List>
+    <p style={{ fontSize: 12, color: '#666', marginTop: 8 }}>
+      Pick products by name; set quantities. The combo is sold at the total price you specify.
+    </p>
+  </Card>
+);
+
+
+  const PromotionsEditor = () => (
+    <Card size="small" style={{ borderRadius: 10, marginTop: 12 }} title="Promotions (optional)">
+      <Form.List name="promotions">
+        {(fields, { add, remove }) => (
+          <>
+            {fields.map((field) => (
+              <Row gutter={12} key={field.key} style={{ marginBottom: 8 }}>
+                <Col span={6}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'name']}
+                    fieldKey={[field.fieldKey!, 'name']}
+                    label="Name"
+                    rules={[{ required: true, message: 'Name' }]}
+                  >
+                    <Input placeholder="e.g. Black Friday" />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'type']}
+                    fieldKey={[field.fieldKey!, 'type']}
+                    label="Type"
+                    rules={[{ required: true, message: 'Type' }]}
+                  >
+                    <Select
+                      options={[
+                        { value: 'percent', label: 'Percent off' },
+                        { value: 'fixed', label: 'Fixed amount off' },
+                        { value: 'override', label: 'Override price' },
+                      ]}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'value']}
+                    fieldKey={[field.fieldKey!, 'value']}
+                    label="Value"
+                    rules={[{ required: true, message: 'Value' }]}
+                  >
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={6} style={{ display: 'flex', alignItems: 'end' }}>
+                  <Button danger onClick={() => remove(field.name)} block>Remove</Button>
+                </Col>
+                <Col span={12}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'start_date']}
+                    fieldKey={[field.fieldKey!, 'start_date']}
+                    label="Start (YYYY-MM-DD)"
+                  >
+                    <Input placeholder="2025-11-04" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'end_date']}
+                    fieldKey={[field.fieldKey!, 'end_date']}
+                    label="End (YYYY-MM-DD)"
+                  >
+                    <Input placeholder="2025-12-31" />
+                  </Form.Item>
+                </Col>
+              </Row>
+            ))}
+            <Button onClick={() => add()} block type="dashed">Add Promotion</Button>
+          </>
+        )}
+      </Form.List>
+      <p style={{ fontSize: 12, color: '#666', marginTop: 8 }}>
+        Percent/fixed apply discounts; override sets a new price during the promo window.
+      </p>
+    </Card>
+  );
+
   const renderForm = () => (
     <Form<ProductFormValues>
       form={form}
@@ -750,6 +1056,7 @@ await fetchProducts(true);   // <— force fresh (pulls new avg cost)
               initPaymentSource: undefined,
               initUnitCostIncl: undefined,
               initSupplierName: undefined,
+              // keep advanced sections as-is; services may still have promotions
             });
           }
         }
@@ -913,7 +1220,7 @@ await fetchProducts(true);   // <— force fresh (pulls new avg cost)
                 </Form.Item>
               </Col>
               <Col span={12}>
-
+                {/* empty spacer */}
               </Col>
             </Row>
 
@@ -924,6 +1231,10 @@ await fetchProducts(true);   // <— force fresh (pulls new avg cost)
               When you create this product, we’ll post a proper stock receipt so Inventory, VAT, and AP/Bank/Cash are recorded correctly.
             </p>
           </Card>
+
+          {/* NEW: Bulk Pricing & Combos (product only) */}
+          <BulkPricingEditor />
+          <ComboOffersEditor />
         </>
       )}
 
@@ -936,6 +1247,9 @@ await fetchProducts(true);   // <— force fresh (pulls new avg cost)
           <InputNumber min={0} style={{ width: '100%' }} />
         </Form.Item>
       )}
+
+      {/* NEW: Promotions (works for both products & services) */}
+      <PromotionsEditor />
 
       <Form.Item>
         <Button type="primary" htmlType="submit" block disabled={loading}>
@@ -1061,11 +1375,10 @@ await fetchProducts(true);   // <— force fresh (pulls new avg cost)
                         <strong>Unit Purchase Price (Avg):</strong>{' '}
                         {product.unitPurchasePrice ? fmt(product.unitPurchasePrice) : '-'}
                       </p>
-  <p>
-  <strong>Current Quantity: {formatQty(product.qty)}</strong>
-  {product.unit ? ` ${product.unit}` : ''}
-</p>
-
+                      <p>
+                        <strong>Current Quantity: {formatQty(product.qty)}</strong>
+                        {product.unit ? ` ${product.unit}` : ''}
+                      </p>
                       <p><strong>Min Quantity:</strong> {product.minQty ?? '-'}</p>
                       <p><strong>Max Quantity:</strong> {product.maxQty ?? '-'}</p>
                     </Card>

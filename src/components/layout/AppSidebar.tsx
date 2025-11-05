@@ -21,7 +21,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-
+import { useQxVoice } from '../../lib/useQxVoice';
 const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 const NONE = '__none__';
 
