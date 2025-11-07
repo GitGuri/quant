@@ -1,5 +1,5 @@
 // src/pages/AuthPage.tsx
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   Card,
@@ -15,7 +15,7 @@ import { useToast } from '@/components/ui/use-toast';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
 import { ToastAction } from '@/components/ui/toast';
 
-const API_BASE = 'http://localhost:3000';
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -35,76 +35,113 @@ export const useAuth = () => {
   return context;
 };
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
-    localStorage.getItem('isAuthenticated') === 'true'
-  );
+/** ──────────────────────────────────────────────────────────────────────────────
+ * Hard logout util (inline, no separate file).
+ * Blasts all client caches/state and redirects to /login.
+ * ───────────────────────────────────────────────────────────────────────────── */
+async function hardLogout(redirectTo: string = '/login') {
+  try {
+    // Broadcast to other tabs so they log out too
+    localStorage.setItem('qx:logout:broadcast', String(Date.now()));
 
-  const [userRoles, setUserRoles] = useState<string[]>(
-    JSON.parse(localStorage.getItem('userRoles') || '[]')
-  );
-
-  const [userName, setUserName] = useState<string | null>(
-    localStorage.getItem('userName')
-  );
-
-  const login = () => {
-    setIsAuthenticated(true);
-    setUserRoles(JSON.parse(localStorage.getItem('userRoles') || '[]'));
-    setUserName(localStorage.getItem('userName'));
-    localStorage.setItem('isAuthenticated', 'true');
-  };
-
-
-  const logout = () => {
-    // 1. Clear In-Memory State Immediately
-    setIsAuthenticated(false);
-    setUserRoles([]);
-    setUserName(null);
-
-    // 2. Clear Local Storage (existing logic)
-    const keysToRemove = [
-      'token',
-      'isAuthenticated',
-      'userId',
-      'user_id',
-      'currentUserId',
-      'userRoles',
-      'userName',
-      'companyId',
-      'activeCompanyId',
-      'compareCompanyId',
-      'companies',
-      'qx:profile:completion', // Clear the profile completion cache key as well
-    ];
-    keysToRemove.forEach(k => localStorage.removeItem(k));
-
-    // Remove any *scoped* company keys (existing logic)
-    Object.keys(localStorage).forEach(k => {
-      if (
-        k.startsWith('activeCompanyId:') ||
-        k.startsWith('companies:') ||
-        k.startsWith('compareCompanyId:') ||
-        k.startsWith('onboarding:') // Clear any scoped onboarding keys
-      ) {
-        localStorage.removeItem(k);
-      }
-    });
-    
-    // 3. Clear Session Storage
-    // This removes any session-only state that might be holding old data.
+    // Clear localStorage (keep nothing)
+    for (const k of Object.keys(localStorage)) localStorage.removeItem(k);
+    // Clear sessionStorage
     sessionStorage.clear();
 
-    // 4. Force Immediate Hard Navigation with Cache Busting
-    // We create a new URL object based on the current origin.
-    const url = new URL(window.location.origin);
-    // Set the path to the root/login page
-    url.pathname = '/'; 
-    // Add a unique timestamp 'c' parameter to force the browser to ignore its cache.
-    url.searchParams.set('c', Date.now().toString()); 
+    // Best-effort: clear non-HttpOnly cookies (HttpOnly can only be cleared server-side)
+    try {
+      document.cookie.split(';').forEach(c => {
+        const [name] = c.split('=');
+        if (name) {
+          document.cookie = `${name.trim()}=;expires=Thu, 01 Jan 1970 00:00:01 GMT;path=/`;
+        }
+      });
+    } catch { /* ignore */ }
 
-    window.location.replace(url.toString()); 
-  };
+    // Clear Cache Storage (PWA/fetch caches)
+    try {
+      if ('caches' in window) {
+        const names = await caches.keys();
+        await Promise.all(names.map(n => caches.delete(n)));
+      }
+    } catch { /* ignore */ }
+
+    // Clear IndexedDB (best-effort; some browsers gate this API)
+    try {
+      // @ts-ignore
+      const dbs = (await indexedDB.databases?.()) || [];
+      await Promise.all(
+        dbs.map((d: any) => d?.name && new Promise<void>(res => {
+          const req = indexedDB.deleteDatabase(d.name);
+          req.onsuccess = req.onerror = req.onblocked = () => res();
+        }))
+      );
+    } catch { /* ignore */ }
+
+    // Unregister service workers so old caches can’t repopulate
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      }
+    } catch { /* ignore */ }
+
+    // Hard redirect with cache-buster (kills in-memory React state)
+    const url = new URL(redirectTo, window.location.origin);
+    url.searchParams.set('c', String(Date.now()));
+    window.location.replace(url.toString());
+  } catch {
+    // Fallback: at least get off the app shell
+    window.location.replace('/login');
+  }
+}
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
+    localStorage.getItem('isAuthenticated') === 'true'
+  );
+
+  const [userRoles, setUserRoles] = useState<string[]>(
+    JSON.parse(localStorage.getItem('userRoles') || '[]')
+  );
+
+  const [userName, setUserName] = useState<string | null>(
+    localStorage.getItem('userName')
+  );
+
+  // If another tab logs out, mirror it here
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'qx:logout:broadcast') {
+        // Immediately drop in-memory flags so UI deauths
+        setIsAuthenticated(false);
+        setUserRoles([]);
+        setUserName(null);
+        // Perform the full wipe + redirect
+        hardLogout('/login');
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  const login = () => {
+    setIsAuthenticated(true);
+    setUserRoles(JSON.parse(localStorage.getItem('userRoles') || '[]'));
+    setUserName(localStorage.getItem('userName'));
+    localStorage.setItem('isAuthenticated', 'true');
+  };
+
+  const logout = () => {
+    // Reset React state first so the UI immediately reflects logout
+    setIsAuthenticated(false);
+    setUserRoles([]);
+    setUserName(null);
+
+    // Do the full wipe + redirect (to /login)
+    hardLogout('/login');
+  };
 
   return (
     <AuthContext.Provider
@@ -137,11 +174,8 @@ function computeProfileCompletion(
     !!p?.city,
     !!p?.province,
     !!p?.country,
-    //!!p?.website || !!p?.linkedin,
     !!p?.currency,
-    //!p?.is_vat_registered || !!p?.vat_number,
     !!opts.logo,
-    //(opts.branchCount || 0) > 0,
   ];
   const done = checks.filter(Boolean).length;
   return Math.max(0, Math.min(100, Math.round((done / checks.length) * 100)));
@@ -227,38 +261,35 @@ export function AuthPage() {
         // Remove legacy global list so it can’t bleed across users
         localStorage.removeItem('companies');
 
+        // Roles + name
+        localStorage.setItem('userRoles', JSON.stringify(roles));
+        localStorage.setItem('userName', user.name || '');
 
-// Roles + name
-localStorage.setItem('userRoles', JSON.stringify(roles));
-localStorage.setItem('userName', user.name || '');
+        // Fetch company name (optional)
+        try {
+          const profileRes = await fetch(`${API_BASE}/api/profile`, {
+            headers: { Authorization: `Bearer ${data.token}` },
+          });
+          if (profileRes.ok) {
+            const profile = await profileRes.json();
+            if (profile?.company) {
+              localStorage.setItem('companyName', profile.company);
+              localStorage.setItem('activeCompanyName', profile.company);
+            }
+          } else {
+            localStorage.setItem('companyName', user.company || user.name || 'My Company');
+          }
+        } catch {
+          localStorage.setItem('companyName', user.company || user.name || 'My Company');
+        }
 
-// ✅ NEW: Fetch the company name from the /api/profile endpoint
-try {
-  const profileRes = await fetch(`${API_BASE}/api/profile`, {
-    headers: { Authorization: `Bearer ${data.token}` },
-  });
-  if (profileRes.ok) {
-    const profile = await profileRes.json();
-    if (profile?.company) {
-      localStorage.setItem('companyName', profile.company);
-      localStorage.setItem('activeCompanyName', profile.company);
-    }
-  } else {
-    // fallback: use the user's own name if company missing
-    localStorage.setItem('companyName', user.company || user.name || 'My Company');
-  }
-} catch {
-  localStorage.setItem('companyName', user.company || user.name || 'My Company');
-}
+        login();
 
-login();
-
-// basic success toast
-toast({
-  title: '✅ Login Successful',
-  description: `Welcome back, ${user.name || 'User'}!`,
-});
-
+        // basic success toast
+        toast({
+          title: '✅ Login Successful',
+          description: `Welcome back, ${user.name || 'User'}!`,
+        });
 
         // ---------- CONDITIONAL "Go to Profile" TOAST ----------
         const token = data.token as string;
@@ -418,6 +449,7 @@ toast({
   // --- End Handle Registration Submit ---
 
   // --- Handle Forgot Password Submit ---
+  const [loginEmailStateMirror, setLoginEmailStateMirror] = useState(''); // (optional helper)
   const handleForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -435,6 +467,7 @@ toast({
         });
         setMode('login');
         setLoginEmail(forgotEmail);
+        setLoginEmailStateMirror(forgotEmail);
         setForgotEmail('');
       } else {
         toast({

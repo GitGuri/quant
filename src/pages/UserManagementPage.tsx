@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Pencil, Trash2, Plus, Loader2, Search as SearchIcon, X as XIcon, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../AuthPage';
@@ -22,12 +22,7 @@ interface User {
   officeCode?: string;
   branches?: Array<{ id: string; code: string; name: string; is_primary: boolean }>;
 }
-
-interface Branch {
-  id: string;
-  code: string;
-  name: string;
-}
+interface Branch { id: string; code: string; name: string; }
 
 export default function UserManagementPage() {
   const { isAuthenticated } = useAuth();
@@ -51,20 +46,17 @@ export default function UserManagementPage() {
   const [primaryBranchId, setPrimaryBranchId] = useState<string | null>(null);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [newUserData, setNewUserData] = useState({
-    displayName: '',
-    email: '',
-    password: '',
-    officeCode: '',
-    roles: [] as string[],
-  });
+  const [newUserData, setNewUserData] = useState({ displayName: '', email: '', password: '', officeCode: '', roles: [] as string[] });
 
   const [searchText, setSearchText] = useState('');
   const [searchApplied, setSearchApplied] = useState('');
 
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [isSavingAdd, setIsSavingAdd] = useState(false);
-  const [isHardRefreshing, setIsHardRefreshing] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   const allRoles = [
     'admin','ceo','manager','cashier','accountant','pos-transact','transactions','financials','import','tasks',
@@ -73,198 +65,108 @@ export default function UserManagementPage() {
   ];
 
   const fetchJson = async (url: string, init?: RequestInit) => {
-    const r = await fetch(url, {
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache', ...(init?.headers || {}) },
-      ...init,
-    });
+    const r = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache', ...(init?.headers||{}) }, ...init });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return r.json();
   };
 
-  const makeTempId = () => {
-    try { return crypto.randomUUID(); } catch { return `tmp_${Date.now()}_${Math.random().toString(16).slice(2)}`; }
-  };
+  const makeTempId = () => { try { return crypto.randomUUID(); } catch { return `tmp_${Date.now()}_${Math.random().toString(16).slice(2)}`; } };
 
   const upsertUser = (next: User) =>
     setUsers(prev => {
       const i = prev.findIndex(u => u.id === next.id || u.email === next.email);
       if (i === -1) return [next, ...prev];
-      const copy = prev.slice();
-      copy[i] = { ...prev[i], ...next };
-      return copy;
+      const copy = prev.slice(); copy[i] = { ...prev[i], ...next }; return copy;
     });
-
   const removeUser = (id: string) => setUsers(prev => prev.filter(u => u.id !== id));
 
-  // --- Fetchers --------------------------------------------------------------
-
-  const fetchUsers = useCallback(async () => {
-    if (!token) {
-      setUsers([]);
-      setLoading(false);
-      return;
-    }
+  // --------- core fetchers (called only on mount + after CRUD) ----------
+  const fetchUsers = useCallback(async (): Promise<User[]> => {
+    if (!token) return [];
     setError(null);
-    try {
-      const data = await fetchJson(`${API_BASE_URL}/users`, {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      });
-      setUsers(Array.isArray(data) ? data : []);
-    } catch (err: any) {
-      console.error('Error fetching users:', err);
-      setError(`Failed to load users: ${err.message}.`);
-    }
+    const data = await fetchJson(`${API_BASE_URL}/users`, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }});
+    const list: User[] = Array.isArray(data) ? data : [];
+    if (mountedRef.current) setUsers(list);
+    return list;
   }, [token]);
 
-  const fetchBranches = useCallback(async () => {
-    if (!token) return;
-    try {
-      const data = await fetchJson(`${API_BASE_URL}/api/branches`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setBranches(data || []);
-    } catch (e) {
-      console.error('Error loading branches:', e);
-    }
+  const fetchBranches = useCallback(async (): Promise<Branch[]> => {
+    if (!token) return [];
+    const data = await fetchJson(`${API_BASE_URL}/api/branches`, { headers: { Authorization: `Bearer ${token}` }});
+    const list: Branch[] = data || [];
+    if (mountedRef.current) setBranches(list);
+    return list;
   }, [token]);
 
-  // Hydrate each user's memberships (branches) so the table updates instantly
-  const hydrateUserMemberships = useCallback(async (userId: string) => {
+  const hydrateUserMemberships = async (userId: string, branchesSnap: Branch[]) => {
     if (!token) return [];
     try {
-      const r = await fetch(`${API_BASE_URL}/api/users/${userId}/branches`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      });
+      const r = await fetch(`${API_BASE_URL}/api/users/${userId}/branches`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
       if (!r.ok) return [];
       const data = await r.json();
-      const items: Array<{ branch_id: string; is_primary: boolean; code?: string; name?: string }> = data?.memberships || [];
-      // Map membership to the known branch list for code/name
+      const items: Array<{ branch_id: string; is_primary: boolean }> = data?.memberships || [];
       return items.map(m => {
-        const meta = branches.find(b => b.id === m.branch_id);
-        return {
-          id: m.branch_id,
-          code: meta?.code || '',
-          name: meta?.name || '',
-          is_primary: m.is_primary,
-        };
+        const meta = branchesSnap.find(b => b.id === m.branch_id);
+        return { id: m.branch_id, code: meta?.code || '', name: meta?.name || '', is_primary: m.is_primary };
       });
-    } catch (e) {
-      console.error('hydrateUserMemberships error', e);
-      return [];
-    }
-  }, [token, branches]);
+    } catch (e) { console.error('hydrateUserMemberships error', e); return []; }
+  };
 
-  // Hard refresh: fetch users, then hydrate branches for all of them
-  const hardRefreshUsers = useCallback(async () => {
+  const refreshOnce = useCallback(async () => {
     if (!token) return;
-    setIsHardRefreshing(true);
-    setLoading(true);
+    setIsRefreshing(true);
     try {
-      await fetchUsers();
-      // After users are in state, hydrate memberships in parallel
-      const list = await fetchJson(`${API_BASE_URL}/users`, {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      });
-
-      const array: User[] = Array.isArray(list) ? list : [];
-      const hydrated = await Promise.all(
-        array.map(async (u) => {
-          const branchesForU = await hydrateUserMemberships(u.id);
-          return { ...u, branches: branchesForU };
-        })
-      );
-      setUsers(hydrated);
-    } catch (e) {
-      // fetchUsers already sets error if it fails
+      const [usersSnap, branchesSnap] = await Promise.all([fetchUsers(), fetchBranches()]);
+      const hydrated = await Promise.all(usersSnap.map(async u => ({ ...u, branches: await hydrateUserMemberships(u.id, branchesSnap) })));
+      if (mountedRef.current) setUsers(hydrated);
+    } catch (e: any) {
+      console.error('refresh error', e);
+      if (mountedRef.current) setError(`Failed to refresh: ${e.message || e}`);
     } finally {
-      setIsHardRefreshing(false);
-      setLoading(false);
+      if (mountedRef.current) setIsRefreshing(false);
     }
-  }, [token, fetchUsers, hydrateUserMemberships]);
+  }, [token, fetchUsers, fetchBranches]);
 
-  // Initial load
+  // ---------- initial load: ONCE (auth/token change only) ----------
   useEffect(() => {
-    if (isAuthenticated && token) {
-      (async () => {
-        setLoading(true);
-        await Promise.all([fetchUsers(), fetchBranches()]);
-        // first hydration
-        await hardRefreshUsers();
-      })();
-    } else {
-      setUsers([]);
-      setBranches([]);
-      setLoading(false);
-    }
-  }, [isAuthenticated, token, fetchUsers, fetchBranches, hardRefreshUsers]);
+    if (!isAuthenticated || !token) { setUsers([]); setBranches([]); setLoading(false); return; }
+    (async () => {
+      setLoading(true);
+      try {
+        await refreshOnce();
+      } finally {
+        if (mountedRef.current) setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, token]);
 
-  // Revalidate on focus, online, and visibility change
-  useEffect(() => {
-    if (!isAuthenticated || !token) return;
-    const onFocus = () => hardRefreshUsers();
-    const onOnline = () => hardRefreshUsers();
-    const onVisibility = () => { if (document.visibilityState === 'visible') hardRefreshUsers(); };
-
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('online', onOnline);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('online', onOnline);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [isAuthenticated, token, hardRefreshUsers]);
-
-  // Optional light polling (30s)
-  useEffect(() => {
-    if (!isAuthenticated || !token) return;
-    const id = setInterval(() => hardRefreshUsers(), 30000);
-    return () => clearInterval(id);
-  }, [isAuthenticated, token, hardRefreshUsers]);
-
-  // --- Edit modal helpers ----------------------------------------------------
-
+  // --------- Edit modal helpers ----------
   const loadUserMemberships = useCallback(async (userId: string) => {
-    const memberships = await hydrateUserMemberships(userId);
+    // use current branches snapshot; this is local to the modal only
+    const memberships = await hydrateUserMemberships(userId, branches);
     setSelectedBranchIds(memberships.map(m => m.id));
     const primary = memberships.find(m => m.is_primary);
     setPrimaryBranchId(primary ? primary.id : null);
-  }, [hydrateUserMemberships]);
+  }, [branches]);
 
-  const openDeleteModal = (user: User) => {
-    setUserToDelete(user);
-    setIsDeleteModalOpen(true);
-  };
+  const openDeleteModal = (user: User) => { setUserToDelete(user); setIsDeleteModalOpen(true); };
 
   const confirmDeleteUser = async () => {
     if (!userToDelete || !token) return;
-    setLoading(true);
     const deletedId = userToDelete.id;
     const snapshot = users;
-    removeUser(deletedId);
-
+    removeUser(deletedId); // optimistic
     try {
-      const response = await fetch(`${API_BASE_URL}/users/${deletedId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP ${response.status}`);
-      }
+      const response = await fetch(`${API_BASE_URL}/users/${deletedId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+      if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(errorData.error || `HTTP ${response.status}`); }
       toast({ title: 'User Deleted', description: `User ${userToDelete.displayName} has been successfully deleted.` });
-      await hardRefreshUsers(); // make sure table reflects server truth
+      await refreshOnce(); // <- ONLY refetch here
     } catch (e: any) {
-      console.error('Error deleting user:', e);
       setUsers(snapshot); // rollback
       toast({ title: 'Deletion Failed', description: e.message, variant: 'destructive' });
     } finally {
-      setIsDeleteModalOpen(false);
-      setUserToDelete(null);
-      setLoading(false);
+      setIsDeleteModalOpen(false); setUserToDelete(null);
     }
   };
 
@@ -277,8 +179,7 @@ export default function UserManagementPage() {
   };
 
   const handleEditFormChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setEditFormData(prev => ({ ...prev, [name]: value }));
+    const { name, value } = e.target; setEditFormData(prev => ({ ...prev, [name]: value }));
   };
 
   const handleRoleToggle = (role: string) => {
@@ -287,18 +188,13 @@ export default function UserManagementPage() {
 
   const toggleBranch = (branchId: string) => {
     setSelectedBranchIds(prev => {
-      if (prev.includes(branchId)) {
-        if (primaryBranchId === branchId) setPrimaryBranchId(null);
-        return prev.filter(id => id !== branchId);
-      }
+      if (prev.includes(branchId)) { if (primaryBranchId === branchId) setPrimaryBranchId(null); return prev.filter(id => id !== branchId); }
       return [...prev, branchId];
     });
   };
 
   const pickPrimary = (branchId: string) => {
-    if (!selectedBranchIds.includes(branchId)) {
-      setSelectedBranchIds(prev => [...prev, branchId]);
-    }
+    if (!selectedBranchIds.includes(branchId)) setSelectedBranchIds(prev => [...prev, branchId]);
     setPrimaryBranchId(branchId);
   };
 
@@ -307,100 +203,55 @@ export default function UserManagementPage() {
     setIsSavingEdit(true);
     try {
       const uniqueRoles = Array.from(new Set(editUserRoles));
+      // optimistic detail/roles
+      upsertUser({ ...userToEdit, displayName: editFormData.displayName || userToEdit.displayName, email: (editFormData.email || userToEdit.email)!, roles: uniqueRoles });
 
-      // optimistic UI
-      upsertUser({
-        ...userToEdit,
-        displayName: editFormData.displayName || userToEdit.displayName,
-        email: (editFormData.email || userToEdit.email)!,
-        roles: uniqueRoles,
-      });
-
-      // 1) basic details
+      // details
       {
         const res = await fetch(`${API_BASE_URL}/users/${userToEdit.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ displayName: editFormData.displayName, email: editFormData.email }),
-          cache: 'no-store',
+          method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ displayName: editFormData.displayName, email: editFormData.email }), cache: 'no-store',
         });
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => ({}));
-          throw new Error(errorData.error || `HTTP ${res.status}`);
-        }
+        if (!res.ok) { const errorData = await res.json().catch(() => ({})); throw new Error(errorData.error || `HTTP ${res.status}`); }
       }
-
-      // 2) roles
+      // roles
       {
         const res = await fetch(`${API_BASE_URL}/users/${userToEdit.id}/roles`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ roles: uniqueRoles }),
-          cache: 'no-store',
+          method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ roles: uniqueRoles }), cache: 'no-store',
         });
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => ({}));
-          throw new Error(errorData.error || `HTTP ${res.status}`);
-        }
+        if (!res.ok) { const errorData = await res.json().catch(() => ({})); throw new Error(errorData.error || `HTTP ${res.status}`); }
       }
-
-      // 3) branches (optional)
+      // branches (optional)
       if (selectedBranchIds.length > 0) {
-        const effectivePrimary =
-          primaryBranchId && selectedBranchIds.includes(primaryBranchId)
-            ? primaryBranchId
-            : selectedBranchIds[0];
-
-        const memberships = selectedBranchIds.map(id => ({
-          branchId: id,
-          isPrimary: id === effectivePrimary,
-        }));
-
+        const effectivePrimary = primaryBranchId && selectedBranchIds.includes(primaryBranchId) ? primaryBranchId : selectedBranchIds[0];
+        const memberships = selectedBranchIds.map(id => ({ branchId: id, isPrimary: id === effectivePrimary }));
         const r = await fetch(`${API_BASE_URL}/api/users/${userToEdit.id}/branches`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ memberships }),
-          cache: 'no-store',
+          method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ memberships }), cache: 'no-store',
         });
-        if (!r.ok) {
-          const errorData = await r.json().catch(() => ({}));
-          throw new Error(errorData.error || `Failed to update branch memberships (${r.status})`);
-        }
+        if (!r.ok) { const errorData = await r.json().catch(() => ({})); throw new Error(errorData.error || `Failed to update branch memberships (${r.status})`); }
       }
 
       toast({ title: 'User Updated', description: `User ${editFormData.displayName || userToEdit.displayName} has been successfully updated.` });
 
-      // hard refresh to hydrate memberships so the table reflects changes instantly
-      await hardRefreshUsers();
+      await refreshOnce(); // <- ONLY refetch here
     } catch (e: any) {
-      console.error('Error updating user:', e);
       toast({ title: 'Update Failed', description: e.message, variant: 'destructive' });
-      await hardRefreshUsers();
+      await refreshOnce(); // ensure truth if optimistic went wrong
     } finally {
-      setIsSavingEdit(false);
-      setIsEditModalOpen(false);
-      setUserToEdit(null);
+      setIsSavingEdit(false); setIsEditModalOpen(false); setUserToEdit(null);
     }
   };
 
-  const openAddModal = () => {
-    setNewUserData({ displayName: '', email: '', password: '', officeCode: '', roles: [] });
-    setIsAddModalOpen(true);
-  };
+  const openAddModal = () => { setNewUserData({ displayName: '', email: '', password: '', officeCode: '', roles: [] }); setIsAddModalOpen(true); };
 
   const addNewUser = async () => {
     if (!token) return;
     setIsSavingAdd(true);
-
     const tempId = makeTempId();
-    const tempUser: User = {
-      id: tempId,
-      displayName: newUserData.displayName,
-      email: newUserData.email,
-      roles: [...(newUserData.roles || [])],
-      officeCode: newUserData.officeCode || undefined,
-    };
-    setUsers(prev => [tempUser, ...prev]);
+    const tempUser: User = { id: tempId, displayName: newUserData.displayName, email: newUserData.email, roles: [...(newUserData.roles||[])], officeCode: newUserData.officeCode || undefined };
+    setUsers(prev => [tempUser, ...prev]); // optimistic
 
     try {
       const payload = {
@@ -412,23 +263,16 @@ export default function UserManagementPage() {
       };
 
       const response = await fetch(`${API_BASE_URL}/users`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-        cache: 'no-store',
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload), cache: 'no-store',
       });
-
       const body = await response.json().catch(() => ({ error: 'Unknown error' }));
 
       if (!response.ok) {
         const msg = body?.error || `HTTP error! status: ${response.status}`;
         removeUser(tempId);
         if (response.status === 409 || /duplicate|unique constraint|users_email_key/i.test(msg)) {
-          toast({
-            title: 'Email Already Exists',
-            description: 'A user with this email address already exists in the system. Please use a different email address.',
-            variant: 'destructive',
-          });
+          toast({ title: 'Email Already Exists', description: 'A user with this email already exists.', variant: 'destructive' });
           return;
         }
         throw new Error(msg);
@@ -436,37 +280,23 @@ export default function UserManagementPage() {
 
       const created: User | undefined = body?.user || body;
       if (created?.id) {
-        setUsers(prev =>
-          prev.map(u =>
-            (u.id === tempId || u.email === created.email)
-              ? { ...u, ...created, roles: u.roles?.length ? u.roles : (created.roles || []) }
-              : u
-          )
-        );
+        setUsers(prev => prev.map(u => (u.id === tempId || u.email === created.email) ? { ...u, ...created, roles: u.roles?.length ? u.roles : (created.roles || []) } : u));
       }
 
       toast({ title: 'User Added Successfully', description: `The user "${newUserData.displayName}" has been created.` });
-
       setIsAddModalOpen(false);
       setNewUserData({ displayName: '', email: '', password: '', officeCode: '', roles: [] });
 
-      // hard refresh so we immediately show branch & role truth from the server
-      await hardRefreshUsers();
+      await refreshOnce(); // <- ONLY refetch here
     } catch (e: any) {
-      console.error('Error adding new user:', e);
       removeUser(tempId);
-      toast({
-        title: 'Add User Failed',
-        description: e.message || 'An unexpected error occurred while adding the user. Please try again.',
-        variant: 'destructive',
-      });
+      toast({ title: 'Add User Failed', description: e.message || 'Unexpected error while adding the user.', variant: 'destructive' });
     } finally {
       setIsSavingAdd(false);
     }
   };
 
-  // --- Search ----------------------------------------------------------------
-
+  // --------- Search ----------
   const displayedUsers = useMemo(() => {
     const q = (searchApplied || '').trim().toLowerCase();
     if (!q) return users;
@@ -493,41 +323,24 @@ export default function UserManagementPage() {
               <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">
                 {displayedUsers.length} / {users.length}
               </span>
-              <Button variant="ghost" size="sm" onClick={hardRefreshUsers} disabled={isHardRefreshing}>
-                {isHardRefreshing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+              {/* Optional: manual refresh button, does nothing automatically */}
+              <Button variant="ghost" size="sm" onClick={refreshOnce} disabled={isRefreshing}>
+                {isRefreshing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
                 Refresh
               </Button>
             </div>
 
             <div className='flex w-full md:w-auto items-center gap-2'>
               <div className="relative w-full md:w-72">
-                <Input
-                  value={searchText}
-                  onChange={(e) => setSearchText(e.target.value)}
-                  placeholder="Search name, email or role..."
-                  className="pr-9"
-                />
+                <Input value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="Search name, email or role..." className="pr-9" />
                 {searchText && (
-                  <button
-                    type="button"
-                    onClick={onClearSearch}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 opacity-70 hover:opacity-100"
-                    aria-label="Clear search"
-                    title="Clear"
-                  >
+                  <button type="button" onClick={onClearSearch} className="absolute right-2 top-1/2 -translate-y-1/2 opacity-70 hover:opacity-100" aria-label="Clear search" title="Clear">
                     <XIcon className="h-4 w-4" />
                   </button>
                 )}
               </div>
-              <Button variant="secondary" onClick={onApplySearch}>
-                <SearchIcon className="h-4 w-4 mr-1" />
-                Search
-              </Button>
-
-              <Button onClick={openAddModal}>
-                <Plus className="h-4 w-4 mr-2" />
-                Add New User
-              </Button>
+              <Button variant="secondary" onClick={onApplySearch}><SearchIcon className="h-4 w-4 mr-1" />Search</Button>
+              <Button onClick={() => setIsAddModalOpen(true)}><Plus className="h-4 w-4 mr-2" />Add New User</Button>
             </div>
           </CardHeader>
 
@@ -537,7 +350,7 @@ export default function UserManagementPage() {
                 <div className="animate-spin rounded-full h-12 w-12 border-4 border-t-4 border-blue-500 border-opacity-25"></div>
               </div>
             ) : error ? (
-              <div className="bg-red-100 dark:bg-red-900 border border-red-400 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg relative" role="alert">
+              <div className="bg-red-100 dark:bg-red-900 border border-red-400 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg" role="alert">
                 <span className="block sm:inline">{error}</span>
               </div>
             ) : (
@@ -554,49 +367,33 @@ export default function UserManagementPage() {
                   </thead>
                   <tbody>
                     {displayedUsers.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="text-center py-12 text-muted-foreground">
-                          No users found.
+                      <tr><td colSpan={5} className="text-center py-12 text-muted-foreground">No users found.</td></tr>
+                    ) : displayedUsers.map(user => (
+                      <motion.tr key={user.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className='border-b last:border-b-0 hover:bg-muted/50'>
+                        <td className='p-3 font-medium'>{user.displayName}</td>
+                        <td className='p-3 text-muted-foreground'>{user.email}</td>
+                        <td className='p-3 text-muted-foreground'>
+                          {user.roles?.length ? user.roles.join(', ') : <span className="text-xs italic text-muted-foreground">none</span>}
                         </td>
-                      </tr>
-                    ) : (
-                      displayedUsers.map((user) => (
-                        <motion.tr
-                          key={user.id}
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ duration: 0.3 }}
-                          className='border-b last:border-b-0 hover:bg-muted/50'
-                        >
-                          <td className='p-3 font-medium'>{user.displayName}</td>
-                          <td className='p-3 text-muted-foreground'>{user.email}</td>
-                          <td className='p-3 text-muted-foreground'>
-                            {user.roles?.length ? user.roles.join(', ') : <span className="text-xs italic text-muted-foreground">none</span>}
-                          </td>
-                          <td className='p-3'>
-                            <div className="flex flex-wrap gap-1">
-                              {user.branches?.length
-                                ? user.branches.map(b => (
-                                    <Badge key={b.id} variant={b.is_primary ? 'default' : 'secondary'}>
-                                      {b.code || b.name}{b.is_primary ? ' • primary' : ''}
-                                    </Badge>
-                                  ))
-                                : <span className="text-xs italic text-muted-foreground">—</span>}
-                            </div>
-                          </td>
-                          <td className='p-3 text-right'>
-                            <div className='flex justify-end space-x-2'>
-                              <Button variant='ghost' size='sm' onClick={() => openEditModal(user)}>
-                                <Pencil className='h-4 w-4' />
-                              </Button>
-                              <Button variant='ghost' size='sm' onClick={() => openDeleteModal(user)} className='text-red-600 hover:bg-red-100'>
-                                <Trash2 className='h-4 w-4' />
-                              </Button>
-                            </div>
-                          </td>
-                        </motion.tr>
-                      ))
-                    )}
+                        <td className='p-3'>
+                          <div className="flex flex-wrap gap-1">
+                            {user.branches?.length
+                              ? user.branches.map(b => (
+                                  <Badge key={b.id} variant={b.is_primary ? 'default' : 'secondary'}>
+                                    {b.code || b.name}{b.is_primary ? ' • primary' : ''}
+                                  </Badge>
+                                ))
+                              : <span className="text-xs italic text-muted-foreground">—</span>}
+                          </div>
+                        </td>
+                        <td className='p-3 text-right'>
+                          <div className='flex justify-end space-x-2'>
+                            <Button variant='ghost' size='sm' onClick={() => openEditModal(user)}><Pencil className='h-4 w-4' /></Button>
+                            <Button variant='ghost' size='sm' onClick={() => openDeleteModal(user)} className='text-red-600 hover:bg-red-100'><Trash2 className='h-4 w-4' /></Button>
+                          </div>
+                        </td>
+                      </motion.tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -610,9 +407,7 @@ export default function UserManagementPage() {
         {isDeleteModalOpen && userToDelete && (
           <Dialog open={isDeleteModalOpen} onOpenChange={setIsDeleteModalOpen}>
             <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Confirm Deletion</DialogTitle>
-              </DialogHeader>
+              <DialogHeader><DialogTitle>Confirm Deletion</DialogTitle></DialogHeader>
               <div className='space-y-4'>
                 <p>Are you sure you want to delete user <strong>{userToDelete.displayName}</strong>? This action cannot be undone.</p>
                 <div className='flex justify-end gap-2 mt-4'>
@@ -676,7 +471,7 @@ export default function UserManagementPage() {
                     );
                   })}
                 </div>
-                <div className="text-xs text-muted-foreground">You can select multiple branches. If none are selected, we’ll simply leave memberships unchanged.</div>
+                <div className="text-xs text-muted-foreground">You can select multiple branches. If none are selected, we’ll leave memberships unchanged.</div>
               </div>
 
               <div className='flex justify-end gap-2 mt-4'>
@@ -714,14 +509,14 @@ export default function UserManagementPage() {
             <div className="space-y-2 border-2 border-red-500 rounded-md p-3 bg-red-50">
               <Label className="text-red-700 font-semibold">Assign Roles <span className="text-red-500">*</span></Label>
               <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
-                {allRoles.map((role) => (
+                {allRoles.map(role => (
                   <div key={role} className="flex items-center space-x-2">
                     <Checkbox
                       id={`add-role-${role}`}
                       checked={(newUserData.roles || []).includes(role)}
                       onCheckedChange={() => {
                         const roles = newUserData.roles || [];
-                        const updated = roles.includes(role) ? roles.filter((r) => r !== role) : [...roles, role];
+                        const updated = roles.includes(role) ? roles.filter(r => r !== role) : [...roles, role];
                         setNewUserData({ ...newUserData, roles: updated });
                       }}
                     />
@@ -738,13 +533,7 @@ export default function UserManagementPage() {
             </div>
 
             <div className="flex justify-end gap-2 mt-4">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setIsAddModalOpen(false);
-                  setNewUserData({ displayName: '', email: '', password: '', officeCode: '', roles: [] });
-                }}
-              >
+              <Button variant="outline" onClick={() => { setIsAddModalOpen(false); setNewUserData({ displayName: '', email: '', password: '', officeCode: '', roles: [] }); }}>
                 Cancel
               </Button>
               <Button

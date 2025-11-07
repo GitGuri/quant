@@ -16,12 +16,24 @@ import { Badge } from '@/components/ui/badge';
 import LoansTab from './LoansTab';
 
 import { motion } from 'framer-motion';
-import { Plus, Edit, Trash2, Building, CreditCard, Calculator, Download, Play, Link as LinkIcon } from 'lucide-react';
+import { Plus, Edit, Trash2, Building, CreditCard, Calculator, Download, Play, Link as LinkIcon, Check } from 'lucide-react';
 import { useAuth } from '../AuthPage';
 import axios from 'axios';
 import { useToast } from '@/components/ui/use-toast';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com'
+// 🔎 shadcn combobox primitives
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { cn } from '@/lib/utils';
+
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 // ---- Types
 interface Asset {
@@ -95,16 +107,94 @@ const looksLikeBankOrCash = (acc: Account) =>
 
 type FundingMethod = 'none' | 'cash' | 'liability';
 
+// --- Reusable Searchable Combobox for Asset Types ---
+type AssetTypeComboProps = {
+  value: string | number | null | undefined;
+  onChange: (val: string) => void;
+  items: AssetType[];
+  placeholder?: string;
+};
+
+const AssetTypeCombobox: React.FC<AssetTypeComboProps> = ({ value, onChange, items, placeholder = 'Select asset type' }) => {
+  const [open, setOpen] = useState(false);
+  const selected = items.find(i => String(i.id) === String(value));
+  const buttonLabel = selected
+    ? `${selected.name}${selected.default_useful_life_years ? ` (${selected.default_useful_life_years} yrs)` : ''}`
+    : placeholder;
+
+  const displayText = (i: AssetType) =>
+    `${i.name}${i.default_useful_life_years ? ` (${i.default_useful_life_years} yrs)` : ''}`;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'w-full inline-flex items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm',
+            'ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+            'disabled:cursor-not-allowed disabled:opacity-50'
+          )}
+          aria-label="Choose asset type"
+        >
+          <span className={cn('truncate', !selected && 'text-muted-foreground')}>{buttonLabel}</span>
+          <svg xmlns="http://www.w3.org/2000/svg" className="ms-2 h-4 w-4 opacity-60" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.585l3.71-3.354a.75.75 0 111.02 1.1l-4.22 3.813a.75.75 0 01-1.02 0L5.25 8.33a.75.75 0 01-.02-1.06z" clipRule="evenodd" />
+          </svg>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[--radix-popover-trigger-width] p-0">
+        <Command>
+          <CommandInput placeholder="Search asset types..." />
+          <CommandList>
+            <CommandEmpty>No results found.</CommandEmpty>
+            <CommandGroup>
+              {items.map((i) => {
+                const active = String(i.id) === String(value);
+                return (
+                  <CommandItem
+                    key={i.id}
+                    value={displayText(i)}
+                    onSelect={() => {
+                      onChange(String(i.id));
+                      setOpen(false);
+                    }}
+                    className="cursor-pointer"
+                  >
+                    <Check className={cn('mr-2 h-4 w-4', active ? 'opacity-100' : 'opacity-0')} />
+                    <span className="truncate">{displayText(i)}</span>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+};
+
 const Accounting = () => {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<'assets'|'expenses'|'accounts'|'opening'|'loans'>('assets');
+
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [modalType, setModalType] = useState<'asset'|'expense'|'account'|''>('');
+
   const [assets, setAssets] = useState<Asset[]>([]);
   const [assetTypes, setAssetTypes] = useState<AssetType[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+
   const [formData, setFormData] = useState<any>({});
+
+  // list loading vs op loading
+  const [listLoading, setListLoading] = useState(false);
+  const [opLoading, setOpLoading] = useState(false);
+
+  // auto-create toggles
+  const [expenseAutoAccount, setExpenseAutoAccount] = useState<boolean>(false);
+  const [assetAutoAccount, setAssetAutoAccount] = useState<boolean>(false);
 
   const [depBook, setDepBook] = useState<'accounting'|'tax'|'both'>('accounting');
   const [isDepreciating, setIsDepreciating] = useState(false);
@@ -119,7 +209,7 @@ const Accounting = () => {
   const [isSavingOpening, setIsSavingOpening] = useState(false);
   const [isLoadingOpening, setIsLoadingOpening] = useState(false);
 
-  // 🔄 Modal submit loading (for rotating indicator)
+  // modal submit loading
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const { isAuthenticated } = useAuth();
@@ -129,41 +219,55 @@ const Accounting = () => {
     ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
 
+  // ======== FETCHERS =========
   const fetchAssets = useCallback(async () => {
     if (!token) { setAssets([]); return; }
-    try {
-      const r = await fetch(`${API_BASE}/assets`, { headers: authHeaders });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setAssets(await r.json());
-    } catch (e) { console.error('Error fetching assets:', e); }
+    const r = await fetch(`${API_BASE}/assets`, { headers: authHeaders });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    setAssets(await r.json());
   }, [token]);
 
   const fetchAssetTypes = useCallback(async () => {
     if (!token) { setAssetTypes([]); return; }
-    try {
-      const r = await fetch(`${API_BASE}/asset-types`, { headers: authHeaders });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setAssetTypes(await r.json());
-    } catch (e) { console.error('Error fetching asset types:', e); }
+    const r = await fetch(`${API_BASE}/asset-types`, { headers: authHeaders });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    setAssetTypes(await r.json());
   }, [token]);
 
   const fetchExpenses = useCallback(async () => {
     if (!token) { setExpenses([]); return; }
-    try {
-      const r = await fetch(`${API_BASE}/expenses`, { headers: authHeaders });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setExpenses(await r.json());
-    } catch (e) { console.error('Error fetching expenses:', e); }
+    const r = await fetch(`${API_BASE}/expenses`, { headers: authHeaders });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    setExpenses(await r.json());
   }, [token]);
 
   const fetchAccounts = useCallback(async () => {
     if (!token) { setAccounts([]); return; }
-    try {
-      const r = await fetch(`${API_BASE}/accounts`, { headers: authHeaders });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setAccounts(await r.json());
-    } catch (e) { console.error('Error fetching accounts:', e); }
+    const r = await fetch(`${API_BASE}/accounts`, { headers: authHeaders });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    setAccounts(await r.json());
   }, [token]);
+
+  // 🔁 single refetch helper used after CRUD
+  const refetch = useCallback(
+    async (what: 'assets'|'expenses'|'accounts'|'all' = 'all') => {
+      try {
+        setListLoading(true);
+        if (what === 'assets') {
+          await Promise.all([fetchAssets(), fetchAccounts()]); // accounts might change via auto-create/funding JEs
+        } else if (what === 'expenses') {
+          await Promise.all([fetchExpenses(), fetchAccounts()]); // expense auto-create can add accounts
+        } else if (what === 'accounts') {
+          await fetchAccounts();
+        } else {
+          await Promise.all([fetchAssets(), fetchExpenses(), fetchAccounts()]);
+        }
+      } finally {
+        setListLoading(false);
+      }
+    },
+    [fetchAssets, fetchExpenses, fetchAccounts]
+  );
 
   // ---- Opening balances: load existing (optional) ----
   const fetchOpeningBalances = useCallback(async (asOf: string) => {
@@ -188,23 +292,28 @@ const Accounting = () => {
         if (Math.abs(amt) > 0.0001) map[String(ln.account_id)] = amt;
       }
       setOpeningDraft(map);
-    } catch (e) {
-      console.error('Opening balances fetch error', e);
+    } catch {
       setOpeningDraft({});
     } finally {
       setIsLoadingOpening(false);
     }
   }, [token]);
 
+  // initial load
   useEffect(() => {
-    if (isAuthenticated && token) {
-      fetchAssets();
-      fetchExpenses();
-      fetchAccounts();
-      fetchAssetTypes();
-    } else {
-      setAssets([]); setExpenses([]); setAccounts([]); setAssetTypes([]);
-    }
+    const load = async () => {
+      if (!(isAuthenticated && token)) {
+        setAssets([]); setExpenses([]); setAccounts([]); setAssetTypes([]);
+        return;
+      }
+      setListLoading(true);
+      try {
+        await Promise.all([fetchAssets(), fetchExpenses(), fetchAccounts(), fetchAssetTypes()]);
+      } finally {
+        setListLoading(false);
+      }
+    };
+    load();
   }, [fetchAssets, fetchExpenses, fetchAccounts, fetchAssetTypes, isAuthenticated, token]);
 
   useEffect(() => {
@@ -248,9 +357,11 @@ const Accounting = () => {
         paid_from_account_id: '',
         financed_liability_account_id: ''
       });
+      setAssetAutoAccount(false);
     } else if (type === 'expense') {
       const e = item as Expense;
       setFormData({ ...e, date: e.date });
+      setExpenseAutoAccount(false);
     } else if (type === 'account') {
       const acc = item as Account;
       setFormData({ ...acc });
@@ -276,20 +387,20 @@ const Accounting = () => {
     const failure = `Failed to delete ${type}.`;
 
     try {
+      setOpLoading(true);
       const r = await fetch(url, { method: 'DELETE', headers: authHeaders });
       if (r.status === 204 || r.ok) {
         toast({ title: success, duration: 2000 });
-        if (type === 'asset') await fetchAssets();
-        if (type === 'expense') await fetchExpenses();
-        if (type === 'account') await fetchAccounts();
+        // 🔁 instant refetch only what changed
+        await refetch(type as any);
       } else {
         const err = await r.json().catch(() => ({}));
         toast({ title: failure, description: err.detail || err.error || '', variant: 'destructive' });
       }
     } catch (e) {
-      console.error(`Error deleting ${type}:`, e);
       toast({ title: failure, description: 'Check console for details.', variant: 'destructive' });
     } finally {
+      setOpLoading(false);
       setShowDeleteConfirm(false);
       setItemToDelete(null);
     }
@@ -329,24 +440,25 @@ const Accounting = () => {
 
       if (modalType === 'asset') {
         const cost = Number(formData.cost);
-        if (!formData.name || isNaN(cost) || !formData.dateReceived || !formData.account_id) {
-          toast({ title: 'Missing or invalid fields', description: 'Name, Cost, Date Received, Account are required.', variant: 'destructive' });
+        if (!formData.name || isNaN(cost) || !formData.dateReceived) {
+          toast({ title: 'Missing or invalid fields', description: 'Name and Cost and Date Received are required.', variant: 'destructive' });
+          return;
+        }
+        if (!assetAutoAccount && !formData.account_id) {
+          toast({ title: 'Missing asset account', description: 'Select an account or enable Auto-create.', variant: 'destructive' });
           return;
         }
 
-        // base + depreciation + SARS fields
         payload = {
           name: formData.name,
           number: formData.number || null,
           cost,
           date_received: formData.dateReceived,
-          account_id: Number(formData.account_id),
 
           depreciation_method: formData.depreciationMethod || null,
           useful_life_years: formData.usefulLifeYears === '' ? null : Number(formData.usefulLifeYears),
           salvage_value: formData.salvageValue === '' ? null : Number(formData.salvageValue),
 
-          // preset link & SARS metadata
           asset_type_id: formData.asset_type_id ? Number(formData.asset_type_id) : null,
           brought_into_use_date: formData.brought_into_use_date || null,
           business_use_percent: formData.business_use_percent === '' ? null : Number(formData.business_use_percent),
@@ -356,7 +468,10 @@ const Accounting = () => {
           disposal_proceeds: formData.disposal_proceeds === '' ? null : Number(formData.disposal_proceeds),
         };
 
-        // funding logic (only on create)
+        if (!assetAutoAccount) {
+          payload.account_id = Number(formData.account_id);
+        }
+
         const fm: FundingMethod = formData.fundingMethod || 'none';
         if (!formData.id) {
           if (fm === 'cash') {
@@ -381,18 +496,29 @@ const Accounting = () => {
 
       if (modalType === 'expense') {
         const amount = Number(formData.amount);
-        if (!formData.name || isNaN(amount) || !formData.date || !formData.account_id) {
-          toast({ title: 'Missing or invalid fields', description: 'Name, Amount, Date, Account are required.', variant: 'destructive' });
+        if (!formData.name || isNaN(amount) || !formData.date) {
+          toast({ title: 'Missing or invalid fields', description: 'Name, Amount, and Date are required.', variant: 'destructive' });
           return;
         }
+        if (!expenseAutoAccount && !formData.account_id) {
+          toast({ title: 'Missing account', description: 'Select an account or enable Auto-create.', variant: 'destructive' });
+          return;
+        }
+
         payload = {
           name: formData.name,
           details: formData.details || null,
           category: formData.category || null,
           amount,
           date: formData.date,
-          account_id: Number(formData.account_id),
         };
+
+        if (expenseAutoAccount) {
+          payload.auto_create_account = true;
+        } else {
+          payload.account_id = Number(formData.account_id);
+        }
+
         if (formData.id) { url = `${API_BASE}/expenses/${formData.id}`; method = 'PUT'; }
         else { url = `${API_BASE}/expenses`; method = 'POST'; }
       }
@@ -411,11 +537,11 @@ const Accounting = () => {
       const result = await r.json().catch(() => ({}));
 
       if (r.ok) {
-        if (modalType === 'asset') await fetchAssets();
-        if (modalType === 'expense') await fetchExpenses();
-        if (modalType === 'account') await fetchAccounts();
+        // 🔁 refetch only what changed (+accounts when auto-create could have fired)
+        if (modalType === 'asset') await refetch('assets');
+        if (modalType === 'expense') await refetch('expenses');
+        if (modalType === 'account') await refetch('accounts');
 
-        // ✅ Auto-hide success toast (2s) & close modal
         const verb = formData.id ? 'updated' : 'added';
         toast({
           title: `${modalType.charAt(0).toUpperCase() + modalType.slice(1)} ${verb} successfully`,
@@ -431,7 +557,6 @@ const Accounting = () => {
         });
       }
     } catch (error: any) {
-      console.error('Submit error:', error);
       toast({ title: 'Failed to submit', description: error?.message || 'Please try again.', variant: 'destructive' });
     } finally {
       setIsSubmitting(false);
@@ -454,12 +579,11 @@ const Accounting = () => {
             ? (+(data?.accounting?.total || 0) + +(data?.tax?.total || 0))
             : +(data?.accounting?.total || data?.tax?.total || 0);
         toast({ title: `Depreciation run ok (${depBook})`, description: `Total: R${(total || 0).toFixed(2)}`, duration: 2500 });
-        fetchAssets();
+        await refetch('assets'); // refresh asset NBV/accum immediately
       } else {
         toast({ title: 'Failed to run depreciation', description: data.detail || data.error, variant: 'destructive' });
       }
     } catch (e: any) {
-      console.error('Error running depreciation:', e);
       toast({ title: 'Failed to run depreciation.', description: e?.message, variant: 'destructive' });
     } finally {
       setIsDepreciating(false);
@@ -497,7 +621,6 @@ const Accounting = () => {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      console.error('PDF download failed', err);
       toast({ title: 'Failed to download PDF', description: err?.message, variant: 'destructive' });
     }
   }, [token, depreciationEndDate, depBook, toast]);
@@ -514,7 +637,6 @@ const Accounting = () => {
       const blob = await r.blob();
       downloadBlob(blob, `asset_register_${asOf}_${book}.csv`);
     } catch (e:any) {
-      console.error('CSV download failed', e);
       toast({ title: 'CSV download failed', description: e?.message || String(e), variant: 'destructive' });
     }
   }, [token, depreciationEndDate, depBook, authHeaders, toast]);
@@ -544,15 +666,24 @@ const Accounting = () => {
 
       toast({ title: 'Opening balances saved.', duration: 2000 });
       await fetchOpeningBalances(openingAsOf);
+      await refetch('accounts'); // opening JE can affect balances & new accounts
     } catch (e:any) {
-      console.error('Opening save error', e);
       toast({ title: 'Failed to save opening balances', description: e?.message || String(e), variant: 'destructive' });
     } finally {
       setIsSavingOpening(false);
     }
   };
 
-  const closeModal = () => { setIsModalVisible(false); clearForm(); };
+  const closeModal = (open: boolean) => {
+    if (!open) {
+      setIsModalVisible(false);
+      clearForm();
+      setAssetAutoAccount(false);
+      setExpenseAutoAccount(false);
+    } else {
+      setIsModalVisible(true);
+    }
+  };
 
   // Small helper to render acquisition label
   const acquisitionLabel = (a: Asset) => {
@@ -595,15 +726,15 @@ const Accounting = () => {
                     <Input type='date' value={depreciationEndDate}
                       onChange={(e) => setDepreciationEndDate(e.target.value)} className='w-auto' />
 
-                    <Button variant="outline" onClick={handleDownloadAssetRegisterCSV}>
+                    <Button variant="outline" onClick={handleDownloadAssetRegisterCSV} disabled={listLoading || opLoading}>
                       <Download className="h-4 w-4 mr-2" /> CSV
                     </Button>
 
-                    <Button onClick={handleDownloadAssetRegisterPDF} className="flex items-center gap-2">
+                    <Button onClick={handleDownloadAssetRegisterPDF} className="flex items-center gap-2" disabled={listLoading || opLoading}>
                       <Download className="h-4 w-4" /> PDF
                     </Button>
 
-                    <Button onClick={handleRunDepreciation} disabled={isDepreciating} className='bg-green-600 hover:bg-green-700'>
+                    <Button onClick={handleRunDepreciation} disabled={isDepreciating || listLoading} className='bg-green-600 hover:bg-green-700'>
                       {isDepreciating ? 'Running...' : <><Play className='h-4 w-4 mr-2' /> Run Depreciation</> }
                     </Button>
                     <Button onClick={() => {
@@ -625,11 +756,11 @@ const Accounting = () => {
                         lessor_residual_value: '',
                         disposed_date: '',
                         disposal_proceeds: '',
-                        // CREATE: funding defaults
                         fundingMethod: 'none',
                         paid_from_account_id: '',
                         financed_liability_account_id: ''
                       });
+                      setAssetAutoAccount(true);
                       setIsModalVisible(true);
                     }}>
                       <Plus className='h-4 w-4 mr-2' /> Add Asset
@@ -638,58 +769,62 @@ const Accounting = () => {
                 </div>
               </CardHeader>
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Cost</TableHead>
-                      <TableHead>Date Received</TableHead>
-                      <TableHead>Account</TableHead>
-                      <TableHead>Acquired via</TableHead>
-                      <TableHead>Method</TableHead>
-                      <TableHead>Life (Y)</TableHead>
-                      <TableHead>Salvage</TableHead>
-                      <TableHead>Accum (Acct)</TableHead>
-                      <TableHead>Accum (Tax)</TableHead>
-                      <TableHead>NBV</TableHead>
-                      <TableHead>Last Depr.</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {assets.map(asset => {
-                      const nbv = (+asset.cost || 0) - (+asset.accumulated_depreciation || 0);
-                      return (
-                        <TableRow key={asset.id}>
-                          <TableCell><Badge>{asset.type_name || '—'}</Badge></TableCell>
-                          <TableCell>{asset.name}</TableCell>
-                          <TableCell>R{(+asset.cost || 0).toFixed(2)}</TableCell>
-                          <TableCell>{new Date(asset.date_received).toLocaleDateString()}</TableCell>
-                          <TableCell>{asset.account_name}</TableCell>
-                          <TableCell>{acquisitionLabel(asset)}</TableCell>
-                          <TableCell>{asset.depreciation_method || '—'}</TableCell>
-                          <TableCell>{asset.useful_life_years ?? '—'}</TableCell>
-                          <TableCell>R{(+asset.salvage_value || 0).toFixed(2)}</TableCell>
-                          <TableCell>R{(+asset.accumulated_depreciation || 0).toFixed(2)}</TableCell>
-                          <TableCell>R{(+asset.accumulated_depreciation_tax || 0).toFixed(2)}</TableCell>
-                          <TableCell>R{nbv.toFixed(2)}</TableCell>
-                          <TableCell>{asset.last_depreciation_date ? new Date(asset.last_depreciation_date).toLocaleDateString() : '—'}</TableCell>
-                          <TableCell>
-                            <div className='flex items-center gap-2'>
-                              <Button variant='ghost' size='sm' onClick={() => handleEdit(asset, 'asset')}>
-                                <Edit className='h-4 w-4' />
-                              </Button>
-                              <Button variant='ghost' size='sm' onClick={() => handleDeleteClick(asset.id, 'asset')}>
-                                <Trash2 className='h-4 w-4' />
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
+                {listLoading ? (
+                  <div className="py-6 text-sm text-muted-foreground">Refreshing…</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Cost</TableHead>
+                        <TableHead>Date Received</TableHead>
+                        <TableHead>Account</TableHead>
+                        <TableHead>Acquired via</TableHead>
+                        <TableHead>Method</TableHead>
+                        <TableHead>Life (Y)</TableHead>
+                        <TableHead>Salvage</TableHead>
+                        <TableHead>Accum (Acct)</TableHead>
+                        <TableHead>Accum (Tax)</TableHead>
+                        <TableHead>NBV</TableHead>
+                        <TableHead>Last Depr.</TableHead>
+                        <TableHead>Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {assets.map(asset => {
+                        const nbv = (+asset.cost || 0) - (+asset.accumulated_depreciation || 0);
+                        return (
+                          <TableRow key={asset.id}>
+                            <TableCell><Badge>{asset.type_name || '—'}</Badge></TableCell>
+                            <TableCell>{asset.name}</TableCell>
+                            <TableCell>R{(+asset.cost || 0).toFixed(2)}</TableCell>
+                            <TableCell>{new Date(asset.date_received).toLocaleDateString()}</TableCell>
+                            <TableCell>{asset.account_name}</TableCell>
+                            <TableCell>{acquisitionLabel(asset)}</TableCell>
+                            <TableCell>{asset.depreciation_method || '—'}</TableCell>
+                            <TableCell>{asset.useful_life_years ?? '—'}</TableCell>
+                            <TableCell>R{(+asset.salvage_value || 0).toFixed(2)}</TableCell>
+                            <TableCell>R{(+asset.accumulated_depreciation || 0).toFixed(2)}</TableCell>
+                            <TableCell>R{(+asset.accumulated_depreciation_tax || 0).toFixed(2)}</TableCell>
+                            <TableCell>R{nbv.toFixed(2)}</TableCell>
+                            <TableCell>{asset.last_depreciation_date ? new Date(asset.last_depreciation_date).toLocaleDateString() : '—'}</TableCell>
+                            <TableCell>
+                              <div className='flex items-center gap-2'>
+                                <Button variant='ghost' size='sm' onClick={() => handleEdit(asset, 'asset')}>
+                                  <Edit className='h-4 w-4' />
+                                </Button>
+                                <Button variant='ghost' size='sm' onClick={() => handleDeleteClick(asset.id, 'asset')} disabled={opLoading}>
+                                  <Trash2 className='h-4 w-4' />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -702,47 +837,58 @@ const Accounting = () => {
                   <CardTitle className='flex items-center gap-2'>
                     <CreditCard className='h-5 w-5' /> Expenses
                   </CardTitle>
-                  <Button onClick={() => { clearForm(); setModalType('expense'); setIsModalVisible(true); }}>
+                  <Button
+                    onClick={() => {
+                      clearForm();
+                      setModalType('expense');
+                      setExpenseAutoAccount(true);
+                      setIsModalVisible(true);
+                    }}
+                  >
                     <Plus className='h-4 w-4 mr-2' /> Add Expense
                   </Button>
                 </div>
               </CardHeader>
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Category</TableHead>
-                      <TableHead>Details</TableHead>
-                      <TableHead>Amount</TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Account</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {expenses.map(exp => (
-                      <TableRow key={exp.id}>
-                        <TableCell>{exp.name}</TableCell>
-                        <TableCell><Badge>{exp.category || '—'}</Badge></TableCell>
-                        <TableCell>{exp.details}</TableCell>
-                        <TableCell>R{(+exp.amount || 0).toFixed(2)}</TableCell>
-                        <TableCell>{new Date(exp.date).toLocaleDateString()}</TableCell>
-                        <TableCell>{exp.account_name}</TableCell>
-                        <TableCell>
-                          <div className='flex items-center gap-2'>
-                            <Button variant='ghost' size='sm' onClick={() => handleEdit(exp, 'expense')}>
-                              <Edit className='h-4 w-4' />
-                            </Button>
-                            <Button variant='ghost' size='sm' onClick={() => handleDeleteClick(exp.id, 'expense')}>
-                              <Trash2 className='h-4 w-4' />
-                            </Button>
-                          </div>
-                        </TableCell>
+                {listLoading ? (
+                  <div className="py-6 text-sm text-muted-foreground">Refreshing…</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Category</TableHead>
+                        <TableHead>Details</TableHead>
+                        <TableHead>Amount</TableHead>
+                        <TableHead>Date</TableHead>
+                        <TableHead>Account</TableHead>
+                        <TableHead>Actions</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {expenses.map(exp => (
+                        <TableRow key={exp.id}>
+                          <TableCell>{exp.name}</TableCell>
+                          <TableCell><Badge>{exp.category || '—'}</Badge></TableCell>
+                          <TableCell>{exp.details}</TableCell>
+                          <TableCell>R{(+exp.amount || 0).toFixed(2)}</TableCell>
+                          <TableCell>{new Date(exp.date).toLocaleDateString()}</TableCell>
+                          <TableCell>{exp.account_name}</TableCell>
+                          <TableCell>
+                            <div className='flex items-center gap-2'>
+                              <Button variant='ghost' size='sm' onClick={() => handleEdit(exp, 'expense')}>
+                                <Edit className='h-4 w-4' />
+                              </Button>
+                              <Button variant='ghost' size='sm' onClick={() => handleDeleteClick(exp.id, 'expense')} disabled={opLoading}>
+                                <Trash2 className='h-4 w-4' />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -761,35 +907,39 @@ const Accounting = () => {
                 </div>
               </CardHeader>
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Code</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {accounts.map(acc => (
-                      <TableRow key={acc.id}>
-                        <TableCell><Badge variant='outline'>{acc.type}</Badge></TableCell>
-                        <TableCell>{acc.code}</TableCell>
-                        <TableCell>{acc.name}</TableCell>
-                        <TableCell>
-                          <div className='flex items-center gap-2'>
-                            <Button variant='ghost' size='sm' onClick={() => handleEdit(acc, 'account')}>
-                              <Edit className='h-4 w-4' />
-                            </Button>
-                            <Button variant='ghost' size='sm' onClick={() => handleDeleteClick(acc.id, 'account')}>
-                              <Trash2 className='h-4 w-4' />
-                            </Button>
-                          </div>
-                        </TableCell>
+                {listLoading ? (
+                  <div className="py-6 text-sm text-muted-foreground">Refreshing…</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Code</TableHead>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Actions</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {accounts.map(acc => (
+                        <TableRow key={acc.id}>
+                          <TableCell><Badge variant='outline'>{acc.type}</Badge></TableCell>
+                          <TableCell>{acc.code}</TableCell>
+                          <TableCell>{acc.name}</TableCell>
+                          <TableCell>
+                            <div className='flex items-center gap-2'>
+                              <Button variant='ghost' size='sm' onClick={() => handleEdit(acc, 'account')}>
+                                <Edit className='h-4 w-4' />
+                              </Button>
+                              <Button variant='ghost' size='sm' onClick={() => handleDeleteClick(acc.id, 'account')} disabled={opLoading}>
+                                <Trash2 className='h-4 w-4' />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -829,7 +979,7 @@ const Accounting = () => {
               <CardContent>
                 <p className='text-sm text-muted-foreground mb-4'>
                   Enter each account’s balance on its <b>normal side</b> (Assets/Debits; Liabilities &amp; Equity/Credits).
-                  The system will post correct debits/credits and add a plug to <i>Opening Balance Equity</i> so the entry balances automatically.
+                  The system will post correct debits/credits and add a plug to <i>Opening Balance Equity</i>.
                 </p>
 
                 {isLoadingOpening ? (
@@ -903,20 +1053,16 @@ const Accounting = () => {
           <div className='space-y-4'>
             {modalType === 'asset' && (
               <>
-                <Label>Preset Type (SARS)</Label>
-                <Select
-                  value={formData.asset_type_id || ''}
-                  onValueChange={onSelectAssetType}
-                >
-                  <SelectTrigger><SelectValue placeholder='Select asset type' /></SelectTrigger>
-                  <SelectContent>
-                    {assetTypes.map(t => (
-                      <SelectItem key={t.id} value={String(t.id)}>
-                        {t.name} {t.default_useful_life_years ? `(${t.default_useful_life_years} yrs)` : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {/* Searchable Preset Type */}
+                <div className='grid gap-2'>
+                  <Label>Preset Type (SARS)</Label>
+                  <AssetTypeCombobox
+                    value={formData.asset_type_id || ''}
+                    onChange={(val) => onSelectAssetType(val)}
+                    items={assetTypes}
+                    placeholder='Select asset type'
+                  />
+                </div>
 
                 <Label>Name</Label>
                 <Input value={formData.name || ''} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder='Asset Name' />
@@ -935,8 +1081,26 @@ const Accounting = () => {
                 <Label>Date Received</Label>
                 <Input type='date' value={formData.dateReceived || ''} onChange={e => setFormData({ ...formData, dateReceived: e.target.value })} />
 
+                {/* Auto-create toggle + account picker */}
+                <div className='flex items-center gap-2'>
+                  <input
+                    id='asset-auto-account'
+                    type='checkbox'
+                    className='h-4 w-4'
+                    checked={assetAutoAccount}
+                    onChange={(e)=>setAssetAutoAccount(e.target.checked)}
+                  />
+                  <Label htmlFor='asset-auto-account' className='cursor-pointer'>
+                    Auto-create fixed asset account from <b>Preset Type</b> (fallback to Name)
+                  </Label>
+                </div>
+
                 <Label>Asset Account</Label>
-                <Select value={formData.account_id || ''} onValueChange={value => setFormData({ ...formData, account_id: value })}>
+                <Select
+                  disabled={assetAutoAccount}
+                  value={formData.account_id || ''}
+                  onValueChange={value => setFormData({ ...formData, account_id: value })}
+                >
                   <SelectTrigger><SelectValue placeholder='Select account' /></SelectTrigger>
                   <SelectContent>
                     {accounts.map(acc => (
@@ -1131,8 +1295,26 @@ const Accounting = () => {
                 <Label>Details</Label>
                 <Input value={formData.details || ''} onChange={e => setFormData({ ...formData, details: e.target.value })} placeholder='Details (Optional)' />
 
+                {/* Auto-create toggle + account picker */}
+                <div className='flex items-center gap-2'>
+                  <input
+                    id='exp-auto-account'
+                    type='checkbox'
+                    className='h-4 w-4'
+                    checked={expenseAutoAccount}
+                    onChange={e => setExpenseAutoAccount(e.target.checked)}
+                  />
+                  <Label htmlFor='exp-auto-account' className='cursor-pointer'>
+                    Auto-create expense account from <b>Category</b> (fallback to Name)
+                  </Label>
+                </div>
+
                 <Label>Account</Label>
-                <Select value={formData.account_id || ''} onValueChange={value => setFormData({ ...formData, account_id: value })}>
+                <Select
+                  disabled={expenseAutoAccount}
+                  value={formData.account_id || ''}
+                  onValueChange={value => setFormData({ ...formData, account_id: value })}
+                >
                   <SelectTrigger><SelectValue placeholder='Select account' /></SelectTrigger>
                   <SelectContent>
                     {accounts.map(acc => (
@@ -1173,7 +1355,6 @@ const Accounting = () => {
               >
                 {isSubmitting ? (
                   <span className='flex items-center'>
-                    {/* subtle rotating loader */}
                     <motion.span
                       className='mr-2 inline-block h-4 w-4 rounded-full border-2 border-current border-t-transparent'
                       animate={{ rotate: 360 }}
@@ -1200,8 +1381,8 @@ const Accounting = () => {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirmDelete}>Delete</AlertDialogAction>
+            <AlertDialogCancel disabled={opLoading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmDelete} disabled={opLoading}>Delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

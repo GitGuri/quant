@@ -1,0 +1,33 @@
+version: '3.8'
+services:
+  # The application service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      
+      - .:/usr/src/app
+    ports:
+      - "3000:3000" 
+    depends_on:
+      - db
+    environment:
+      
+      DATABASE_URL: 'postgresql://postgres.zzessfxdfteknjrefhah:Hunzamabhisvo%2319@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres',
+      
+
+  
+  db:
+    image: postgres:16-alpine 
+    volumes:
+      - postgres_data:/var/lib/postgresql/data 
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mydatabase
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:

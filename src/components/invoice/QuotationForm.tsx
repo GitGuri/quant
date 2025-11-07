@@ -15,10 +15,10 @@ import { Plus, XCircle, Loader2, ChevronLeft } from 'lucide-react';
 
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '../../AuthPage';
-import { useCurrency } from '../../contexts/CurrencyContext'; // ⬅️ NEW
+import { useCurrency } from '../../contexts/CurrencyContext';
 
-// Define API Base URL
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
+// ===== API Base =====
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 // ===== Types =====
 export interface QuotationLineItem {
@@ -38,8 +38,8 @@ export interface Quotation {
   customer_id: string | null;
   customer_name: string;
   customer_email?: string;
-  quotation_date: string;
-  expiry_date: string;
+  quotation_date: string; // 'YYYY-MM-DD'
+  expiry_date: string; // 'YYYY-MM-DD'
   status: string;
   currency: string;
   notes: string;
@@ -53,8 +53,8 @@ interface QuotationFormData {
   quotation_number: string;
   customer_id: string | null;
   customer_name_manual?: string;
-  quotation_date: string;
-  expiry_date: string;
+  quotation_date: string; // 'YYYY-MM-DD'
+  expiry_date: string; // 'YYYY-MM-DD'
   status: string;
   currency: string;
   notes: string;
@@ -83,10 +83,8 @@ interface Customer {
 interface QuotationFormProps {
   quotation?: Quotation;
   onClose: () => void;
-  // BEFORE: onSubmitSuccess: () => void
   onSubmitSuccess: (saved: Quotation, mode: 'create' | 'update') => void;
 }
-
 
 // ===== Helpers =====
 const generateQuotationNumber = () => {
@@ -105,6 +103,38 @@ const VAT_OPTIONS = [
   { value: 0.0, label: '0%' },
   { value: 0.15, label: '15%' },
 ];
+
+// --- Date helpers (safe) ---
+const toISODateSafe = (v?: string | Date | null): string => {
+  if (!v) return '';
+  let d = v instanceof Date ? v : new Date(v);
+
+  // If parsing failed but the string looks like YYYY-MM-DD, build via UTC
+  if (isNaN(d.getTime()) && typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const [Y, M, D] = v.split('-').map(Number);
+    d = new Date(Date.UTC(Y, M - 1, D));
+  }
+  if (isNaN(d.getTime())) return '';
+
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const addDaysISO = (yyyyMmDd: string, days: number): string => {
+  const safe = toISODateSafe(yyyyMmDd);
+  if (!safe) return '';
+  const [Y, M, D] = safe.split('-').map(Number);
+  const d = new Date(Date.UTC(Y, M - 1, D));
+  d.setUTCDate(d.getUTCDate() + days);
+  return toISODateSafe(d);
+};
+
+const getDefaultExpiryDate = (quotationDateString: string) => {
+  const q = toISODateSafe(quotationDateString) || toISODateSafe(new Date());
+  return addDaysISO(q, 30);
+};
 
 // ===== Banking block helpers (same behavior as invoice) =====
 type BankDetails = {
@@ -158,17 +188,11 @@ function upsertBankBlockIntoNotes(notes: string, newBlock: string) {
 export function QuotationForm({ quotation, onClose, onSubmitSuccess }: QuotationFormProps) {
   const { toast } = useToast();
   const { isAuthenticated } = useAuth();
-  const { symbol, fmt } = useCurrency(); // ⬅️ NEW
-  const token = localStorage.getItem('token');
+  const { symbol, fmt } = useCurrency();
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
 
-  const getDefaultExpiryDate = (quotationDateString: string) => {
-    const quotationDate = new Date(quotationDateString);
-    const expiryDate = new Date(quotationDate);
-    expiryDate.setDate(quotationDate.getDate() + 30);
-    return expiryDate.toISOString().split('T')[0];
-  };
-
-  const initialQuotationDate = new Date().toISOString().split('T')[0];
+  // Initial dates
+  const initialQuotationDate = toISODateSafe(new Date());
 
   const [formData, setFormData] = useState<QuotationFormData>({
     quotation_number: quotation ? quotation.quotation_number : generateQuotationNumber(),
@@ -177,7 +201,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
     quotation_date: initialQuotationDate,
     expiry_date: getDefaultExpiryDate(initialQuotationDate),
     status: 'Draft',
-    currency: symbol, // ⬅️ NEW: default to context symbol
+    currency: symbol,
     notes: '',
     line_items: [],
   });
@@ -207,7 +231,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
   // ===== Banking details UI state =====
   const [bankDetails, setBankDetails] = useState<BankDetails>(() => {
     try {
-      const raw = localStorage.getItem(QUOTATION_BANK_LOCAL_KEY);
+      const raw = typeof window !== 'undefined' ? localStorage.getItem(QUOTATION_BANK_LOCAL_KEY) : null;
       if (raw) return JSON.parse(raw);
     } catch {}
     return {
@@ -224,7 +248,7 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
   const [saveBankAsDefault, setSaveBankAsDefault] = useState(false);
 
   const bankPreview = useMemo(
-    () => (includeBankInNotes ? renderBankBlock(bankDetails, symbol) : ''), // ⬅️ NEW: use context symbol
+    () => (includeBankInNotes ? renderBankBlock(bankDetails, symbol) : ''),
     [includeBankInNotes, bankDetails, symbol]
   );
 
@@ -278,14 +302,12 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
         quotation_number: quotation.quotation_number || '',
         customer_id: quotation.customer_id || null,
         customer_name_manual: quotation.customer_id ? '' : (quotation.customer_name || ''),
-        quotation_date: quotation.quotation_date
-          ? new Date(quotation.quotation_date).toISOString().split('T')[0]
-          : initialQuotationDate,
-        expiry_date: quotation.expiry_date
-          ? new Date(quotation.expiry_date).toISOString().split('T')[0]
-          : getDefaultExpiryDate(quotation.quotation_date || initialQuotationDate),
+        quotation_date: toISODateSafe(quotation.quotation_date) || initialQuotationDate,
+        expiry_date:
+          toISODateSafe(quotation.expiry_date) ||
+          getDefaultExpiryDate(toISODateSafe(quotation.quotation_date) || initialQuotationDate),
         status: quotation.status || 'Draft',
-        currency: quotation.currency || symbol, // ⬅️ NEW: fallback to context symbol
+        currency: quotation.currency || symbol,
         notes: quotation.notes || '',
         line_items:
           quotation.line_items?.map((item: any) => ({
@@ -492,10 +514,10 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
   };
 
   // ===== Submit =====
-const handleSubmit = async (e: React.FormEvent) => {
-  e.preventDefault();
-  if (isLoading) return;               // ⬅️ guard against double-clicks
-  setIsLoading(true);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isLoading) return;
+    setIsLoading(true);
 
     if (!isAuthenticated || !token) {
       toast({
@@ -542,7 +564,7 @@ const handleSubmit = async (e: React.FormEvent) => {
     // Build notes with bank block
     let finalNotes = formData.notes || '';
     if (includeBankInNotes) {
-      const block = renderBankBlock(bankDetails, symbol); // ⬅️ NEW: use context symbol
+      const block = renderBankBlock(bankDetails, symbol);
       finalNotes = upsertBankBlockIntoNotes(finalNotes, block);
     } else {
       // strip any existing block if user disabled it
@@ -551,11 +573,29 @@ const handleSubmit = async (e: React.FormEvent) => {
 
     const total_amount = formData.line_items.reduce((sum, i) => sum + (i.line_total || 0), 0);
 
+    // Normalize & validate dates safely
+    const qDate = toISODateSafe(formData.quotation_date);
+    let eDate = toISODateSafe(formData.expiry_date);
+
+    if (!qDate) {
+      toast({ title: 'Validation Error', description: 'Quotation date is invalid.', variant: 'destructive' });
+      setIsLoading(false);
+      return;
+    }
+    if (!eDate) {
+      eDate = getDefaultExpiryDate(qDate);
+    }
+    if (new Date(eDate) < new Date(qDate)) {
+      eDate = getDefaultExpiryDate(qDate);
+    }
+
     const payload: Omit<QuotationFormData, 'customer_name_manual'> & {
       customer_name?: string;
       total_amount: number;
     } = {
       ...formData,
+      quotation_date: qDate,
+      expiry_date: eDate,
       notes: finalNotes,
       total_amount,
     };
@@ -577,54 +617,50 @@ const handleSubmit = async (e: React.FormEvent) => {
       delete (payload as any).customer_name_manual;
     }
 
-     const url = quotation ? `${API_BASE_URL}/api/quotations/${quotation.id}` : `${API_BASE_URL}/api/quotations`;
-  const method = quotation ? 'PUT' : 'POST';
+    const url = quotation ? `${API_BASE_URL}/api/quotations/${quotation.id}` : `${API_BASE_URL}/api/quotations`;
+    const method = quotation ? 'PUT' : 'POST';
 
-  try {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || `HTTP ${res.status}`);
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+
+      const saved: Quotation = await res.json();
+
+      if (saveBankAsDefault) {
+        try {
+          localStorage.setItem(QUOTATION_BANK_LOCAL_KEY, JSON.stringify(bankDetails));
+        } catch {}
+      }
+
+      toast({
+        title: quotation ? 'Quotation Updated' : 'Quotation Created',
+        description: `Quotation ${saved.quotation_number || formData.quotation_number} has been successfully ${quotation ? 'updated' : 'created'}.`,
+      });
+
+      onSubmitSuccess(saved, quotation ? 'update' : 'create');
+      onClose();
+    } catch (e: any) {
+      console.error('Submission error:', e);
+      toast({
+        title: 'Submission Failed',
+        description: `Failed to ${quotation ? 'update' : 'create'} quotation: ${e?.message || String(e)}.`,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
     }
-    
+  };
 
-    const saved: Quotation = await res.json();
-    
-    
-    // ⬅️ get server’s version
-
-    if (saveBankAsDefault) {
-      try { localStorage.setItem(QUOTATION_BANK_LOCAL_KEY, JSON.stringify(bankDetails)); } catch {}
-    }
-
-    toast({
-      title: quotation ? 'Quotation Updated' : 'Quotation Created',
-      description: `Quotation ${formData.quotation_number} has been successfully ${quotation ? 'updated' : 'created'}.`,
-    });
-   
-    // ⬅️ Tell the parent exactly what was saved so it can update instantly
-    onSubmitSuccess(saved, quotation ? 'update' : 'create');
-
-    // optional: let parent close; if you still want to close here, keep this:
-    onClose();
-  } catch (e: any) {
-    console.error('Submission error:', e);
-    toast({
-      title: 'Submission Failed',
-      description: `Failed to ${quotation ? 'update' : 'create'} quotation: ${e?.message || String(e)}.`,
-      variant: 'destructive',
-    });
-  } finally {
-    setIsLoading(false);
-  }
-};
   // ===== Render =====
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -886,7 +922,7 @@ const handleSubmit = async (e: React.FormEvent) => {
                 type="button"
                 variant="outline"
                 onClick={() => {
-                  const block = renderBankBlock(bankDetails, symbol); // ⬅️ NEW
+                  const block = renderBankBlock(bankDetails, symbol);
                   setFormData((fd) => ({ ...fd, notes: upsertBankBlockIntoNotes(fd.notes || '', block) }));
                 }}
                 disabled={!isAuthenticated || isLoading}
@@ -938,7 +974,7 @@ const handleSubmit = async (e: React.FormEvent) => {
                     <SelectItem value="custom-item">Custom Item</SelectItem>
                     {productsServices.map(ps => (
                       <SelectItem key={ps.id} value={ps.id}>
-                        {ps.name} ({fmt(ps.price ?? 0)}) {/* ⬅️ NEW */}
+                        {ps.name} ({fmt(ps.price ?? 0)})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1008,7 +1044,7 @@ const handleSubmit = async (e: React.FormEvent) => {
               </div>
               <div className="flex items-center justify-end gap-2">
                 <Label className="whitespace-nowrap">
-                  Total: {fmt(item.line_total ?? 0)} {/* ⬅️ NEW */}
+                  Total: {fmt(item.line_total ?? 0)}
                 </Label>
                 <Button
                   type="button"
@@ -1035,7 +1071,7 @@ const handleSubmit = async (e: React.FormEvent) => {
       </Card>
 
       <div className="text-right text-xl font-bold mt-4">
-        Total Quotation Amount: {fmt(totalAmount)} {/* ⬅️ NEW */}
+        Total Quotation Amount: {fmt(totalAmount)}
       </div>
 
       <div className="flex justify-end gap-2 mt-6">

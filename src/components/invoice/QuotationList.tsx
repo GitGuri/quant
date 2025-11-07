@@ -60,9 +60,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useCurrency } from '../../contexts/CurrencyContext'; // ⬅️ NEW
+import { useCurrency } from '../../contexts/CurrencyContext';
 
-const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
+const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
 
 interface QuotationLineItem {
   id?: string;
@@ -81,8 +81,8 @@ export interface Quotation {
   customer_id: string;
   customer_name: string;
   customer_email?: string;
-  quotation_date: string;
-  expiry_date: string | null;
+  quotation_date: string;          // YYYY-MM-DD or '' (never invalid)
+  expiry_date: string | null;      // YYYY-MM-DD or null
   total_amount: number;
   status: 'Draft' | 'Sent' | 'Accepted' | 'Declined' | 'Expired' | 'Invoiced';
   currency: string;
@@ -106,9 +106,35 @@ interface UserProfile {
   contact_person?: string | null;
 }
 
+/** ---------- SAFE DATE HELPERS ---------- */
+const toISODateSafe = (v: any): string => {
+  if (!v) return '';
+  let d = v instanceof Date ? v : new Date(v);
+
+  // If still invalid but looks like YYYY-MM-DD, build via UTC
+  if (isNaN(d.getTime()) && typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const [Y, M, D] = v.split('-').map(Number);
+    d = new Date(Date.UTC(Y, M - 1, D));
+  }
+  if (isNaN(d.getTime())) return '';
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const toDisplayDate = (v: any): string => {
+  const iso = toISODateSafe(v);
+  if (!iso) return 'N/A';
+  // Force UTC midnight to avoid TZ drift on display
+  const d = new Date(`${iso}T00:00:00Z`);
+  return d.toLocaleDateString('en-ZA');
+};
+
+/** ---------- COMPONENT ---------- */
 export function QuotationList() {
   const { toast } = useToast();
-  const { fmt } = useCurrency(); // ⬅️ NEW
+  const { fmt } = useCurrency();
   const [quotations, setQuotations] = useState<Quotation[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [showQuotationForm, setShowQuotationForm] = useState(false);
@@ -135,7 +161,7 @@ export function QuotationList() {
   const [downloadProcessingQuotationId, setDownloadProcessingQuotationId] = useState<string | null>(null);
 
   const { isAuthenticated } = useAuth();
-  const token = localStorage.getItem('token');
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -156,13 +182,24 @@ export function QuotationList() {
     }
   };
 
-  // put inside QuotationList, above useEffect
-const normalizeQuotation = (q: Quotation): Quotation => ({
-  ...q,
-  total_amount: parseFloat(q.total_amount as any) || 0,
-  quotation_date: new Date(q.quotation_date).toISOString().split('T')[0],
-  expiry_date: q.expiry_date ? new Date(q.expiry_date).toISOString().split('T')[0] : null,
+  /** Use this everywhere to prevent RangeError from invalid dates */
+const normalizeQuotation = (q: any): Quotation => ({
+  id: String(q.id),
+  quotation_number: String(q.quotation_number ?? ''),          // <= safe default
+  customer_id: String(q.customer_id ?? ''),
+  customer_name: String(q.customer_name ?? ''),                 // <= safe default
+  customer_email: q.customer_email ?? undefined,
+  quotation_date: toISODateSafe(q.quotation_date),
+  expiry_date: q.expiry_date ? toISODateSafe(q.expiry_date) : null,
+  total_amount: Number(q.total_amount ?? 0) || 0,
+  status: (q.status ?? 'Draft') as Quotation['status'],
+  currency: String(q.currency ?? 'ZAR'),
+  notes: q.notes ?? null,
+  created_at: toISODateSafe(q.created_at) || '',
+  updated_at: toISODateSafe(q.updated_at) || '',
+  line_items: q.line_items,
 });
+
 
   // -------- data fetchers --------
 
@@ -178,7 +215,7 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
-        const err = await response.json();
+        const err = await response.json().catch(() => ({}));
         throw new Error(err.message || 'Failed to fetch user profile');
       }
       const data: UserProfile = await response.json();
@@ -206,18 +243,11 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
-        const err = await response.json();
+        const err = await response.json().catch(() => ({}));
         throw new Error(err.message || 'Failed to fetch quotations');
       }
-      const data: Quotation[] = await response.json();
-      setQuotations(
-        data.map((q) => ({
-          ...q,
-          total_amount: parseFloat(q.total_amount as any) || 0,
-          quotation_date: new Date(q.quotation_date).toISOString().split('T')[0],
-          expiry_date: q.expiry_date ? new Date(q.expiry_date).toISOString().split('T')[0] : null,
-        }))
-      );
+      const data: any[] = await response.json();
+      setQuotations(data.map(normalizeQuotation));
     } catch (e: any) {
       toast({
         title: 'Error',
@@ -237,15 +267,8 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       });
       if (!response.ok) return;
-      const data: Quotation[] = await response.json();
-      setQuotations(
-        data.map((q) => ({
-          ...q,
-          total_amount: parseFloat(q.total_amount as any) || 0,
-          quotation_date: new Date(q.quotation_date).toISOString().split('T')[0],
-          expiry_date: q.expiry_date ? new Date(q.expiry_date).toISOString().split('T')[0] : null,
-        }))
-      );
+      const data: any[] = await response.json();
+      setQuotations(data.map(normalizeQuotation));
     } catch {
       /* swallow silently */
     }
@@ -271,7 +294,9 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
       const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       for (const quotation of quotations) {
         if (quotation.expiry_date) {
-          const expiry = new Date(quotation.expiry_date);
+          const expiryISO = toISODateSafe(quotation.expiry_date);
+          if (!expiryISO) continue;
+          const expiry = new Date(`${expiryISO}T00:00:00Z`);
           const expiryDay = new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate());
           if (
             expiryDay < today &&
@@ -308,20 +333,22 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
-        const err = await response.json();
+        const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to fetch quotation details.');
       }
-      const detailed: Quotation = await response.json();
-      detailed.total_amount = parseFloat(detailed.total_amount as any) || 0;
-      detailed.line_items =
-        detailed.line_items?.map((item) => ({
-          ...item,
-          quantity: parseFloat(item.quantity as any) || 0,
-          unit_price: parseFloat(item.unit_price as any) || 0,
-          line_total: parseFloat(item.line_total as any) || 0,
-          tax_rate: parseFloat(item.tax_rate as any) || 0,
-        })) || [];
-      setSelectedQuotation(detailed);
+      const detailed: any = await response.json();
+      const normalized = normalizeQuotation({
+        ...detailed,
+        line_items:
+          detailed.line_items?.map((item: any) => ({
+            ...item,
+            quantity: parseFloat(item.quantity as any) || 0,
+            unit_price: parseFloat(item.unit_price as any) || 0,
+            line_total: parseFloat(item.line_total as any) || 0,
+            tax_rate: parseFloat(item.tax_rate as any) || 0,
+          })) || [],
+      });
+      setSelectedQuotation(normalized);
     } catch (e: any) {
       toast({ title: 'Error', description: e.message || 'Failed to load details.', variant: 'destructive' });
       setShowQuotationForm(false);
@@ -340,20 +367,22 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
-        const err = await response.json();
+        const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to fetch quotation details');
       }
-      const detailed: Quotation = await response.json();
-      detailed.total_amount = parseFloat(detailed.total_amount as any) || 0;
-      detailed.line_items =
-        detailed.line_items?.map((item) => ({
-          ...item,
-          quantity: parseFloat(item.quantity as any) || 0,
-          unit_price: parseFloat(item.unit_price as any) || 0,
-          line_total: parseFloat(item.line_total as any) || 0,
-          tax_rate: parseFloat(item.tax_rate as any) || 0,
-        })) || [];
-      setSelectedQuotation(detailed);
+      const detailed: any = await response.json();
+      const normalized = normalizeQuotation({
+        ...detailed,
+        line_items:
+          detailed.line_items?.map((item: any) => ({
+            ...item,
+            quantity: parseFloat(item.quantity as any) || 0,
+            unit_price: parseFloat(item.unit_price as any) || 0,
+            line_total: parseFloat(item.line_total as any) || 0,
+            tax_rate: parseFloat(item.tax_rate as any) || 0,
+          })) || [],
+      });
+      setSelectedQuotation(normalized);
       setIsViewModalOpen(true);
     } catch (e: any) {
       toast({ title: 'Error', description: e.message || 'Failed to load details.', variant: 'destructive' });
@@ -372,7 +401,7 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
-        const err = await response.json();
+        const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to generate PDF.');
       }
       const blob = await response.blob();
@@ -407,7 +436,7 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
-        const err = await response.json();
+        const err = await response.json().catch(() => ({}));
         throw new Error(err.message || 'Failed to delete quotation');
       }
       toast({ title: 'Quotation Deleted', description: 'The quotation has been deleted.' });
@@ -427,8 +456,8 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
     setEmailBody(
       `Dear ${quotation.customer_name},\n\n` +
         `Please find attached your quotation (Quotation ID: #${quotation.quotation_number}).\n\n` +
-        `Total amount: ${fmt(quotation.total_amount)}\n` + // ⬅️ was: `${quotation.currency} ${quotation.total_amount.toFixed(2)}`
-        `Expiry Date: ${quotation.expiry_date ? new Date(quotation.expiry_date).toLocaleDateString('en-ZA') : ''}\n\n` +
+        `Total amount: ${fmt(quotation.total_amount)}\n` +
+        `Expiry Date: ${quotation.expiry_date ? toDisplayDate(quotation.expiry_date) : ''}\n\n` +
         `Thank you for your business!\n\nSincerely,\n` +
         `${userProfile?.company || 'Your Company'}\n${userProfile?.contact_person || ''}`
     );
@@ -453,11 +482,13 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         });
         if (!resp.ok) {
-          const err = await resp.json();
+          const err = await resp.json().catch(() => ({}));
           throw new Error(err.error || 'Failed to fetch detailed quotation.');
         }
-        const detailed: Quotation = await resp.json();
-        if (!detailed.line_items || detailed.line_items.length === 0) {
+        const detailed: any = await resp.json();
+        const normalized = normalizeQuotation(detailed);
+
+        if (!normalized.line_items || normalized.line_items.length === 0) {
           throw new Error('Quotation has no line items to convert.');
         }
 
@@ -471,20 +502,23 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         const randomSuffix = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
         const newInvoiceNumber = `INV-${year}${month}${day}-${hours}${minutes}${seconds}-${randomSuffix}`;
 
-        const invoiceDate = new Date();
-        const dueDate = new Date(invoiceDate);
-        dueDate.setDate(invoiceDate.getDate() + 7);
+        const invoiceDateISO = toISODateSafe(new Date());
+        const dueDateISO = (() => {
+          const d = new Date(`${invoiceDateISO}T00:00:00Z`);
+          d.setUTCDate(d.getUTCDate() + 7);
+          return toISODateSafe(d);
+        })();
 
         const invoicePayload = {
           invoice_number: newInvoiceNumber,
-          customer_id: detailed.customer_id,
-          invoice_date: invoiceDate.toISOString().split('T')[0],
-          due_date: dueDate.toISOString().split('T')[0],
-          total_amount: detailed.total_amount,
+          customer_id: normalized.customer_id,
+          invoice_date: invoiceDateISO,
+          due_date: dueDateISO,
+          total_amount: normalized.total_amount,
           status: 'Draft' as const,
-          currency: detailed.currency,
-          notes: `Converted from Quotation ${detailed.quotation_number}. ${detailed.notes || ''}`.trim(),
-          line_items: detailed.line_items.map((li) => ({
+          currency: normalized.currency,
+          notes: `Converted from Quotation ${normalized.quotation_number}. ${normalized.notes || ''}`.trim(),
+          line_items: normalized.line_items!.map((li) => ({
             product_service_id: li.product_service_id,
             description: li.description,
             quantity: li.quantity,
@@ -500,7 +534,7 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
           body: JSON.stringify(invoicePayload),
         });
         if (!createInvoiceResponse.ok) {
-          const err = await createInvoiceResponse.json();
+          const err = await createInvoiceResponse.json().catch(() => ({}));
           throw new Error(err.error || 'Failed to create invoice.');
         }
 
@@ -539,21 +573,20 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
           const err = await fetchResp.json().catch(() => ({}));
           throw new Error(err.error || 'Failed to fetch quotation for update.');
         }
-        const full: Quotation = await fetchResp.json();
-
-        const payload: Quotation = {
+        const full: any = await fetchResp.json();
+        const normalized = normalizeQuotation({
           ...full,
-          status: newStatus,
-          total_amount: Number(full.total_amount) || 0,
           line_items:
-            (full.line_items || []).map((li) => ({
+            (full.line_items || []).map((li: any) => ({
               ...li,
               quantity: Number(li.quantity) || 0,
               unit_price: Number(li.unit_price) || 0,
               line_total: Number(li.line_total) || 0,
               tax_rate: Number(li.tax_rate) || 0,
             })) || [],
-        };
+        });
+
+        const payload = { ...normalized, status: newStatus };
 
         const putResp = await fetch(`${API_BASE_URL}/api/quotations/${quotationId}`, {
           method: 'PUT',
@@ -568,7 +601,7 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
         if (showToast) toast({ title: 'Status Updated', description: `Quotation is now ${newStatus}.` });
 
         if (newStatus === 'Accepted') {
-          await handleConvertQuotationToInvoice({ ...full, status: 'Accepted' });
+          await handleConvertQuotationToInvoice({ ...normalized, status: 'Accepted' });
         } else {
           await refreshQuotationsSilently();
         }
@@ -609,7 +642,7 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
           body: JSON.stringify({ recipientEmail: emailRecipient, subject: emailSubject, body: emailBody }),
         });
         if (!response.ok) {
-          const err = await response.json();
+          const err = await response.json().catch(() => ({}));
           throw new Error(err.error || 'Failed to send email.');
         }
 
@@ -634,21 +667,23 @@ const normalizeQuotation = (q: Quotation): Quotation => ({
     [quotationToSendEmail, emailRecipient, emailSubject, emailBody, toast, token, handleManualStatusUpdate, refreshQuotationsSilently]
   );
 
-const handleFormSubmitSuccess = (q: Quotation, mode: 'create'|'update') => {
-  setShowQuotationForm(false);
-  const nq = normalizeQuotation(q);
-  if (mode === 'create') setQuotations(prev => [nq, ...prev]);
-  else setQuotations(prev => prev.map(x => String(x.id) === String(nq.id) ? nq : x));
-  refreshQuotationsSilently();
-};
+  const handleFormSubmitSuccess = (q: any, mode: 'create' | 'update') => {
+    setShowQuotationForm(false);
+    const nq = normalizeQuotation(q);
+    if (mode === 'create') setQuotations(prev => [nq, ...prev]);
+    else setQuotations(prev => prev.map(x => String(x.id) === String(nq.id) ? nq : x));
+    refreshQuotationsSilently();
+  };
 
+const term = (searchTerm ?? '').toLowerCase();
 
-  const filteredQuotations = quotations.filter(
-    (q) =>
-      q.status !== 'Invoiced' &&
-      (q.quotation_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        q.customer_name.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+const filteredQuotations = quotations.filter((q) => {
+  if (q.status === 'Invoiced') return false; // keep your original exclusion
+  const num = (q.quotation_number ?? '').toLowerCase();
+  const cust = (q.customer_name ?? '').toLowerCase();
+  return num.includes(term) || cust.includes(term);
+});
+
 
   if (showQuotationForm) {
     return (
@@ -664,7 +699,11 @@ const handleFormSubmitSuccess = (q: Quotation, mode: 'create'|'update') => {
               <span className="ml-2 text-gray-600">Loading quotation details...</span>
             </div>
           ) : (
-            <QuotationForm quotation={selectedQuotation} onClose={() => setShowQuotationForm(false)} onSubmitSuccess={handleFormSubmitSuccess} />
+            <QuotationForm
+              quotation={selectedQuotation as any}
+              onClose={() => setShowQuotationForm(false)}
+              onSubmitSuccess={handleFormSubmitSuccess}
+            />
           )}
         </div>
       </div>
@@ -734,9 +773,9 @@ const handleFormSubmitSuccess = (q: Quotation, mode: 'create'|'update') => {
                     <TableRow key={quotation.id}>
                       <TableCell className="font-medium">{quotation.quotation_number}</TableCell>
                       <TableCell>{quotation.customer_name}</TableCell>
-                      <TableCell>{new Date(quotation.quotation_date).toLocaleDateString('en-ZA')}</TableCell>
-                      <TableCell>{quotation.expiry_date ? new Date(quotation.expiry_date).toLocaleDateString('en-ZA') : 'N/A'}</TableCell>
-                      <TableCell>{fmt(quotation.total_amount)}</TableCell> {/* ⬅️ NEW */}
+                      <TableCell>{toDisplayDate(quotation.quotation_date)}</TableCell>
+                      <TableCell>{quotation.expiry_date ? toDisplayDate(quotation.expiry_date) : 'N/A'}</TableCell>
+                      <TableCell>{fmt(quotation.total_amount)}</TableCell>
                       <TableCell className="text-left">
                         <div className="flex items-center gap-2">
                           <Button variant="ghost" size="sm" onClick={() => handleViewQuotationClick(quotation)}>
@@ -854,11 +893,11 @@ const handleFormSubmitSuccess = (q: Quotation, mode: 'create'|'update') => {
                     </p>
                   )}
                   <p>
-                    <strong>Quotation Date:</strong> {new Date(selectedQuotation.quotation_date).toLocaleDateString('en-ZA')}
+                    <strong>Quotation Date:</strong> {toDisplayDate(selectedQuotation.quotation_date)}
                   </p>
                   <p>
                     <strong>Expiry Date:</strong>{' '}
-                    {selectedQuotation.expiry_date ? new Date(selectedQuotation.expiry_date).toLocaleDateString('en-ZA') : 'N/A'}
+                    {selectedQuotation.expiry_date ? toDisplayDate(selectedQuotation.expiry_date) : 'N/A'}
                   </p>
                 </div>
                 <div>
@@ -869,7 +908,7 @@ const handleFormSubmitSuccess = (q: Quotation, mode: 'create'|'update') => {
                     </Badge>
                   </p>
                   <p>
-                    <strong>Total Amount:</strong> {fmt(selectedQuotation.total_amount)} {/* ⬅️ NEW */}
+                    <strong>Total Amount:</strong> {fmt(selectedQuotation.total_amount)}
                   </p>
                   <p>
                     <strong>Currency:</strong> {selectedQuotation.currency}
@@ -902,9 +941,9 @@ const handleFormSubmitSuccess = (q: Quotation, mode: 'create'|'update') => {
                           <TableCell>{item.product_service_name || 'Custom Item'}</TableCell>
                           <TableCell>{item.description}</TableCell>
                           <TableCell>{item.quantity}</TableCell>
-                          <TableCell>{fmt(item.unit_price ?? 0)}</TableCell> {/* ⬅️ NEW */}
+                          <TableCell>{fmt(item.unit_price ?? 0)}</TableCell>
                           <TableCell>{((item.tax_rate ?? 0) * 100).toFixed(2)}%</TableCell>
-                          <TableCell>{fmt(item.line_total ?? 0)}</TableCell>   {/* ⬅️ NEW */}
+                          <TableCell>{fmt(item.line_total ?? 0)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

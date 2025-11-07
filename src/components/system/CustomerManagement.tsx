@@ -837,14 +837,20 @@ const handleDeleteCustomer = async (id: string) => {
     },
     [customers]
   );
+  // --- Safe string helpers ---
+const s = (v: unknown): string => (v === null || v === undefined ? '' : String(v));
+const lc = (v: unknown): string => s(v).toLowerCase();
 
-  const filteredCustomers = filterCustomersByCluster(activeCluster).filter(
-    (customer) =>
-      customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      customer.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (customer.phone && customer.phone.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (customer.vatNumber && customer.vatNumber.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+
+const term = lc(searchTerm).trim();
+
+const filteredCustomers = filterCustomersByCluster(activeCluster).filter((customer) =>
+  lc(customer.name).includes(term) ||
+  lc(customer.email).includes(term) ||
+  lc(customer.phone).includes(term) ||
+  lc(customer.vatNumber).includes(term)
+);
+
 
   // ---------- Render ----------
   return (

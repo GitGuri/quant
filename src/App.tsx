@@ -36,6 +36,7 @@ import CreditPaymentsScreen from './pages/pos/CreditPaymentsScreen';
 import CashInScreen from './pages/pos/CashInScreen';
 import OAuthCallback from './pages/OAuthCallback';
 import VerifyEmail from './pages/VerifyEmail';
+import ComplianceCentre from './pages/ComplianceCentre';
 import RequireRoles from '@/components/auth/RequireRoles';
 import './lib/fetch-patch';
 
@@ -184,6 +185,15 @@ const AppContent = () => {
               element={
                 <RequireRoles anyOf={['admin','manager','user','cashier','accountant','ceo','documents']}>
                   <DocumentManagement />
+                </RequireRoles>
+              }
+            />
+
+                        <Route
+              path="/compliance"
+              element={
+                <RequireRoles anyOf={['admin','manager','user','accountant','ceo','compliance']}>
+                  <ComplianceCentre />
                 </RequireRoles>
               }
             />
