@@ -994,33 +994,41 @@ export function QuotationForm({ quotation, onClose, onSubmitSuccess }: Quotation
               </div>
               <div>
                 <Label htmlFor={`quantity-${index}`}>Qty</Label>
-                <Input
-                  id={`quantity-${index}`}
-                  name="quantity"
-                  type="number"
-                  value={item.quantity}
-                  onChange={e => handleLineItemChange(index, 'quantity', e.target.value)}
-                  placeholder="Qty"
-                  min="0"
-                  step="0.01"
-                  required
-                  disabled={!isAuthenticated || isLoading}
-                />
+<Input
+  id={`quantity-${index}`}
+  name="quantity"
+  type="number"
+  value={item.quantity === 0 ? '' : item.quantity} // don't show 0
+  onChange={(e) => {
+    const val = e.target.value === '' ? undefined : parseFloat(e.target.value)
+    handleLineItemChange(index, 'quantity', val)
+  }}
+  placeholder="Qty"
+  min="0"
+  step="0.01"
+  required
+  disabled={!isAuthenticated || isLoading}
+/>
+
               </div>
               <div>
                 <Label htmlFor={`unit_price-${index}`}>Unit Price</Label>
-                <Input
-                  id={`unit_price-${index}`}
-                  name="unit_price"
-                  type="number"
-                  value={item.unit_price}
-                  onChange={e => handleLineItemChange(index, 'unit_price', e.target.value)}
-                  placeholder="Price"
-                  min="0"
-                  step="0.01"
-                  required
-                  disabled={!isAuthenticated || isLoading}
-                />
+<Input
+  id={`unit_price-${index}`}
+  name="unit_price"
+  type="number"
+  value={item.unit_price === 0 ? '' : item.unit_price} // hide 0 visually
+  onChange={(e) => {
+    const val = e.target.value === '' ? undefined : parseFloat(e.target.value)
+    handleLineItemChange(index, 'unit_price', val)
+  }}
+  placeholder="Price"
+  min="0"
+  step="0.01"
+  required
+  disabled={!isAuthenticated || isLoading}
+/>
+
               </div>
               <div>
                 <Label htmlFor={`tax_rate-${index}`}>Tax Rate</Label>

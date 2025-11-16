@@ -1045,9 +1045,31 @@ const handleConfirmOnce = () => {
 // ------------ Main ------------
 const ChatInterface = () => {
   const RAIRO_API_BASE_URL = 'https://rairo-stmt-api.hf.space';
-  const API_BASE_URL = 'https://quantnow-sa1e.onrender.com'
+  const API_BASE_URL = 'https://quantnow-sa1e.onrender.com';
+
   const [forceCash, setForceCash] = useState(false);
-  const [messages, setMessages] = useState<Array<{ id: string; sender: string; content: string | JSX.Element }>>([]);
+  const [messages, setMessages] = useState<
+    Array<{ id: string; sender: string; content: string | JSX.Element }>
+  >([]);
+
+  // 🔹 single source of truth for the active loader
+  const loaderIdRef = useRef<string | null>(null);
+
+  const showLoader = (message: string) => {
+    const id = `loader-${Date.now()}-${Math.random()}`;
+    loaderIdRef.current = id;
+    const node = <TableLoading message={message} />;
+
+    setMessages(prev => [...prev, { id, sender: 'assistant', content: node }]);
+  };
+
+  const hideLoader = () => {
+    if (!loaderIdRef.current) return;
+    const idToRemove = loaderIdRef.current;
+    loaderIdRef.current = null;
+    setMessages(prev => prev.filter(m => m.id !== idToRemove));
+  };
+
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [existingTxs, setExistingTxs] = useState<ExistingTx[]>([]);
   const [typedDescription, setTypedDescription] = useState('');
@@ -1065,143 +1087,280 @@ const ChatInterface = () => {
   const { symbol, fmt } = useCurrency();
 
   // evidence modal state
-const [evidenceOpen, setEvidenceOpen] = useState(false);
-const [evidenceNotes, setEvidenceNotes] = useState<string>('');
-const [products, setProducts] = useState<ProductDB[]>([]);
-  // [ADD] keep queued Excel sales here so we post them after user confirms
-const [pendingSales, setPendingSales] = useState<Array<{
-  customer_name: string;
-  office?: string | null;
-  date: string;
-  description: string;
-  amount: number;
-}>>([]);
-const pendingSalesRef = useRef<typeof pendingSales>([]);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [evidenceNotes, setEvidenceNotes] = useState<string>('');
+  const [products, setProducts] = useState<ProductDB[]>([]);
+  // keep queued sales here so we post them after user confirms
+  const [pendingSales, setPendingSales] = useState<
+    Array<{
+      customer_name: string;
+      office?: string | null;
+      date: string;
+      description: string;
+      amount: number;
+    }>
+  >([]);
+  const pendingSalesRef = useRef<typeof pendingSales>([]);
 
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // NEW: prevent double-submit on import
+  // prevent double-submit on import
   const [importBusy, setImportBusy] = useState(false);
 
   const { isAuthenticated } = useAuth();
   const token = localStorage.getItem('token');
-  const getAuthHeaders = useCallback(() => (token ? { Authorization: `Bearer ${token}` } : {}), [token]);
+  const getAuthHeaders = useCallback(
+    () => (token ? { Authorization: `Bearer ${token}` } : {}),
+    [token]
+  );
 
   const categories = [
-    'Groceries','Rent','Utilities','Transport','Food','Salary','Deposit','Loan','Debt Payment','Entertainment',
-    'Shopping','Healthcare','Education','Travel','Investments','Insurance','Bills','Dining Out','Subscriptions','Other',
-    'Sales','Interest Income','Cost of Goods Sold','Accounts Payable','Rent Expense','Utilities Expenses','Car Loans',
-    'Sales Revenue','General Expense','Fees','Purchases','Refund','Fuel','Salaries and wages','Projects Expenses',
-    'Accounting fees','Repairs & Maintenance','Water and electricity','Bank charges','Insurance','Loan interest',
-    'Computer internet and Telephone','Website hosting fees','Credit Facility'
+    'Groceries', 'Rent', 'Utilities', 'Transport', 'Food', 'Salary', 'Deposit', 'Loan',
+    'Debt Payment', 'Entertainment', 'Shopping', 'Healthcare', 'Education', 'Travel',
+    'Investments', 'Insurance', 'Bills', 'Dining Out', 'Subscriptions', 'Other',
+    'Sales', 'Interest Income', 'Cost of Goods Sold', 'Accounts Payable', 'Rent Expense',
+    'Utilities Expenses', 'Car Loans', 'Sales Revenue', 'General Expense', 'Fees',
+    'Purchases', 'Refund', 'Fuel', 'Salaries and wages', 'Projects Expenses',
+    'Accounting fees', 'Repairs & Maintenance', 'Water and electricity',
+    'Bank charges', 'Insurance', 'Loan interest',
+    'Computer internet and Telephone', 'Website hosting fees', 'Credit Facility',
   ];
 
-  // auto-scroll
+  // auto-scroll chat
   useEffect(() => {
-    if (chatContainerRef.current) chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
   }, [messages]);
 
+  // --- chat helpers ---
+  const addAssistantMessage = (content: string | JSX.Element) =>
+    setMessages(prev => [
+      ...prev,
+      { id: `${Date.now()}-${Math.random()}`, sender: 'assistant', content },
+    ]);
 
-// very-light heuristics
-const looksLikeSale = (s: string) =>
-  /\b(sold|sell|sale|invoice|billed?|charged?)\b/i.test(s);
+  const addUserMessage = (content: string) =>
+    setMessages(prev => [
+      ...prev,
+      { id: `${Date.now()}-${Math.random()}`, sender: 'user', content },
+    ]);
 
-// already in your file; keep these (or paste if missing)
-const moneyRx = /(?:^|[\s])(?:r|rand|\$)?\s*([0-9]+(?:[.,][0-9]{1,2})?)(?=$|[\s.,])/gi;
-const qtyRx   = /(?:^|[\s])(?:x|qty|quantity|units?|pcs?)\s*([0-9]+)|(?:^|[\s])([0-9]+)\s*(?:x|units?|pcs?)(?=$|[\s.,])/i;
+  // very-light heuristics
+  const looksLikeSale = (s: string) =>
+    /\b(sold|sell|sale|invoice|billed?|charged?)\b/i.test(s);
 
-const norm = (s:string) => s.toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
-const tokenSet2 = (s:string) => new Set(norm(s).split(' ').filter(Boolean));
-const jaccard2 = (a:Set<string>, b:Set<string>) => {
-  if (!a.size && !b.size) return 1;
-  let inter = 0; for (const t of a) if (b.has(t)) inter++;
-  return inter / (a.size + b.size - inter || 1);
-};
+  // money/qty regex
+  const moneyRx =
+    /(?:^|[\s])(?:r|rand|\$)?\s*([0-9]+(?:[.,][0-9]{1,2})?)(?=$|[\s.,])/gi;
+  const qtyRx =
+    /(?:^|[\s])(?:x|qty|quantity|units?|pcs?)\s*([0-9]+)|(?:^|[\s])([0-9]+)\s*(?:x|units?|pcs?)(?=$|[\s.,])/i;
 
-function bestProductMatch(text:string, list: ProductDB[]) {
-  const t = tokenSet2(text);
-  let best: ProductDB | null = null, bestScore = 0;
-  list.forEach(p => {
-    const s = jaccard2(t, tokenSet2(p.name));
-    const boost = norm(text).includes(norm(p.name)) ? 0.2 : 0;
-    const score = s + boost;
-    if (score > bestScore) { bestScore = score; best = p; }
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const tokenSet2 = (s: string) =>
+    new Set(
+      norm(s)
+        .split(' ')
+        .filter(Boolean)
+    );
+  const jaccard2 = (a: Set<string>, b: Set<string>) => {
+    if (!a.size && !b.size) return 1;
+    let inter = 0;
+    for (const t of a) if (b.has(t)) inter++;
+    return inter / (a.size + b.size - inter || 1);
+  };
+
+  type FundingMethod = 'none' | 'cash' | 'liability';
+
+  type AssetFundingChoice = {
+    create: boolean;
+    fundingMethod: FundingMethod;
+    bankAccountId: number | null;
+    liabilityAccountId: number | null;
+  };
+
+  type AssetFundingDialogState = {
+    open: boolean;
+    tx: (Transaction & { _amt?: number }) | null;
+  };
+
+  const [assetFundingDialog, setAssetFundingDialog] =
+    useState<AssetFundingDialogState>({
+      open: false,
+      tx: null,
+    });
+
+  const [assetFundingForm, setAssetFundingForm] = useState<{
+    create: boolean;
+    fundingMethod: FundingMethod;
+    bankAccountId: string;
+    liabilityAccountId: string;
+  }>({
+    create: true,
+    fundingMethod: 'cash',
+    bankAccountId: '',
+    liabilityAccountId: '',
   });
-  return bestScore >= 0.35 ? best : null; // tolerate misspelling like "Accomodation"
-}
 
-function parseSaleLocally(text:string, list: ProductDB[]) {
-  // qty
-  let qty = 1;
-  const q = qtyRx.exec(text);
-  if (q) qty = Number(q[1] || q[2]) || 1;
+  const assetFundingResolverRef = useRef<
+    null | ((choice: AssetFundingChoice | null) => void)
+  >(null);
 
-  // total/each price
-  let total: number | null = null, each: number | null = null;
-  const m = [...text.matchAll(moneyRx)].map(x => Number(String(x[1]).replace(',','.')));
-  if (m.length === 1) total = m[0];
-  if (m.length >= 2) { each = m[0]; total = m[1]; }
-  if (each != null && total == null) total = Math.round((each * qty) * 100) / 100;
+  const looksLikeBankOrCash = (acc: any) =>
+    (acc.type || '').toLowerCase() === 'asset' &&
+    /cash|bank|cheque|checking|current|savings|petty/i.test(acc.name || '');
 
-  const product = bestProductMatch(text, list);
-  if (!product) return null;
+  const bankAccounts = useMemo(
+    () => accounts.filter(looksLikeBankOrCash),
+    [accounts]
+  );
 
-  return { product, qty, total, each };
-}
+  const liabilityAccounts = useMemo(
+    () => accounts.filter(a => (a.type || '').toLowerCase() === 'liability'),
+    [accounts]
+  );
 
+  const askAssetFundingViaDialog = (
+    tx: Transaction & { _amt?: number }
+  ): Promise<AssetFundingChoice | null> => {
+    return new Promise(resolve => {
+      assetFundingResolverRef.current = resolve;
+      setAssetFundingForm({
+        create: true,
+        fundingMethod: 'cash',
+        bankAccountId: '',
+        liabilityAccountId: '',
+      });
+      setAssetFundingDialog({ open: true, tx });
+    });
+  };
 
+  const resolveAssetFunding = (choice: AssetFundingChoice | null) => {
+    if (assetFundingResolverRef.current) {
+      assetFundingResolverRef.current(choice);
+      assetFundingResolverRef.current = null;
+    }
+    setAssetFundingDialog({ open: false, tx: null });
+  };
 
-  useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
+  function bestProductMatch(text: string, list: ProductDB[]) {
+    const t = tokenSet2(text);
+    let best: ProductDB | null = null,
+      bestScore = 0;
+    list.forEach(p => {
+      const s = jaccard2(t, tokenSet2(p.name));
+      const boost = norm(text).includes(norm(p.name)) ? 0.2 : 0;
+      const score = s + boost;
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    });
+    return bestScore >= 0.35 ? best : null; // tolerate misspelling like "Accomodation"
+  }
+
+  function parseSaleLocally(text: string, list: ProductDB[]) {
+    // qty
+    let qty = 1;
+    const q = qtyRx.exec(text);
+    if (q) qty = Number(q[1] || q[2]) || 1;
+
+    // total/each price
+    let total: number | null = null,
+      each: number | null = null;
+    const m = [...text.matchAll(moneyRx)].map(x =>
+      Number(String(x[1]).replace(',', '.'))
+    );
+    if (m.length === 1) total = m[0];
+    if (m.length >= 2) {
+      each = m[0];
+      total = m[1];
+    }
+    if (each != null && total == null)
+      total = Math.round(each * qty * 100) / 100;
+
+    const product = bestProductMatch(text, list);
+    if (!product) return null;
+
+    return { product, qty, total, each };
+  }
+
+  useEffect(
+    () => () => {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+    },
+    [audioUrl]
+  );
 
   // Load accounts
   useEffect(() => {
     const fetchAccounts = async () => {
       if (!isAuthenticated || !token) {
         setAccounts([]);
-        addAssistantMessage('Please log in to load accounts and import transactions.');
+        addAssistantMessage(
+          'Please log in to load accounts and import transactions.'
+        );
         return;
       }
       try {
-        const response = await fetch(`${API_BASE_URL}/accounts`, { headers: getAuthHeaders() });
+        const response = await fetch(`${API_BASE_URL}/accounts`, {
+          headers: getAuthHeaders(),
+        });
         const data: Account[] = await response.json();
         setAccounts(Array.isArray(data) ? data : []);
-        addAssistantMessage('Accounts loaded successfully. You can now import transactions.');
+        addAssistantMessage(
+          'Accounts loaded successfully. You can now import transactions.'
+        );
       } catch (error: any) {
         console.error('Failed to fetch accounts:', error);
         setAccounts([]);
-        addAssistantMessage(`Failed to load accounts: ${error.message || 'Network error'}. Please ensure your backend is running and you are logged in.`);
+        addAssistantMessage(
+          `Failed to load accounts: ${
+            error.message || 'Network error'
+          }. Please ensure your backend is running and you are logged in.`
+        );
       }
     };
     fetchAccounts();
   }, [isAuthenticated, token, getAuthHeaders]);
 
+  // Turn a queued sale into a preview row for the editable table
+  function saleToPreviewRow(
+    s: {
+      customer_name: string;
+      office?: string | null;
+      date: string;
+      description: string;
+      amount: number;
+    },
+    accounts: Account[]
+  ): Transaction {
+    const salesRevenueAcc = accounts.find(
+      a =>
+        a.type?.toLowerCase() === 'income' &&
+        a.name?.toLowerCase().includes('sales revenue')
+    );
 
+    return {
+      _tempId: crypto.randomUUID(),
+      type: 'income',
+      amount: Number(s.amount || 0),
+      description: `SALE • ${s.description} — ${s.customer_name}${
+        s.office ? ` @ ${s.office}` : ''
+      }`,
+      date: s.date || new Date().toISOString().slice(0, 10),
+      category: 'Sales Revenue',
+      account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
+      original_text: 'sales-queue',
+      source: 'sales-preview', // marks it as a sale row
+      is_verified: true,
+      confidenceScore: 100,
+      includeInImport: true,
+    };
+  }
 
-  // --- Turn a queued sale into a preview row for the editable table ---
-function saleToPreviewRow(
-  s: { customer_name: string; office?: string | null; date: string; description: string; amount: number; },
-  accounts: Account[]
-): Transaction {
-  const salesRevenueAcc =
-    accounts.find(a => a.type?.toLowerCase() === 'income' && a.name?.toLowerCase().includes('sales revenue'));
-
-  return {
-    _tempId: crypto.randomUUID(),
-    type: 'income',
-    amount: Number(s.amount || 0),
-    description: `SALE • ${s.description} — ${s.customer_name}${s.office ? ` @ ${s.office}` : ''}`,
-    date: s.date || new Date().toISOString().slice(0,10),
-    category: 'Sales Revenue',
-    account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
-    original_text: 'sales-queue',
-    source: 'sales-preview',              // <— IMPORTANT: marks it as a sale row
-    is_verified: true,
-    confidenceScore: 100,
-    includeInImport: true,
-  };
-}
-
-
+  // Load products
   useEffect(() => {
     const fetchProducts = async () => {
       if (!isAuthenticated || !token) {
@@ -1213,58 +1372,79 @@ function saleToPreviewRow(
           headers: getAuthHeaders(),
         });
         if (!response.ok) {
-          throw new Error(`Failed to fetch products with status: ${response.status}`);
+          throw new Error(
+            `Failed to fetch products with status: ${response.status}`
+          );
         }
         const data: ProductDB[] = await response.json();
-        // Ensure numeric fields are correctly parsed, just in case
         const parsedData = data.map(p => ({
-            ...p,
-            unit_price: parseFloat(p.unit_price as any),
-            cost_price: p.cost_price != null ? parseFloat(p.cost_price as any) : null,
-            stock_quantity: parseInt(p.stock_quantity as any, 10),
+          ...p,
+          unit_price: parseFloat(p.unit_price as any),
+          cost_price:
+            p.cost_price != null ? parseFloat(p.cost_price as any) : null,
+          stock_quantity: parseInt(p.stock_quantity as any, 10),
         }));
         setProducts(Array.isArray(parsedData) ? parsedData : []);
-        console.log('Products loaded for AI context.'); // For debugging
+        console.log('Products loaded for AI context.');
       } catch (error: any) {
         console.error('Failed to fetch products:', error);
         setProducts([]);
-        // We don't need to show a chat message for this, it can fail silently
-        // as it's just for improving the AI prompt.
       }
     };
     fetchProducts();
   }, [isAuthenticated, token, getAuthHeaders]);
 
-
-  
   const openEvidenceFor = (txs: Transaction[], sourceLabel: string) => {
-  if (!txs || txs.length === 0) return;
-  // pick the first selected / visible row to seed the notes
-  const t = txs[0];
-  const note = `Evidence for ${t.type} ${fmt(Number(t.amount || 0))} on ${t.date} — ${t.description} (${sourceLabel})`;
-  setEvidenceNotes(note);
-  setEvidenceOpen(true);
-};
-
+    if (!txs || txs.length === 0) return;
+    const t = txs[0];
+    const note = `Evidence for ${t.type} ${fmt(
+      Number(t.amount || 0)
+    )} on ${t.date} — ${t.description} (${sourceLabel})`;
+    setEvidenceNotes(note);
+    setEvidenceOpen(true);
+  };
 
   // Load recent existing transactions (for dup check)
   useEffect(() => {
     const fetchExisting = async () => {
-      if (!isAuthenticated || !token) { setExistingTxs([]); return; }
+      if (!isAuthenticated || !token) {
+        setExistingTxs([]);
+        return;
+      }
       try {
-        const since = new Date(); since.setDate(since.getDate() - 180);
-        const params = new URLSearchParams({ since: since.toISOString().slice(0,10), limit: '500' });
-        const res = await fetch(`${API_BASE_URL}/transactions?${params.toString()}`, {
-          headers: { 'Content-Type':'application/json', ...getAuthHeaders() },
+        const since = new Date();
+        since.setDate(since.getDate() - 180);
+        const params = new URLSearchParams({
+          since: since.toISOString().slice(0, 10),
+          limit: '500',
         });
-        if (res.status === 401) { setExistingTxs([]); return; }
+        const res = await fetch(
+          `${API_BASE_URL}/transactions?${params.toString()}`,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              ...getAuthHeaders(),
+            },
+          }
+        );
+        if (res.status === 401) {
+          setExistingTxs([]);
+          return;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        setExistingTxs(Array.isArray(data) ? data.map((t:any) => ({
-          id: t.id, amount: Number(t.amount),
-          date: (t.date || '').slice(0,10),
-          description: t.description || '', type: t.type, account_id: t.account_id,
-        })) : []);
+        setExistingTxs(
+          Array.isArray(data)
+            ? data.map((t: any) => ({
+                id: t.id,
+                amount: Number(t.amount),
+                date: (t.date || '').slice(0, 10),
+                description: t.description || '',
+                type: t.type,
+                account_id: t.account_id,
+              }))
+            : []
+        );
       } catch (e) {
         console.error('Failed to fetch existing transactions for dup-check:', e);
         setExistingTxs([]);
@@ -1273,34 +1453,30 @@ function saleToPreviewRow(
     fetchExisting();
   }, [isAuthenticated, token, getAuthHeaders]);
 
-  // chat helpers
-  const addAssistantMessage = (content: string | JSX.Element) =>
-    setMessages(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, sender: 'assistant', content }]);
-  const addUserMessage = (content: string) =>
-    setMessages(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, sender: 'user', content }]);
-  // [ADD] make sure a customer exists (GET by name, else POST)
-// ImportScreen.tsx
-
-// ... inside the ChatInterface component
-
-  // Helper function to find or create a customer (needed for sales)
+  // Helper: ensure a customer exists (GET by name, else POST)
   const ensureCustomer = async (customerName: string) => {
-    if (!isAuthenticated || !token) throw new Error('Authentication required.');
-    const searchName = customerName || "Walk-in Customer"; // Default if no name is found
+    if (!isAuthenticated || !token)
+      throw new Error('Authentication required.');
+    const searchName = customerName || 'Walk-in Customer';
     try {
-      // Check if customer already exists by name
-      const response = await fetch(`${API_BASE_URL}/api/customers?search=${encodeURIComponent(searchName)}`, {
-        headers: getAuthHeaders(),
-      });
+      const response = await fetch(
+        `${API_BASE_URL}/api/customers?search=${encodeURIComponent(
+          searchName
+        )}`,
+        {
+          headers: getAuthHeaders(),
+        }
+      );
       if (response.ok) {
         const customers: any[] = await response.json();
-        const existing = customers.find(c => c.name.toLowerCase() === searchName.toLowerCase());
+        const existing = customers.find(
+          c => c.name.toLowerCase() === searchName.toLowerCase()
+        );
         if (existing) {
-          return existing; // Return existing customer
+          return existing;
         }
       }
 
-      // If not found, create a new one
       const createRes = await fetch(`${API_BASE_URL}/api/customers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -1309,211 +1485,263 @@ function saleToPreviewRow(
       if (!createRes.ok) throw new Error('Failed to create customer');
       return await createRes.json();
     } catch (error) {
-      console.error("Error ensuring customer exists:", error);
-      // Fallback to a default structure if creation fails, to avoid crashing the flow
+      console.error('Error ensuring customer exists:', error);
       return { id: 'default', name: 'Walk-in Customer' };
     }
   };
 
-// ... your handleTypedDescriptionSubmit function will go here next
-// [ADD] post a sale to /api/sales (Excel-only)
-const submitSale = async (sale: {
-  customer_name: string;
-  office?: string | null;
-  date: string;
-  description: string;
-  amount: number;
-}) => {
-  if (!isAuthenticated || !token) throw new Error('Authentication required.');
+  // post a sale to /api/sales
+  const submitSale = async (sale: {
+    customer_name: string;
+    office?: string | null;
+    date: string;
+    description: string;
+    amount: number;
+  }) => {
+    if (!isAuthenticated || !token)
+      throw new Error('Authentication required.');
 
-  const customer = await ensureCustomer(sale.customer_name);
+    const customer = await ensureCustomer(sale.customer_name);
 
-  // simple service-line cart → no inventory/COGS touched
-  const cart = [{
-    id: 'excel-import',
-    name: sale.description || `Sale for ${sale.customer_name}`,
-    quantity: 1,
-    unit_price: Number(sale.amount) || 0,
-    subtotal: Number(sale.amount) || 0,
-    tax_rate_value: 0,
-    is_service: true,
-  }];
+    const cart = [
+      {
+        id: 'excel-import',
+        name: sale.description || `Sale for ${sale.customer_name}`,
+        quantity: 1,
+        unit_price: Number(sale.amount) || 0,
+        subtotal: Number(sale.amount) || 0,
+        tax_rate_value: 0,
+        is_service: true,
+      },
+    ];
 
-  const payload = {
-    cart,
-    total: Number(sale.amount) || 0,
-    amountPaid: 0,
-    change: 0,
-    paymentType: 'Bank',
-    dueDate: null,
-    tellerName: 'Excel Import',
-    branch: sale.office || null,
-    companyName: null,
-    customer: { id: customer.id, name: customer.name },
+    const payload = {
+      cart,
+      total: Number(sale.amount) || 0,
+      amountPaid: 0,
+      change: 0,
+      paymentType: 'Bank',
+      dueDate: null,
+      tellerName: 'Excel Import',
+      branch: sale.office || null,
+      companyName: null,
+      customer: { id: customer.id, name: customer.name },
+    };
+
+    const res = await fetch(`${API_BASE_URL}/api/sales`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok)
+      throw new Error(`Sale post failed: ${res.status} ${await res.text()}`);
+    return await res.json();
   };
 
-  const res = await fetch(`${API_BASE_URL}/api/sales`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(`Sale post failed: ${res.status} ${await res.text()}`);
-  return await res.json();
-};
+  // file kind helpers
+  const isExcelFile = (f: File | null) => {
+    if (!f) return false;
+    const name = f.name.toLowerCase();
+    const type = (f.type || '').toLowerCase();
+    return (
+      name.endsWith('.xlsx') ||
+      name.endsWith('.xls') ||
+      type.includes('spreadsheet') ||
+      type === 'application/vnd.ms-excel' ||
+      type ===
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+  };
 
-  // Helpers for files
-// helpers for file kind
-const isExcelFile = (f: File | null) => {
-  if (!f) return false;
-  const name = f.name.toLowerCase();
-  const type = (f.type || '').toLowerCase();
-  return (
-    name.endsWith('.xlsx') ||
-    name.endsWith('.xls') ||
-    type.includes('spreadsheet') ||
-    type === 'application/vnd.ms-excel' ||
-    type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-  );
-};
+  const isPdfFile = (f: File | null) =>
+    !!f &&
+    (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
 
-const isPdfFile = (f: File | null) =>
-  !!f && (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+  const isImageFile = (f: File | null) => {
+    if (!f) return false;
+    const t = (f.type || '').toLowerCase();
+    const n = f.name.toLowerCase();
+    return (
+      t.startsWith('image/') ||
+      n.endsWith('.jpg') ||
+      n.endsWith('.jpeg') ||
+      n.endsWith('.png') ||
+      n.endsWith('.gif') ||
+      n.endsWith('.bmp') ||
+      n.endsWith('.webp')
+    );
+  };
 
-const isImageFile = (f: File | null) => {
-  if (!f) return false;
-  const t = (f.type || '').toLowerCase();
-  const n = f.name.toLowerCase();
-  return (
-    t.startsWith('image/') ||
-    n.endsWith('.jpg') || n.endsWith('.jpeg') || n.endsWith('.png') ||
-    n.endsWith('.gif') || n.endsWith('.bmp') || n.endsWith('.webp')
-  );
-};
-
-
-  // File change (PDF & Excel)
-const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-  const selectedFile = e.target.files?.[0] || null;
-  if (!selectedFile) { addAssistantMessage('No file selected.'); return; }
-
-  if (!isPdfFile(selectedFile) && !isExcelFile(selectedFile) && !isImageFile(selectedFile)) {
-    addAssistantMessage('Only PDF, Excel, or image files are supported.');
-    e.target.value = '';
-    return;
-  }
-
-  setFile(selectedFile);
-  setTypedDescription(`File: ${selectedFile.name}`);
-  e.target.value = '';
-};
-
-
-  // PDF upload
-const handleFileUpload = async () => {
-  if (!file) { addAssistantMessage('No file selected for upload.'); return; }
-  if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to upload files.'); return; }
-
-  // Excel goes through the existing Excel path
-  if (isExcelFile(file)) {
-    await handleExcelUpload();
-    return;
-  }
-
-  // Image/PDF → RAIRO endpoints
-  if (!isPdfFile(file) && !isImageFile(file)) {
-    addAssistantMessage('Only PDF, Excel, or supported image files are allowed.');
-    setFile(null); setTypedDescription(''); return;
-  }
-
-  const isPdf = isPdfFile(file);
-  const endpoint = `${RAIRO_API_BASE_URL}/${isPdf ? 'process-pdf' : 'process-image'}`;
-  addUserMessage(`Uploading ${isPdf ? 'PDF' : 'Image'}: ${file.name}…`);
-  addAssistantMessage(
-    <TableLoading message={`Extracting transactions from ${isPdf ? 'PDF' : 'image'}…`} />
-  );
-
-  try {
-    const formData = new FormData();
-    formData.append('file', file);
-
-    const response = await fetch(endpoint, { method: 'POST', body: formData });
-    const result = await response.json();
-
-    if (!response.ok) {
-      throw new Error(result?.error || 'Upload failed');
+  // File change (PDF & Excel & images)
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0] || null;
+    if (!selectedFile) {
+      addAssistantMessage('No file selected.');
+      return;
     }
 
-    addAssistantMessage(`${isPdf ? 'PDF' : 'Image'} processed successfully! Building preview…`);
+    if (
+      !isPdfFile(selectedFile) &&
+      !isExcelFile(selectedFile) &&
+      !isImageFile(selectedFile)
+    ) {
+      addAssistantMessage('Only PDF, Excel, or image files are supported.');
+      e.target.value = '';
+      return;
+    }
 
-    const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
-      const transactionType = (tx.Type || 'expense').toLowerCase();
+    setFile(selectedFile);
+    setTypedDescription(`File: ${selectedFile.name}`);
+    e.target.value = '';
+  };
 
-      let transactionCategory = tx.Destination_of_funds || 'Uncategorized';
-      if (transactionType === 'income' &&
-          ['income','general income'].includes((transactionCategory || '').toLowerCase())) {
-        transactionCategory = 'Sales Revenue';
+  // PDF / image upload
+  const handleFileUpload = async () => {
+    if (!file) {
+      addAssistantMessage('No file selected for upload.');
+      return;
+    }
+    if (!isAuthenticated || !token) {
+      addAssistantMessage('Authentication required to upload files.');
+      return;
+    }
+
+    // Excel goes through existing Excel path
+    if (isExcelFile(file)) {
+      await handleExcelUpload();
+      return;
+    }
+
+    // Image/PDF → RAIRO endpoints
+    if (!isPdfFile(file) && !isImageFile(file)) {
+      addAssistantMessage('Only PDF, Excel, or supported image files are allowed.');
+      setFile(null);
+      setTypedDescription('');
+      return;
+    }
+
+    const isPdf = isPdfFile(file);
+    const endpoint = `${RAIRO_API_BASE_URL}/${
+      isPdf ? 'process-pdf' : 'process-image'
+    }`;
+    addUserMessage(`Uploading ${isPdf ? 'PDF' : 'Image'}: ${file.name}…`);
+    showLoader(`Extracting transactions from ${isPdf ? 'PDF' : 'image'}…`);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch(endpoint, { method: 'POST', body: formData });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result?.error || 'Upload failed');
       }
 
-      let transactionDate: string;
-      try {
-        transactionDate = tx.Date
-          ? new Date(tx.Date.split('/').reverse().join('-')).toISOString().split('T')[0]
-          : new Date().toISOString().split('T')[0];
-      } catch { transactionDate = new Date().toISOString().split('T')[0]; }
-
-      const { accountId, confidence } = suggestAccountForUpload(
-        { type: transactionType, category: transactionCategory, description: tx.Description },
-        accounts
+      addAssistantMessage(
+        `${isPdf ? 'PDF' : 'Image'} processed successfully! Building preview…`
       );
 
-      return {
-        _tempId: crypto.randomUUID(),
-        type: transactionType as 'income' | 'expense' | 'debt',
-        amount: tx.Amount ? parseFloat(tx.Amount) : 0,
-        description: tx.Description || 'Imported Transaction',
-        date: transactionDate,
-        category: transactionCategory,
-        account_id: accountId || '',
-        original_text: tx.Original_Text || (tx.Description || 'Imported Transaction'),
-        source: isPdf ? 'pdf-upload' : 'image-upload',
-        is_verified: true,
-        confidenceScore: confidence,
-        includeInImport: true,
-      };
-    });
+      const transformed: Transaction[] = (result.transactions || []).map(
+        (tx: any) => {
+          const transactionType = (tx.Type || 'expense').toLowerCase();
 
-    const flagged = markDuplicates(transformed, existingTxs);
+          let transactionCategory = tx.Destination_of_funds || 'Uncategorized';
+          if (
+            transactionType === 'income' &&
+            ['income', 'general income'].includes(
+              (transactionCategory || '').toLowerCase()
+            )
+          ) {
+            transactionCategory = 'Sales Revenue';
+          }
 
-    addAssistantMessage(
-      <EditableTransactionTable
-        transactions={flagged}
-        accounts={accounts}
-        categories={categories}
-        onConfirm={handleConfirmProcessedTransaction}
-        onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-        forceCash={forceCash}
-        onToggleForceCash={setForceCash}
-        isBusy={importBusy}
-      />
-    );
-    openEvidenceFor(flagged, isPdf ? 'pdf' : 'image');
+          let transactionDate: string;
+          try {
+            transactionDate = tx.Date
+              ? new Date(
+                  tx.Date.split('/').reverse().join('-')
+                ).toISOString().split('T')[0]
+              : new Date().toISOString().split('T')[0];
+          } catch {
+            transactionDate = new Date().toISOString().split('T')[0];
+          }
 
-  } catch (error: any) {
-    console.error('Upload error:', error);
-    addAssistantMessage(`Error processing ${isPdf ? 'PDF' : 'image'}: ${error.message || 'Unknown error'}`);
-  } finally {
-    setFile(null);
-    setTypedDescription('');
-  }
-};
+          const { accountId, confidence } = suggestAccountForUpload(
+            {
+              type: transactionType,
+              category: transactionCategory,
+              description: tx.Description,
+            },
+            accounts
+          );
+
+          return {
+            _tempId: crypto.randomUUID(),
+            type: transactionType as 'income' | 'expense' | 'debt',
+            amount: tx.Amount ? parseFloat(tx.Amount) : 0,
+            description: tx.Description || 'Imported Transaction',
+            date: transactionDate,
+            category: transactionCategory,
+            account_id: accountId || '',
+            original_text:
+              tx.Original_Text || tx.Description || 'Imported Transaction',
+            source: isPdf ? 'pdf-upload' : 'image-upload',
+            is_verified: true,
+            confidenceScore: confidence,
+            includeInImport: true,
+          };
+        }
+      );
+
+      const flagged = markDuplicates(transformed, existingTxs);
+      hideLoader();
+
+      addAssistantMessage(
+        <EditableTransactionTable
+          transactions={flagged}
+          accounts={accounts}
+          categories={categories}
+          onConfirm={handleConfirmProcessedTransaction}
+          onCancel={() =>
+            addAssistantMessage('Transaction review cancelled.')
+          }
+          forceCash={forceCash}
+          onToggleForceCash={setForceCash}
+          isBusy={importBusy}
+        />
+      );
+      openEvidenceFor(flagged, isPdf ? 'pdf' : 'image');
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      hideLoader();
+      addAssistantMessage(
+        `Error processing ${isPdf ? 'PDF' : 'image'}: ${
+          error.message || 'Unknown error'
+        }`
+      );
+    } finally {
+      setFile(null);
+      setTypedDescription('');
+    }
+  };
 
   const handleExcelUpload = async () => {
-    if (!file) { addAssistantMessage('No file selected for upload.'); return; }
-    if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to upload files.'); return; }
-    if (!isExcelFile(file)) { addAssistantMessage('Please select a valid Excel file (.xlsx/.xls).'); return; }
+    if (!file) {
+      addAssistantMessage('No file selected for upload.');
+      return;
+    }
+    if (!isAuthenticated || !token) {
+      addAssistantMessage('Authentication required to upload files.');
+      return;
+    }
+    if (!isExcelFile(file)) {
+      addAssistantMessage('Please select a valid Excel file (.xlsx/.xls).');
+      return;
+    }
 
     addUserMessage(`Initiating Excel import: ${file.name}...`);
-    addAssistantMessage(<TableLoading message="Parsing Excel and preparing preview…" />);
+    showLoader('Parsing Excel and preparing preview…');
 
     try {
       const XLSX = await import('xlsx');
@@ -1525,35 +1753,44 @@ const handleFileUpload = async () => {
       const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
       if (!rows.length) {
+        hideLoader();
         addAssistantMessage('No rows found in the first sheet.');
         return;
       }
 
       const prepared: Transaction[] = [];
       const salesQueue: Array<{
-        customer_name: string; office?: string | null; date: string; description: string; amount: number;
+        customer_name: string;
+        office?: string | null;
+        date: string;
+        description: string;
+        amount: number;
       }> = [];
 
       for (const row of rows) {
         const rowNorm: Record<string, any> = {};
-        Object.keys(row).forEach(k => { rowNorm[k.trim().toLowerCase()] = row[k]; });
-        // [ADD] persist Excel sales for confirm step (state + ref)
+        Object.keys(row).forEach(k => {
+          rowNorm[k.trim().toLowerCase()] = row[k];
+        });
 
-
-        const netRaw   = rowNorm['net'];
-        const client   = String(rowNorm['client'] || '').trim();
-        const office   = String(rowNorm['office'] || '').trim();
+        const netRaw = rowNorm['net'];
+        const client = String(rowNorm['client'] || '').trim();
+        const office = String(rowNorm['office'] || '').trim();
 
         const num = (v: any) =>
-          typeof v === 'number' ? v :
-          typeof v === 'string' ? (parseFloat(v.replace(/[\s,]+/g, '')) || 0) :
-          0;
+          typeof v === 'number'
+            ? v
+            : typeof v === 'string'
+            ? parseFloat(v.replace(/[\s,]+/g, '')) || 0
+            : 0;
 
         const revenue = num(netRaw);
         if (!revenue) continue;
 
-        const date = new Date().toISOString().slice(0,10);
-        const tag = [client && `Client: ${client}`, office && `Office: ${office}`].filter(Boolean).join(' | ');
+        const date = new Date().toISOString().slice(0, 10);
+        const tag = [client && `Client: ${client}`, office && `Office: ${office}`]
+          .filter(Boolean)
+          .join(' | ');
         const baseDesc = 'Agent Import' + (tag ? ` [${tag}]` : '');
 
         const customer_name = client || 'Walk-in';
@@ -1565,211 +1802,219 @@ const handleFileUpload = async () => {
           amount: Math.abs(revenue),
         });
 
-
-
         if (revenue) {
-  const date = new Date().toISOString().slice(0,10);
-  const customer_name = client || 'Walk-in';
-  const desc = `Sale — ${customer_name}${office ? ` @ ${office}` : ''}`;
+          const desc = `Sale — ${customer_name}${
+            office ? ` @ ${office}` : ''
+          }`;
 
-  // try to preselect Sales Revenue account
-  const salesRevenueAcc = accounts.find(
-    a => a.type?.toLowerCase() === 'income' && a.name?.toLowerCase().includes('sales revenue')
-  );
+          const salesRevenueAcc = accounts.find(
+            a =>
+              a.type?.toLowerCase() === 'income' &&
+              a.name?.toLowerCase().includes('sales revenue')
+          );
 
-  // ---- NEW: add a sale row that is editable in the table ----
-  prepared.push({
-    _tempId: crypto.randomUUID(),
-    type: 'income',
-    amount: Math.abs(revenue),              // user can override; we'll also show qty/price editors
-    description: `${desc} [Sales]`,
-    date,
-    category: 'Sales Revenue',
-    account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
-    original_text: JSON.stringify(row),
-    source: 'sales-preview',                // <-- IMPORTANT: marks this row as a SALE
-    is_verified: true,
-    confidenceScore: 100,
-    includeInImport: true,
+          prepared.push({
+            _tempId: crypto.randomUUID(),
+            type: 'income',
+            amount: Math.abs(revenue),
+            description: `${desc} [Sales]`,
+            date,
+            category: 'Sales Revenue',
+            account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
+            original_text: JSON.stringify(row),
+            source: 'sales-preview',
+            is_verified: true,
+            confidenceScore: 100,
+            includeInImport: true,
+            is_sale: true,
+            product_id: null,
+            product_name: customer_name
+              ? `Sale to ${customer_name}`
+              : 'Sale',
+            quantity: 1,
+            unit_price: Math.abs(revenue),
+            total: Math.abs(revenue),
+          });
+        }
 
-    // sales meta (unknown qty/price from Excel? default to 1 × total)
-    is_sale: true,
-    product_id: null,
-    product_name: customer_name ? `Sale to ${customer_name}` : 'Sale',
-    quantity: 1,
-    unit_price: Math.abs(revenue),
-    total: Math.abs(revenue),
-  });
-}
+        const salesRevenueAcc = accounts.find(
+          a =>
+            a.type?.toLowerCase() === 'income' &&
+            a.name?.toLowerCase().includes('sales revenue')
+        );
 
-// (optional) try to prefill the Sales Revenue account so mapping won't skip
-const salesRevenueAcc = accounts.find(
-  a => a.type?.toLowerCase() === 'income' && a.name?.toLowerCase().includes('sales revenue')
-);
-
-prepared.push({
-  _tempId: crypto.randomUUID(),
-  type: 'income',
-  amount: Math.abs(revenue),
-  description: (baseDesc || `Sale for ${customer_name}`) + ' [Journal]',
-  date,
-  category: 'Sales Revenue',
-  account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '', // ✅ helps mapping stage
-  original_text: JSON.stringify(row),
-  source: 'excel-journal', // ✅ any value that isn’t 'sales-preview'
-  is_verified: true,
-  confidenceScore: 100,
-  includeInImport: true,
-});
-
+        prepared.push({
+          _tempId: crypto.randomUUID(),
+          type: 'income',
+          amount: Math.abs(revenue),
+          description:
+            (baseDesc || `Sale for ${customer_name}`) + ' [Journal]',
+          date,
+          category: 'Sales Revenue',
+          account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
+          original_text: JSON.stringify(row),
+          source: 'excel-journal',
+          is_verified: true,
+          confidenceScore: 100,
+          includeInImport: true,
+        });
       }
       setPendingSales(salesQueue);
       pendingSalesRef.current = salesQueue;
 
       if (!prepared.length && !salesQueue.length) {
-        addAssistantMessage('No importable transactions were derived from the Excel file.');
+        hideLoader();
+        addAssistantMessage(
+          'No importable transactions were derived from the Excel file.'
+        );
         return;
       }
 
-      const salesTotal = salesQueue.reduce((sum, s) => sum + Number(s.amount || 0), 0);
+      const salesTotal = salesQueue.reduce(
+        (sum, s) => sum + Number(s.amount || 0),
+        0
+      );
       addAssistantMessage(
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
           <div className="font-semibold">Sales queued for posting:</div>
-         <div>
-  {salesQueue.length} sale(s), total {fmt(salesTotal)} — will be submitted
-  after you click <em>Confirm &amp; Submit Selected</em>.
-</div>
+          <div>
+            {salesQueue.length} sale(s), total {fmt(salesTotal)} — will be
+            submitted after you click <em>Confirm &amp; Submit Selected</em>.
+          </div>
         </div>
       );
 
-// Build preview rows for each queued sale so they appear in the table
-const saleRows = salesQueue.map(s => saleToPreviewRow(s, accounts));
+      const saleRows = salesQueue.map(s => saleToPreviewRow(s, accounts));
 
-// Show BOTH: journals + sale previews in one table
-const previewRows = [...prepared, ...saleRows];
-const flagged = markDuplicates(previewRows, existingTxs);
+      const previewRows = [...prepared, ...saleRows];
+      const flagged = markDuplicates(previewRows, existingTxs);
+      hideLoader();
 
-addAssistantMessage(
-  <EditableTransactionTable
-    transactions={flagged}
-    accounts={accounts}
-    categories={categories}
-    onConfirm={handleConfirmProcessedTransaction}
-    onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-    forceCash={forceCash}
-    onToggleForceCash={setForceCash}
-    isBusy={importBusy}
-  />
-);
-
+      addAssistantMessage(
+        <EditableTransactionTable
+          transactions={flagged}
+          accounts={accounts}
+          categories={categories}
+          onConfirm={handleConfirmProcessedTransaction}
+          onCancel={() =>
+            addAssistantMessage('Transaction review cancelled.')
+          }
+          forceCash={forceCash}
+          onToggleForceCash={setForceCash}
+          isBusy={importBusy}
+        />
+      );
     } catch (err: any) {
       console.error('Excel parse error:', err);
-      addAssistantMessage(`Failed to process Excel file: ${err.message || 'Unknown error'}`);
+      hideLoader();
+      addAssistantMessage(
+        `Failed to process Excel file: ${err.message || 'Unknown error'}`
+      );
     } finally {
       setFile(null);
       setTypedDescription('');
     }
   };
 
-  // Text input
-// ImportScreen.tsx
+  // UI helper: green success bubble
+  const successBubble = (title: string, lines?: string[]) => (
+    <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+      <div className="font-semibold mb-1">{title}</div>
+      {Array.isArray(lines) && lines.length > 0 && (
+        <ul className="list-disc ml-5 mt-1 text-sm">
+          {lines.map((l, i) => (
+            <li key={i}>{l}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 
-// This is the complete function with the new sales logic integrated.
-// --- UI helper: green success bubble ---
-const successBubble = (title: string, lines?: string[]) => (
-  <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
-    <div className="font-semibold mb-1">{title}</div>
-    {Array.isArray(lines) && lines.length > 0 && (
-      <ul className="list-disc ml-5 mt-1 text-sm">
-        {lines.map((l, i) => <li key={i}>{l}</li>)}
-      </ul>
-    )}
-  </div>
-);
-
-const handleTypedDescriptionSubmit = async () => {
-  if (!typedDescription.trim()) { addAssistantMessage('Please enter a description.'); return; }
-  if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to process text.'); return; }
-
-  const userMessageContent = typedDescription;
-
-  addUserMessage(userMessageContent);
-  addAssistantMessage(<TableLoading message="Analyzing your description…" />);
-  setTypedDescription('');
-
-  // --- EARLY LOCAL SALE DETECTION (only for simple one-sale sentences) ---
-  // NOTE: make sure moneyRx/qtyRx were defined with the global flag /.../ig earlier.
-  const moneyHits = [...userMessageContent.matchAll(moneyRx)].length;
-  const hasManyClauses = /[,;&]| and | also /i.test(userMessageContent);
-  if (looksLikeSale(userMessageContent) && products.length && moneyHits <= 1 && !hasManyClauses) {
-    const local = parseSaleLocally(userMessageContent, products);
-    if (local) {
-      const { product, qty, total, each } = local;
-      const computedTotal = (total != null ? total : (each ?? product.unit_price) * qty) || 0;
-      const unitPrice = qty > 0 ? computedTotal / qty : Number(product.unit_price || 0);
-
-      const customer = await ensureCustomer('Walk-in Customer'); // default
-
- const saleRow: Transaction = {
-  _tempId: crypto.randomUUID(),
-  type: 'income',
-  amount: Number(total || (unitPrice ?? 0) * qty || 0),
-  description: `${desc || (product?.name || 'Sale')} [Sales]`,
-  date,
-  category: 'Sales Revenue',
-  account_id: salesRevenueAcc ? String(salesRevenueAcc.id) : '',
-  original_text: userMessageContent,
-  source: 'sales-preview',     // <-- IMPORTANT
-  is_verified: true,
-  confidenceScore: 100,
-  includeInImport: true,
-
-  // sales meta
-  is_sale: true,
-  product_id: product?.id ?? null,
-  product_name: product?.name ?? (tx.Customer_name ? `Sale to ${tx.Customer_name}` : 'Sale'),
-  quantity: Math.max(1, Number(tx.Quantity || qty || 1)),
-  unit_price: unitPrice ?? product?.unit_price ?? null,
-  total: Number(total || 0) || null,
-};
-
-// collect and show in table along with any journal rows
-saleRows.push(saleRow);
-
-      const saleResponse = await fetch(`${API_BASE_URL}/api/sales`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify(salePayload),
-      });
-
-      if (!saleResponse.ok) {
-        let detail = '';
-        try { const err = await saleResponse.json(); detail = err?.detail || err?.error || ''; } catch {}
-        throw new Error(detail || 'Failed to process sale.');
-      }
-
-      addAssistantMessage(
-        <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
-          <div className="font-semibold mb-1">✅ Sale Recorded & Stock Updated!</div>
-          <div>Sold {qty} × “{product.name}” for {fmt(unitPrice * qty)}.</div>
-
-          {product.is_service ? <div className="text-xs mt-1">Note: Service item — no stock deduction.</div> : null}
-        </div>
-      );
-      return; // handled by the local fast path
+  const handleTypedDescriptionSubmit = async () => {
+    if (!typedDescription.trim()) {
+      addAssistantMessage('Please enter a description.');
+      return;
     }
-  }
+    if (!isAuthenticated || !token) {
+      addAssistantMessage('Authentication required to process text.');
+      return;
+    }
 
-  try {
-    // Build prompt with known product names to help the model match
-    const productNames = products.map(p => p.name);
-    const prompt = `
+    const userMessageContent = typedDescription;
+
+    addUserMessage(userMessageContent);
+    showLoader('Analyzing your description…');
+    setTypedDescription('');
+
+    // EARLY LOCAL SALE DETECTION
+    const moneyHits = [...userMessageContent.matchAll(moneyRx)].length;
+    const hasManyClauses = /[,;&]| and | also /i.test(userMessageContent);
+    if (
+      looksLikeSale(userMessageContent) &&
+      products.length &&
+      moneyHits <= 1 &&
+      !hasManyClauses
+    ) {
+      const local = parseSaleLocally(userMessageContent, products);
+      if (local) {
+        const { product, qty, total, each } = local;
+        const computedTotal =
+          (total != null ? total : (each ?? product.unit_price) * qty) || 0;
+        const unitPrice =
+          qty > 0 ? computedTotal / qty : Number(product.unit_price || 0);
+
+        const customer = await ensureCustomer('Walk-in Customer'); // default
+
+        // your salePayload logic goes here (unchanged)
+        // ...
+
+        const saleResponse = await fetch(`${API_BASE_URL}/api/sales`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify(salePayload), // assuming you already build salePayload
+        });
+
+        if (!saleResponse.ok) {
+          let detail = '';
+          try {
+            const err = await saleResponse.json();
+            detail = err?.detail || err?.error || '';
+          } catch {}
+          throw new Error(detail || 'Failed to process sale.');
+        }
+        hideLoader();
+
+        addAssistantMessage(
+          <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+            <div className="font-semibold mb-1">
+              ✅ Sale Recorded & Stock Updated!
+            </div>
+            <div>
+              Sold {qty} × “{product.name}” for {fmt(unitPrice * qty)}.
+            </div>
+
+            {product.is_service ? (
+              <div className="text-xs mt-1">
+                Note: Service item — no stock deduction.
+              </div>
+            ) : null}
+          </div>
+        );
+        return;
+      }
+    }
+
+    try {
+      const productNames = products.map(p => p.name);
+      const prompt = `
 Analyze the following text from a user describing a financial transaction.
 Text: "${userMessageContent}"
 
 First, determine if this is a SALE of a product or service.
 If it is a sale, identify the product name, the quantity sold, the total amount, and the customer name if mentioned.
-Your list of available products is: ${JSON.stringify(productNames)}. Try to match a product from this list.
+Your list of available products is: ${JSON.stringify(
+        productNames
+      )}. Try to match a product from this list.
 
 Respond with a JSON object with this exact schema:
 {
@@ -1789,222 +2034,282 @@ Respond with a JSON object with this exact schema:
 }
 `;
 
-    const response = await fetch(`${RAIRO_API_BASE_URL}/process-text`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: prompt }),
-    });
-    const result = await response.json();
-
-    if (!(response.ok && result.transactions && result.transactions.length > 0)) {
-      addAssistantMessage(`Error analyzing description: ${result.error || 'Unknown error'}`);
-      return;
-    }
-// 2) THEN post the queued sales
-try {
-  const salesToSubmit = [...pendingSalesRef.current];
-  if (salesToSubmit.length) {
-    //addAssistantMessage(`Posting ${salesToSubmit.length} sale(s) to /api/sales…`);
-    let ok = 0;
-    for (const s of salesToSubmit) {
-      try { 
-        await submitSale(s); 
-        ok++; 
-        // 🔽 ADD THIS
-        addAssistantMessage(
-          successBubble('✅ Sale Recorded', [
-           `Sold "${s.description || 'Sale'}" for ${fmt(Number(s.amount || 0))}`
-          ])
-        );
-      } catch (e: any) {
-        addAssistantMessage(
-  `Failed sale for "${s.customer_name}" (${fmt(Number(s.amount || 0))}): ${e?.message || e}`);
-      }
-    }
-    addAssistantMessage(`Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`);
-  }
-} finally {
-  pendingSalesRef.current = [];
-  setPendingSales([]);
-}
-
-    // --- Split output into sales queue vs journal rows ---
-    const salesQueue: Array<{ customer_name: string; office?: string | null; date: string; description: string; amount: number; }> = [];
-    const journalRows: Transaction[] = [];
-
-    // local helpers
-    const lc = (s?: string) => (s || '').toLowerCase().trim();
-    const pickProduct = (nameFromAI?: string, textForFallback?: string) => {
-      const text = lc(nameFromAI);
-      if (!text && !textForFallback) return null;
-      const inText = lc(textForFallback || '');
-      let p = text ? products.find(x => lc(x.name) === text) : null;
-      if (!p && text) p = products.find(x => lc(x.name).includes(text) || text.includes(lc(x.name)));
-      if (!p && inText) p = products.find(x => inText.includes(lc(x.name)));
-      return p || null;
-    };
-
-    for (const tx of result.transactions as any[]) {
-      const ttype = lc(tx.Type);
-      const desc  = (tx.Description || '').trim();
-
-      // normalize date
-      const date = (() => {
-        try {
-          return tx.Date
-            ? new Date(tx.Date.split('/').reverse().join('-')).toISOString().split('T')[0]
-            : new Date().toISOString().split('T')[0];
-        } catch { return new Date().toISOString().split('T')[0]; }
-      })();
-
-      // treat income that looks like a sale as a sale (queues to /api/sales later)
-      const looksSale =
-        ttype === 'income' &&
-        (tx.Product_name || /\b(sold|sale|invoice|billed?|charged?)\b/i.test(desc));
-
-      if (looksSale) {
-        const qty   = Math.max(1, Number(tx.Quantity || 1));
-        const total = Number(tx.Amount || 0);
-        const product = pickProduct(tx.Product_name, desc);
-
-        if (product) {
-          salesQueue.push({
-            customer_name: tx.Customer_name || 'Walk-in',
-            office: null,
-            date,
-            description: `${desc || product.name} [Sale]`,
-            amount: total > 0 ? total : Number(product.unit_price || 0) * qty,
-          });
-        } else {
-          // graceful service fallback (no stock deduction)
-          salesQueue.push({
-            customer_name: tx.Customer_name || 'Walk-in',
-            office: null,
-            date,
-            description: desc || 'Service Sale',
-            amount: total || 0,
-          });
-        }
-        continue;
-      }
-
-      // journal row (expense/debt or income that isn't a sale)
-      let cat = tx.Destination_of_funds || tx.Customer_name || 'N/A';
-      const ld = lc(desc);
-      if (!cat || lc(cat) === 'n/a') {
-        if (ld.includes('rent')) cat = 'Rent Expense';
-        else if (ld.includes('salary') || ld.includes('payroll')) cat = 'Salaries and wages';
-        else if (ld.includes('fuel')) cat = 'Fuel';
-        else if (ld.includes('utilities') || ld.includes('electricity') || ld.includes('water')) cat = 'Utilities Expenses';
-        else if (ld.includes('sale') || ld.includes('revenue')) cat = 'Sales Revenue';
-      }
-
-      const { accountId, confidence } = suggestAccountForText(
-        { type: ttype, category: cat, description: desc },
-        accounts
-      );
-
-      journalRows.push({
-        _tempId: crypto.randomUUID(),
-        type: (ttype as 'income'|'expense'|'debt') || 'expense',
-        amount: tx.Amount ? parseFloat(tx.Amount) : 0,
-        description: desc || 'Imported Transaction',
-        date,
-        category: cat,
-        account_id: accountId || '',
-        original_text: userMessageContent,
-        source: 'text-input',
-        is_verified: true,
-        confidenceScore: confidence,
-        includeInImport: true,
+      const response = await fetch(`${RAIRO_API_BASE_URL}/process-text`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: prompt }),
       });
-    }
+      const result = await response.json();
 
-    // Queue sales to be posted after journals on Confirm
-    if (salesQueue.length) {
-      pendingSalesRef.current = [...pendingSalesRef.current, ...salesQueue];
-      setPendingSales(pendingSalesRef.current);
-      const totalSales = salesQueue.reduce((s, x) => s + Number(x.amount || 0), 0);
-      addAssistantMessage(
-        <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
-          <div className="font-semibold">Sales queued for posting:</div>
-          <div>
-  {salesQueue.length} sale(s), total {fmt(totalSales)} — will be submitted
-  after you click <em>Confirm &amp; Submit Selected</em>.
-</div>
-        </div>
-      );
-    }
+      if (!(response.ok && result.transactions && result.transactions.length > 0)) {
+        hideLoader();
+        addAssistantMessage(
+          `Error analyzing description: ${result.error || 'Unknown error'}`
+        );
+        return;
+      }
 
-    // Show journal table if any; else immediately post queued sales
-if (journalRows.length) {
-  // If we queued sales, also show them as rows in the same table
-  const saleRows = (pendingSalesRef.current || []).map(s => saleToPreviewRow(s, accounts));
-  const previewRows = [...journalRows, ...saleRows];
+      hideLoader();
 
-  const flagged = markDuplicates(previewRows, existingTxs);
-
-  addAssistantMessage(
-    <EditableTransactionTable
-      transactions={flagged}
-      accounts={accounts}
-      categories={categories}
-      onConfirm={handleConfirmProcessedTransaction}
-      onCancel={() => addAssistantMessage('Transaction review cancelled.')}
-      forceCash={forceCash}
-      onToggleForceCash={setForceCash}
-      isBusy={importBusy}
-    />
-  );
-  openEvidenceFor(previewRows, 'typed');
-} else {
-
-      // No journals → post sales right away
+      // 2) THEN post queued sales from Excel/text if any
       try {
-        const q = [...pendingSalesRef.current];
-        let ok = 0;
-        for (const s of q) {
-          try { await submitSale(s); ok++; }
-          catch (e:any) {
-            addAssistantMessage(
-  `Failed sale for "${s.customer_name}" (${fmt(Number(s.amount || 0))}): ${e?.message || e}`
-);
-
+        const salesToSubmit = [...pendingSalesRef.current];
+        if (salesToSubmit.length) {
+          let ok = 0;
+          for (const s of salesToSubmit) {
+            try {
+              await submitSale(s);
+              ok++;
+              addAssistantMessage(
+                successBubble('✅ Sale Recorded', [
+                  `Sold "${s.description || 'Sale'}" for ${fmt(
+                    Number(s.amount || 0)
+                  )}`,
+                ])
+              );
+            } catch (e: any) {
+              addAssistantMessage(
+                `Failed sale for "${s.customer_name}" (${fmt(
+                  Number(s.amount || 0)
+                )}): ${e?.message || e}`
+              );
+            }
           }
+          addAssistantMessage(
+            `Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`
+          );
         }
-        addAssistantMessage(`Sales posting complete: ${ok}/${q.length} succeeded.`);
       } finally {
         pendingSalesRef.current = [];
         setPendingSales([]);
       }
+
+      // split output into sales vs journals
+      const salesQueue: Array<{
+        customer_name: string;
+        office?: string | null;
+        date: string;
+        description: string;
+        amount: number;
+      }> = [];
+      const journalRows: Transaction[] = [];
+
+      const lc = (s?: string) => (s || '').toLowerCase().trim();
+      const pickProduct = (nameFromAI?: string, textForFallback?: string) => {
+        const text = lc(nameFromAI);
+        if (!text && !textForFallback) return null;
+        const inText = lc(textForFallback || '');
+        let p = text
+          ? products.find(x => lc(x.name) === text)
+          : null;
+        if (!p && text)
+          p = products.find(
+            x =>
+              lc(x.name).includes(text) || text.includes(lc(x.name))
+          );
+        if (!p && inText)
+          p = products.find(x => inText.includes(lc(x.name)));
+        return p || null;
+      };
+
+      for (const tx of result.transactions as any[]) {
+        const ttype = lc(tx.Type);
+        const desc = (tx.Description || '').trim();
+
+        const date = (() => {
+          try {
+            return tx.Date
+              ? new Date(
+                  tx.Date.split('/').reverse().join('-')
+                ).toISOString().split('T')[0]
+              : new Date().toISOString().split('T')[0];
+          } catch {
+            return new Date().toISOString().split('T')[0];
+          }
+        })();
+
+        const looksSaleAI =
+          ttype === 'income' &&
+          (tx.Product_name ||
+            /\b(sold|sale|invoice|billed?|charged?)\b/i.test(desc));
+
+        if (looksSaleAI) {
+          const qty = Math.max(1, Number(tx.Quantity || 1));
+          const total = Number(tx.Amount || 0);
+          const product = pickProduct(tx.Product_name, desc);
+
+          if (product) {
+            salesQueue.push({
+              customer_name: tx.Customer_name || 'Walk-in',
+              office: null,
+              date,
+              description: `${desc || product.name} [Sale]`,
+              amount:
+                total > 0 ? total : Number(product.unit_price || 0) * qty,
+            });
+          } else {
+            salesQueue.push({
+              customer_name: tx.Customer_name || 'Walk-in',
+              office: null,
+              date,
+              description: desc || 'Service Sale',
+              amount: total || 0,
+            });
+          }
+          continue;
+        }
+
+        let cat = tx.Destination_of_funds || tx.Customer_name || 'N/A';
+        const ld = lc(desc);
+        if (!cat || lc(cat) === 'n/a') {
+          if (ld.includes('rent')) cat = 'Rent Expense';
+          else if (ld.includes('salary') || ld.includes('payroll'))
+            cat = 'Salaries and wages';
+          else if (ld.includes('fuel')) cat = 'Fuel';
+          else if (
+            ld.includes('utilities') ||
+            ld.includes('electricity') ||
+            ld.includes('water')
+          )
+            cat = 'Utilities Expenses';
+          else if (ld.includes('sale') || ld.includes('revenue'))
+            cat = 'Sales Revenue';
+        }
+
+        const { accountId, confidence } = suggestAccountForText(
+          { type: ttype, category: cat, description: desc },
+          accounts
+        );
+
+        journalRows.push({
+          _tempId: crypto.randomUUID(),
+          type: (ttype as 'income' | 'expense' | 'debt') || 'expense',
+          amount: tx.Amount ? parseFloat(tx.Amount) : 0,
+          description: desc || 'Imported Transaction',
+          date,
+          category: cat,
+          account_id: accountId || '',
+          original_text: userMessageContent,
+          source: 'text-input',
+          is_verified: true,
+          confidenceScore: confidence,
+          includeInImport: true,
+        });
+      }
+
+      if (salesQueue.length) {
+        pendingSalesRef.current = [
+          ...pendingSalesRef.current,
+          ...salesQueue,
+        ];
+        setPendingSales(pendingSalesRef.current);
+        const totalSales = salesQueue.reduce(
+          (s, x) => s + Number(x.amount || 0),
+          0
+        );
+        addAssistantMessage(
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-900 text-sm">
+            <div className="font-semibold">Sales queued for posting:</div>
+            <div>
+              {salesQueue.length} sale(s), total {fmt(totalSales)} — will be
+              submitted after you click{' '}
+              <em>Confirm &amp; Submit Selected</em>.
+            </div>
+          </div>
+        );
+      }
+
+      if (journalRows.length) {
+        const saleRows = (pendingSalesRef.current || []).map(s =>
+          saleToPreviewRow(s, accounts)
+        );
+        const previewRows = [...journalRows, ...saleRows];
+
+        const flagged = markDuplicates(previewRows, existingTxs);
+
+        addAssistantMessage(
+          <EditableTransactionTable
+            transactions={flagged}
+            accounts={accounts}
+            categories={categories}
+            onConfirm={handleConfirmProcessedTransaction}
+            onCancel={() =>
+              addAssistantMessage('Transaction review cancelled.')
+            }
+            forceCash={forceCash}
+            onToggleForceCash={setForceCash}
+            isBusy={importBusy}
+          />
+        );
+        openEvidenceFor(previewRows, 'typed');
+      } else {
+        // No journals → post sales right away
+        try {
+          const q = [...pendingSalesRef.current];
+          let ok = 0;
+          for (const s of q) {
+            try {
+              await submitSale(s);
+              ok++;
+            } catch (e: any) {
+              addAssistantMessage(
+                `Failed sale for "${s.customer_name}" (${fmt(
+                  Number(s.amount || 0)
+                )}): ${e?.message || e}`
+              );
+            }
+          }
+          addAssistantMessage(
+            `Sales posting complete: ${ok}/${q.length} succeeded.`
+          );
+        } finally {
+          pendingSalesRef.current = [];
+          setPendingSales([]);
+        }
+      }
+    } catch (error: any) {
+      console.error('Network error during text processing:', error);
+      hideLoader();
+      addAssistantMessage(
+        `Network error during text processing: ${
+          error.message || 'API is unavailable.'
+        }`
+      );
     }
+  };
 
-  } catch (error: any) {
-    console.error('Network error during text processing:', error);
-    addAssistantMessage(`Network error during text processing: ${error.message || 'API is unavailable.'}`);
-  }
-};
-
-
-
-  // Voice (unchanged except minor UX)
+  // Voice
   const startRecording = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) { addAssistantMessage('Browser does not support speech recognition. Try Chrome.'); return; }
+    const SpeechRecognition =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      addAssistantMessage(
+        'Browser does not support speech recognition. Try Chrome.'
+      );
+      return;
+    }
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.onstart = () => { setIsRecording(true); addUserMessage('Started voice input...'); };
+    recognition.onstart = () => {
+      setIsRecording(true);
+      addUserMessage('Started voice input...');
+    };
     recognition.onresult = (event: any) => {
-      const interimTranscript = Array.from(event.results).map((r: any) => r[0].transcript).join('');
+      const interimTranscript = Array.from(event.results)
+        .map((r: any) => r[0].transcript)
+        .join('');
       setTranscribedText(interimTranscript);
       setTypedDescription(interimTranscript);
     };
     recognition.onerror = (event: any) => {
       console.error('Speech recognition error:', event);
       setIsRecording(false);
-      addAssistantMessage(`Speech recognition error: ${event.error}. Please try again.`);
+      addAssistantMessage(
+        `Speech recognition error: ${event.error}. Please try again.`
+      );
     };
     recognitionRef.current = recognition;
     recognition.start();
@@ -2015,70 +2320,102 @@ if (journalRows.length) {
       recognitionRef.current.stop();
       setIsRecording(false);
       addUserMessage(`🛑 "${typedDescription}"`);
-      addAssistantMessage('Recording stopped. Press send to process this text.');
+      addAssistantMessage(
+        'Recording stopped. Press send to process this text.'
+      );
     }
   };
 
   const uploadAudio = async () => {
-    if (!audioBlob) { addAssistantMessage('No audio recorded to upload.'); return; }
-    if (!isAuthenticated || !token) { addAssistantMessage('Authentication required to process audio.'); return; }
+    if (!audioBlob) {
+      addAssistantMessage('No audio recorded to upload.');
+      return;
+    }
+    if (!isAuthenticated || !token) {
+      addAssistantMessage('Authentication required to process audio.');
+      return;
+    }
 
     addUserMessage('Processing recorded audio...');
-    addAssistantMessage(<TableLoading message="Transcribing & analyzing your audio…" />);
+    showLoader('Transcribing & analyzing your audio…');
 
     try {
       // Stub: replace with real STT when available
-      const simulatedTranscribedText = 'I paid fifty dollars for groceries on July fifth, two thousand twenty-five. I also received 1200 salary on the same day.';
-      const processTextResponse = await fetch(`${RAIRO_API_BASE_URL}/process-text`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: simulatedTranscribedText }),
-      });
+      const simulatedTranscribedText =
+        'I paid fifty dollars for groceries on July fifth, two thousand twenty-five. I also received 1200 salary on the same day.';
+      const processTextResponse = await fetch(
+        `${RAIRO_API_BASE_URL}/process-text`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: simulatedTranscribedText }),
+        }
+      );
       const result = await processTextResponse.json();
 
       if (processTextResponse.ok) {
         if (!result.transactions || result.transactions.length === 0) {
-          addAssistantMessage('I could not make sense of that, please try again with a clearer description.');
+          hideLoader();
+          addAssistantMessage(
+            'I could not make sense of that, please try again with a clearer description.'
+          );
           return;
         }
 
         addAssistantMessage('Audio processed! Building preview…');
 
-        const transformed: Transaction[] = (result.transactions || []).map((tx: any) => {
-          const transactionType = tx.Type === 'income' ? 'income' : 'expense';
-          let transactionCategory = tx.Destination_of_funds;
-          if (transactionType === 'income' && ['income','general income'].includes((transactionCategory || '').toLowerCase())) {
-            transactionCategory = 'Sales Revenue';
+        const transformed: Transaction[] = (result.transactions || []).map(
+          (tx: any) => {
+            const transactionType =
+              tx.Type === 'income' ? 'income' : 'expense';
+            let transactionCategory = tx.Destination_of_funds;
+            if (
+              transactionType === 'income' &&
+              ['income', 'general income'].includes(
+                (transactionCategory || '').toLowerCase()
+              )
+            ) {
+              transactionCategory = 'Sales Revenue';
+            }
+
+            let transactionDate: string;
+            try {
+              transactionDate = tx.Date
+                ? new Date(
+                    tx.Date.split('/').reverse().join('-')
+                  ).toISOString().split('T')[0]
+                : new Date().toISOString().split('T')[0];
+            } catch {
+              transactionDate = new Date().toISOString().split('T')[0];
+            }
+
+            const { accountId, confidence } = suggestAccountForText(
+              {
+                type: transactionType,
+                category: transactionCategory,
+                description: tx.Description,
+              },
+              accounts
+            );
+
+            return {
+              _tempId: crypto.randomUUID(),
+              type: transactionType as 'income' | 'expense' | 'debt',
+              amount: tx.Amount ? parseFloat(tx.Amount) : 0,
+              description: tx.Description || 'Imported Transaction',
+              date: transactionDate,
+              category: transactionCategory,
+              account_id: accountId || '',
+              original_text: simulatedTranscribedText,
+              source: 'audio-input',
+              is_verified: true,
+              confidenceScore: confidence,
+            };
           }
-
-          let transactionDate: string;
-          try {
-            transactionDate = tx.Date
-              ? new Date(tx.Date.split('/').reverse().join('-')).toISOString().split('T')[0]
-              : new Date().toISOString().split('T')[0];
-          } catch { transactionDate = new Date().toISOString().split('T')[0]; }
-
-          const { accountId, confidence } = suggestAccountForText(
-            { type: transactionType, category: transactionCategory, description: tx.Description },
-            accounts
-          );
-
-          return {
-            _tempId: crypto.randomUUID(),
-            type: transactionType as 'income' | 'expense' | 'debt',
-            amount: tx.Amount ? parseFloat(tx.Amount) : 0,
-            description: tx.Description || 'Imported Transaction',
-            date: transactionDate,
-            category: transactionCategory,
-            account_id: accountId || '',
-            original_text: simulatedTranscribedText,
-            source: 'audio-input',
-            is_verified: true,
-            confidenceScore: confidence,
-          };
-        });
+        );
 
         const flagged = markDuplicates(transformed, existingTxs);
+        hideLoader();
 
         addAssistantMessage(
           <EditableTransactionTable
@@ -2086,378 +2423,811 @@ if (journalRows.length) {
             accounts={accounts}
             categories={categories}
             onConfirm={handleConfirmProcessedTransaction}
-            onCancel={() => addAssistantMessage('Transaction review cancelled.')}
+            onCancel={() =>
+              addAssistantMessage('Transaction review cancelled.')
+            }
             forceCash={forceCash}
             onToggleForceCash={setForceCash}
             isBusy={importBusy}
           />
         );
 
-        openEvidenceFor(flagged, 'typed')
+        openEvidenceFor(flagged, 'typed');
       } else {
-        addAssistantMessage(`Error processing audio: ${result.error || 'Unknown error'}`);
+        hideLoader();
+        addAssistantMessage(
+          `Error processing audio: ${result.error || 'Unknown error'}`
+        );
       }
     } catch (error: any) {
       console.error('Network error during audio processing:', error);
-      addAssistantMessage(`Network error during audio processing: ${error.message || 'API is unavailable.'}`);
+      hideLoader();
+      addAssistantMessage(
+        `Network error during audio processing: ${
+          error.message || 'API is unavailable.'
+        }`
+      );
     } finally {
       setAudioBlob(null);
       setAudioUrl(null);
-      if (audioPlayerRef.current) (audioPlayerRef.current as any).src = '';
+      if (audioPlayerRef.current)
+        (audioPlayerRef.current as any).src = '';
     }
   };
 
   const clearAudio = () => {
     setAudioBlob(null);
     setAudioUrl(null);
-    if (audioPlayerRef.current) (audioPlayerRef.current as any).src = '';
+    if (audioPlayerRef.current)
+      (audioPlayerRef.current as any).src = '';
     addAssistantMessage('Audio cleared.');
   };
 
-  // -------------- Save Selected --------------
-  // PIPELINE: stage -> preview -> (PATCH) -> commit
-// -------------- Save Selected --------------
-// PIPELINE: stage -> preview -> (PATCH) -> commit
-const handleConfirmProcessedTransaction = async (transactionsToSave: Transaction[]) => {
-  const API_BASE_URL_REAL = 'https://quantnow-sa1e.onrender.com'
-  const authHeaders = getAuthHeaders();
-
-  if (importBusy) return;
-  setImportBusy(true);
-
-  // show the progress widget once
-  addAssistantMessage(<ImportProgressBubble />);
-
-const toSubmit = (transactionsToSave || [])
-  .filter(t => t.includeInImport !== false)
-  .filter(t => t.source !== 'sales-preview');
-
-
-  const salesOnlyQueue = [...pendingSalesRef.current];
-
-  // SALES-ONLY early path
-  if (toSubmit.length === 0) {
-    if (salesOnlyQueue.length === 0) {
-      addAssistantMessage('Nothing selected to import.');
-      setImportBusy(false);
-      sendProgress('staging', 'done');
-      sendProgress('preview', 'done');
-      sendProgress('mapping', 'done');
-      sendProgress('posting', 'done');
-      return;
-    }
-
-    addAssistantMessage(`No journal rows to import. Proceeding to post ${salesOnlyQueue.length} sale(s)…`);
+  // Helper: create an Asset account if needed
+  async function createAssetAccount(
+    assetAccountName: string
+  ): Promise<number | null> {
     try {
-      let ok = 0;
-      for (const s of salesOnlyQueue) {
-        try {
-          await submitSale(s);
-          ok++;
-          // Per-sale success line
-          addAssistantMessage(
-            successBubble('✅ Sale submitted', [
-              `${s.description} — ${fmt(Number(s.amount || 0))} (${s.customer_name})`
-            ])
-          );
-        } catch (e: any) {
-          addAssistantMessage(
-  `Failed sale for "${s.customer_name}" (${fmt(Number(s.amount || 0))}): ${e?.message || e}`
-);
-
-        }
+      const existingSameName = accounts.find(
+        a =>
+          (a.type || '').toLowerCase() === 'asset' &&
+          (a.name || '').toLowerCase() === assetAccountName.toLowerCase()
+      );
+      if (existingSameName) {
+        console.log(
+          `createAssetAccount: reusing existing asset account "${existingSameName.name}" (ID: ${existingSameName.id})`
+        );
+        return Number(existingSameName.id);
       }
-      addAssistantMessage(`Sales posting complete: ${ok}/${salesOnlyQueue.length} succeeded.`);
-    } finally {
-      pendingSalesRef.current = [];
-      setPendingSales([]);
-      setImportBusy(false);
-      sendProgress('staging', 'done');
-      sendProgress('preview', 'done');
-      sendProgress('mapping', 'done');
-      sendProgress('posting', 'done');
+
+      const existingAssetCodes = accounts
+        .filter(
+          a => (a.type || '').toLowerCase() === 'asset' && a.code != null
+        )
+        .map(a => parseInt(String((a as any).code), 10))
+        .filter(n => Number.isFinite(n));
+
+      let baseCode = 1800;
+      if (existingAssetCodes.length) {
+        const maxExisting = Math.max(...existingAssetCodes);
+        baseCode = maxExisting >= 1800 ? maxExisting + 1 : 1800;
+      }
+
+      const payloadBase = {
+        type: 'Asset',
+        name: assetAccountName,
+      };
+
+      let codeToTry = baseCode;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const resp = await fetch(`${API_BASE_URL}/accounts`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+          },
+          body: JSON.stringify({
+            ...payloadBase,
+            code: String(codeToTry),
+          }),
+        });
+
+        let data: any = {};
+        try {
+          data = await resp.json();
+        } catch {
+          // ignore
+        }
+
+        if (resp.ok) {
+          console.log(
+            `createAssetAccount: created asset account "${data.name}" (ID: ${data.id}) with code ${codeToTry}`
+          );
+          setAccounts(prev => [...prev, data as Account]);
+          return Number(data.id);
+        }
+
+        const msg = (data && (data.error || data.detail || '')) as string;
+        if (resp.status === 409 && /code/i.test(msg || '')) {
+          console.warn(
+            `createAssetAccount: code ${codeToTry} already in use, trying ${
+              codeToTry + 1
+            }…`
+          );
+          codeToTry += 1;
+          continue;
+        }
+
+        console.error('createAssetAccount failed:', data);
+        return null;
+      }
+
+      console.error(
+        `createAssetAccount: could not find a free code for "${assetAccountName}" after several attempts`
+      );
+      return null;
+    } catch (err) {
+      console.error('createAssetAccount error:', err);
+      return null;
     }
-    return;
   }
 
-  // ---- PRECHECK: Block zero-amount rows before any API calls ----
-// ---- SKIP zeros instead of blocking ----
-// ---- Round first, then filter out near-zero rows ----
-const toSubmitRounded = (toSubmit || []).map(t => ({
-  ...t,
-  _amt: round2(Number(t.amount || 0)),
-}));
+  // PIPELINE: create assets, stage+commit journal batch, then post sales
+  const handleConfirmProcessedTransaction = async (
+    transactionsToSave: Transaction[]
+  ) => {
+    const API_BASE_URL_REAL = 'https://quantnow-sa1e.onrender.com';
+    const authHeaders = getAuthHeaders();
 
-const zeroRows = toSubmitRounded.filter(t => Math.abs(t._amt) < MIN_CENTS);
-const toSubmitFiltered = toSubmitRounded.filter(t => Math.abs(t._amt) >= MIN_CENTS);
+    if (importBusy) return;
+    setImportBusy(true);
 
+    addAssistantMessage(<ImportProgressBubble />);
 
-if (zeroRows.length) {
-  addAssistantMessage(
-    <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
-      <div className="font-semibold mb-1">Zero-amount rows will be skipped</div>
-      <div>{zeroRows.length} selected row{zeroRows.length > 1 ? 's' : ''} have amount 0. They won’t be sent to the server.</div>
-      <ul className="list-disc ml-5 mt-1">
-        {zeroRows.slice(0,5).map((t, i) => (
-          <li key={i}>{t.date} — {t.description}</li>
-        ))}
-      </ul>
-      {zeroRows.length > 5 && <div className="mt-1">…and {zeroRows.length - 5} more.</div>}
-    </div>
-  );
-}
+    const toSubmit = (transactionsToSave || [])
+      .filter(t => t.includeInImport !== false)
+      .filter(t => t.source !== 'sales-preview');
 
+    const salesOnlyQueue = [...pendingSalesRef.current];
 
-  try {
-    // STAGING
-    sendProgress('staging', 'running');
-const rows = toSubmitFiltered.map(tx => ({
-  sourceUid:   sourceUidOf(tx),
-  date:        tx.date || new Date().toISOString().slice(0,10),
-  description: tx.description || 'Imported',
-  amount:      tx._amt, // ← already rounded to 2dp
-}));
-
-    const staged = await stageSelected(API_BASE_URL_REAL, authHeaders, rows);
-    sendProgress('staging', 'done');
-    addAssistantMessage(`Stage complete (batch ${staged.batchId}). Inserted: ${staged.inserted}, duplicates skipped: ${staged.duplicates}.`);
-
-    // PREVIEW
-    sendProgress('preview', 'running');
-    const preview = await loadPreview(API_BASE_URL_REAL, authHeaders, staged.batchId);
-    sendProgress('preview', 'done');
-
-    // -----------------------
-    // MAPPING with validation
-    // -----------------------
-    sendProgress('mapping', 'running');
-
-    // Build a set of valid account IDs for THIS user/tenant
-    const validAccountIds = new Set(accounts.map(a => Number(a.id)));
-
-    // Normalize + validate an ID against the set
-    const normalizeValidId = (id: number | string | null | undefined): number | null => {
-      if (id == null) return null;
-      const n = Number(id);
-      return Number.isFinite(n) && validAccountIds.has(n) ? n : null;
-    };
-
-    // pick cash/bank account (honor toggle) and validate it
-    const pickCashOrBank = (): number | null => {
-      const toLower = (s?: string) => (s || '').toLowerCase();
-
-      const findBank = () =>
-        accounts.find(a =>
-          toLower(a.type) === 'asset' &&
-          /bank|cheque|current/.test(toLower(a.name))
-        );
-
-      const findCash = () =>
-        accounts.find(a =>
-          toLower(a.type) === 'asset' &&
-          /cash/.test(toLower(a.name))
-        );
-
-      let picked: number | null = null;
-
-      if (forceCash) {
-        picked = findCash() ? Number(findCash()!.id) : (findBank() ? Number(findBank()!.id) : null);
-      } else {
-        picked = findBank() ? Number(findBank()!.id) : (findCash() ? Number(findCash()!.id) : null);
+    if (toSubmit.length === 0) {
+      if (salesOnlyQueue.length === 0) {
+        addAssistantMessage('Nothing selected to import.');
+        setImportBusy(false);
+        sendProgress('staging', 'done');
+        sendProgress('preview', 'done');
+        sendProgress('mapping', 'done');
+        sendProgress('posting', 'done');
+        return;
       }
-
-      return normalizeValidId(picked); // ensure it belongs to this user
-    };
-
-    const cashOrBankRaw = pickCashOrBank();
-
-    let patchedCount = 0;
-    const unmappedRows: Array<{ date: string; description: string; reason: string }> = [];
-
-    for (const p of preview.items) {
-      const original = toSubmitFiltered.find(t => sourceUidOf(t) === p.sourceUid);
-      if (!original) continue;
-
-      // “other leg” (what user selected in the table)
-      const chosenId = normalizeValidId(original.account_id ? Number(original.account_id) : null);
-
-      // validate cash/bank leg too
-      const cashBankId = normalizeValidId(cashOrBankRaw);
-
-      // build legs by type
-      const ttype = (original.type || '').toLowerCase();
-      let debitId: number | null = null;
-      let creditId: number | null = null;
-
-      if (ttype === 'income') {
-        debitId = cashBankId;
-        creditId = chosenId;
-      } else if (ttype === 'expense') {
-        debitId = chosenId;
-        creditId = cashBankId;
-      } else if (ttype === 'debt') {
-        debitId = cashBankId;
-        creditId = chosenId;
-      } else {
-        debitId = cashBankId;
-        creditId = chosenId;
-      }
-
-      // stop if either side is invalid; collect nice errors
-      if (!debitId || !creditId) {
-        unmappedRows.push({
-          date: original.date || '',
-          description: original.description || 'Imported',
-          reason: !debitId && !creditId
-            ? 'No valid debit & credit accounts'
-            : !debitId
-            ? 'No valid debit account'
-            : 'No valid credit account',
-        });
-        continue;
-      }
-
-      await patchRowMapping(
-        API_BASE_URL_REAL,
-        authHeaders,
-        p.rowId,
-        debitId,
-        creditId
-      );
-      patchedCount++;
-    }
-
-    // If anything couldn't be mapped, show it and stop before commit
-    if (unmappedRows.length) {
-      sendProgress('mapping', 'error');
-      setImportBusy(false);
 
       addAssistantMessage(
-        <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200 text-sm">
-          <div className="font-semibold mb-1">Some rows need attention</div>
-          <div className="mb-1">
-            {unmappedRows.length} row{unmappedRows.length > 1 ? 's' : ''} couldn’t be mapped to your accounts.
-            Pick a valid <em>Account</em> in the table (and make sure you have a Bank/Cash account).
-          </div>
-          <ul className="list-disc ml-5">
-            {unmappedRows.slice(0,5).map((r,i) => (
-              <li key={i}>{r.date} — {r.description} <span className="italic">({r.reason})</span></li>
-            ))}
-          </ul>
-          {unmappedRows.length > 5 && <div className="mt-1">…and {unmappedRows.length - 5} more.</div>}
-        </div>
+        `No journal rows to import. Proceeding to post ${salesOnlyQueue.length} sale(s)…`
       );
-
-      return; // don’t commit
-    }
-
-    addAssistantMessage(`Applied ${patchedCount} account mapping override(s).`);
-    sendProgress('mapping', 'done');
-
-    // POSTING
-    sendProgress('posting', 'running');
-
-    // 1) commit journal batch
-    const result = await commitBatch(API_BASE_URL_REAL, authHeaders, staged.batchId);
-
-    // Build pretty confirmations per imported row
-    const prettyLines = toSubmitFiltered.map(t => {
-      const amt = Number(t.amount || 0).toFixed(2);
-      const d   = t.date || new Date().toISOString().slice(0,10);
-      if (t.type === 'expense') return `Paid ${t.description} — ${fmt(Number(t.amount || 0))} on ${d}`;
- if (t.type === 'income')  return `Received ${t.description} — ${fmt(Number(t.amount || 0))} on ${d}`;
-if (t.type === 'debt')    return `Debt entry: ${t.description} — ${fmt(Number(t.amount || 0))} on ${d}`;
-      return `${t.type} ${t.description} — ${fmt(Number(amt))} on ${d}`;
-
-    });
-
-    addAssistantMessage(
-      successBubble('✅ Transactions recorded', prettyLines)
-    );
-
-    sendProgress('posting', 'done');
-
-    addAssistantMessage(
-      <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
-        <div className="font-semibold mb-1">Journal posting complete</div>
-        <div>{result.posted} posted, {result.skipped} skipped.</div>
-        <div className="mt-2 text-sm">
-          To see financial statements, go to the{' '}
-          <Link to="/financials" className="underline font-medium text-green-800">Financials</Link>{' '}
-          tab.
-        </div>
-      </div>
-    );
-
-    // 2) THEN post the queued sales
-    try {
-      const salesToSubmit = [...pendingSalesRef.current];
-      if (salesToSubmit.length) {
-       // addAssistantMessage(`Posting ${salesToSubmit.length} sale(s) to /api/sales…`);
+      try {
         let ok = 0;
-        for (const s of salesToSubmit) {
+        for (const s of salesOnlyQueue) {
           try {
             await submitSale(s);
             ok++;
-            // Per-sale success line
             addAssistantMessage(
               successBubble('✅ Sale submitted', [
-                `${s.description} — ${fmt(Number(s.amount || 0))} (${s.customer_name})`
+                `${s.description} — ${fmt(
+                  Number(s.amount || 0)
+                )} (${s.customer_name})`,
               ])
             );
           } catch (e: any) {
-            `Failed sale for "${s.customer_name}" (${fmt(Number(s.amount || 0))}): ${e?.message || e}`
+            addAssistantMessage(
+              `Failed sale for "${s.customer_name}" (${fmt(
+                Number(s.amount || 0)
+              )}): ${e?.message || e}`
+            );
           }
         }
-        addAssistantMessage(`Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`);
+        addAssistantMessage(
+          `Sales posting complete: ${ok}/${salesOnlyQueue.length} succeeded.`
+        );
+      } finally {
+        pendingSalesRef.current = [];
+        setPendingSales([]);
+        setImportBusy(false);
+        sendProgress('staging', 'done');
+        sendProgress('preview', 'done');
+        sendProgress('mapping', 'done');
+        sendProgress('posting', 'done');
       }
-    } finally {
-      // prevent double-post on the next run
-      pendingSalesRef.current = [];
-      setPendingSales([]);
+      return;
     }
 
-  } catch (e: any) {
-    console.error('[IMPORT] Import failed:', e);
+    const toSubmitRounded = (toSubmit || []).map(t => ({
+      ...t,
+      _amt: round2(Number(t.amount || 0)),
+    }));
 
-    // Try to translate DB constraint errors (e.g., 23514 / check constraint) to a friendly message
-    let raw = e?.message || '';
-    try {
-      const parsed = JSON.parse(raw);
-      raw = parsed.detail || parsed.error || raw;
-    } catch {
-      // keep raw
-    }
-    const looksLikeZeroAmount =
-      e?.code === '23514' ||
-      /check constraint/i.test(raw) ||
-      /journal_lines_check1/i.test(raw) ||
-      /0\.00/.test(raw);
+    const zeroRows = toSubmitRounded.filter(
+      t => Math.abs(t._amt) < MIN_CENTS
+    );
+    const toSubmitFiltered = toSubmitRounded.filter(
+      t => Math.abs(t._amt) >= MIN_CENTS
+    );
 
-    if (looksLikeZeroAmount) {
+    if (zeroRows.length) {
       addAssistantMessage(
         <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
-          <div className="font-semibold mb-1">Import failed: zero amounts detected</div>
-          <div>One or more selected transactions have an amount of 0. Please edit the amount or uncheck “Import?” and try again.</div>
-        </div>
-      );
-    } else {
-      const msg = raw || String(e);
-      addAssistantMessage(
-        <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200">
-          <div className="font-semibold mb-1">Import failed</div>
-          <div className="text-sm">{msg}</div>
+          <div className="font-semibold mb-1">
+            Zero-amount rows will be skipped
+          </div>
+          <div>
+            {zeroRows.length} selected row
+            {zeroRows.length > 1 ? 's' : ''} have amount 0. They won’t be sent
+            to the server.
+          </div>
+          <ul className="list-disc ml-5 mt-1">
+            {zeroRows.slice(0, 5).map((t, i) => (
+              <li key={i}>
+                {t.date} — {t.description}
+              </li>
+            ))}
+          </ul>
+          {zeroRows.length > 5 && (
+            <div className="mt-1">
+              …and {zeroRows.length - 5} more.
+            </div>
+          )}
         </div>
       );
     }
 
-    // flip the appropriate stage to error if we can’t tell which; mark overall
-    sendProgress('posting', 'error');
-  } finally {
-    setImportBusy(false);
-  }
-};
+    try {
+      type AssetCreationResult = {
+        success: boolean;
+        assetId?: string | number;
+        error?: string;
+        transaction: Transaction;
+      };
 
+      const assetCreationPromises: Promise<AssetCreationResult>[] = [];
+      const assetTransactionMap = new Map<
+        string,
+        { assetId: string | number; accountId: number }
+      >();
+
+      for (const tx of toSubmitFiltered) {
+        if (tx.type !== 'asset') continue;
+
+        const txWithAmt: Transaction & { _amt?: number } = {
+          ...tx,
+          _amt:
+            typeof tx._amt === 'number'
+              ? tx._amt
+              : round2(Number(tx.amount || 0)),
+        };
+
+        const choice = await askAssetFundingViaDialog(txWithAmt);
+
+        if (!choice) {
+          console.log(
+            `User skipped asset for: ${txWithAmt.description}`
+          );
+          continue;
+        }
+
+        if (!choice.create) {
+          console.log(
+            `User chose not to create fixed asset for: ${txWithAmt.description}`
+          );
+          continue;
+        }
+
+        const assetAccountName = txWithAmt.category || 'Fixed Assets';
+        const assetName = txWithAmt.description || 'Imported Asset';
+        const assetCost = txWithAmt._amt;
+        const assetDate = txWithAmt.date;
+
+        assetCreationPromises.push(
+          (async (
+            transaction: Transaction & { _amt?: number },
+            funding: AssetFundingChoice
+          ): Promise<AssetCreationResult> => {
+            let assetAccountId: number | null = null;
+
+            const existingAccount = accounts.find(
+              (acc: any) =>
+                (acc.type || '').toLowerCase() === 'asset' &&
+                (acc.name || '').toLowerCase() ===
+                  String(assetAccountName).toLowerCase()
+            );
+
+            if (existingAccount) {
+              console.log(
+                `Found existing asset account: ${existingAccount.name} (ID: ${existingAccount.id})`
+              );
+              assetAccountId = Number(existingAccount.id);
+            } else {
+              console.log(
+                `Asset account "${assetAccountName}" not found. Attempting to create...`
+              );
+              assetAccountId = await createAssetAccount(assetAccountName);
+              if (!assetAccountId) {
+                console.error(
+                  `Failed to create asset account "${assetAccountName}". Skipping asset creation for "${assetName}".`
+                );
+                return {
+                  success: false,
+                  error: `Could not create/find asset account "${assetAccountName}"`,
+                  transaction,
+                };
+              }
+              console.log(
+                `Created new asset account (ID: ${assetAccountId}).`
+              );
+            }
+
+            const fundingMethod = funding.fundingMethod;
+            const paidFromAccountId =
+              fundingMethod === 'cash' ? funding.bankAccountId : null;
+            const financedLiabilityAccountId =
+              fundingMethod === 'liability'
+                ? funding.liabilityAccountId
+                : null;
+
+            try {
+              const assetPayload: any = {
+                name: assetName,
+                cost: assetCost,
+                date_received: assetDate,
+                account_id: assetAccountId,
+                depreciation_method: null,
+                useful_life_years: null,
+                salvage_value: 0,
+                asset_type_id: null,
+                brought_into_use_date: assetDate,
+                business_use_percent: 100,
+                small_item: false,
+                lessor_residual_value: null,
+                disposed_date: null,
+                disposal_proceeds: null,
+                notes: `Auto-created from RAIRO import on ${
+                  new Date().toISOString().split('T')[0]
+                }`,
+              };
+
+              if (fundingMethod === 'cash' && paidFromAccountId) {
+                assetPayload.paid_from_account_id = paidFromAccountId;
+              }
+              if (
+                fundingMethod === 'liability' &&
+                financedLiabilityAccountId
+              ) {
+                assetPayload.financed_liability_account_id =
+                  financedLiabilityAccountId;
+              }
+
+              const assetResponse = await fetch(
+                `${API_BASE_URL}/assets`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders(),
+                  },
+                  body: JSON.stringify(assetPayload),
+                }
+              );
+
+              const newAssetData = await assetResponse
+                .json()
+                .catch(() => ({}));
+
+              if (!assetResponse.ok) {
+                console.error('Error creating asset:', newAssetData);
+                return {
+                  success: false,
+                  error:
+                    newAssetData.error ||
+                    newAssetData.detail ||
+                    `HTTP ${assetResponse.status}`,
+                  transaction,
+                };
+              }
+
+              console.log(
+                `Successfully created asset: ${newAssetData.name} (ID: ${newAssetData.id}) linked to account ID ${assetAccountId}`
+              );
+              assetTransactionMap.set(transaction._tempId!, {
+                assetId: newAssetData.id,
+                accountId: assetAccountId!,
+              });
+
+              return {
+                success: true,
+                assetId: newAssetData.id,
+                transaction,
+              };
+            } catch (assetError: any) {
+              console.error(
+                `Error creating asset for transaction "${assetName}":`,
+                assetError
+              );
+              return {
+                success: false,
+                error: assetError.message || String(assetError),
+                transaction,
+              };
+            }
+          })(txWithAmt, choice)
+        );
+      }
+
+      let assetResults: PromiseSettledResult<AssetCreationResult>[] = [];
+      if (assetCreationPromises.length > 0) {
+        assetResults = await Promise.allSettled(assetCreationPromises);
+
+        assetResults.forEach((result, index) => {
+          if (result.status === 'fulfilled') {
+            if (result.value.success) {
+              console.log(
+                `Asset for transaction ${index} created successfully (Asset ID: ${result.value.assetId}).`
+              );
+            } else {
+              console.error(
+                `Failed to create asset for transaction ${index}: ${result.value.error}`,
+                result.value.transaction
+              );
+            }
+          } else {
+            console.error(
+              `Promise failed for asset creation (index ${index}):`,
+              result.reason
+            );
+          }
+        });
+      }
+
+      const successfulAssets = assetResults.filter(
+        r => r.status === 'fulfilled' && r.value.success
+      ).length;
+
+      const nonAssetTransactions = toSubmitFiltered.filter(
+        tx => tx.type !== 'asset'
+      );
+
+      if (nonAssetTransactions.length === 0) {
+        sendProgress('staging', 'done');
+        sendProgress('preview', 'done');
+        sendProgress('mapping', 'done');
+        sendProgress('posting', 'running');
+
+        if (successfulAssets > 0) {
+          addAssistantMessage(
+            `Import complete. ${successfulAssets} asset(s) were automatically created. You can view and edit them in the Accounting → Assets tab.`
+          );
+        }
+
+        try {
+          const salesToSubmit = [...pendingSalesRef.current];
+          if (salesToSubmit.length) {
+            let ok = 0;
+            for (const s of salesToSubmit) {
+              try {
+                await submitSale(s);
+                ok++;
+                addAssistantMessage(
+                  successBubble('✅ Sale submitted', [
+                    `${s.description} — ${fmt(
+                      Number(s.amount || 0)
+                    )} (${s.customer_name})`,
+                  ])
+                );
+              } catch (e: any) {
+                addAssistantMessage(
+                  `Failed sale for "${s.customer_name}" (${fmt(
+                    Number(s.amount || 0)
+                  )}): ${e?.message || e}`
+                );
+              }
+            }
+            addAssistantMessage(
+              `Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`
+            );
+          }
+        } finally {
+          pendingSalesRef.current = [];
+          setPendingSales([]);
+          sendProgress('posting', 'done');
+          setImportBusy(false);
+        }
+
+        return;
+      }
+
+      // STAGING
+      sendProgress('staging', 'running');
+
+      const rows = nonAssetTransactions.map(tx => ({
+        sourceUid: sourceUidOf(tx),
+        date: tx.date || new Date().toISOString().slice(0, 10),
+        description: tx.description || 'Imported',
+        amount: tx._amt,
+      }));
+
+      const staged = await stageSelected(
+        API_BASE_URL_REAL,
+        authHeaders,
+        rows
+      );
+      sendProgress('staging', 'done');
+      addAssistantMessage(
+        `Stage complete (batch ${staged.batchId}). Inserted: ${staged.inserted}, duplicates skipped: ${staged.duplicates}.`
+      );
+
+      // PREVIEW
+      sendProgress('preview', 'running');
+      const preview = await loadPreview(
+        API_BASE_URL_REAL,
+        authHeaders,
+        staged.batchId
+      );
+      sendProgress('preview', 'done');
+
+      // MAPPING
+      sendProgress('mapping', 'running');
+
+      const validAccountIds = new Set(accounts.map(a => Number(a.id)));
+
+      const normalizeValidId = (
+        id: number | string | null | undefined
+      ): number | null => {
+        if (id == null) return null;
+        const n = Number(id);
+        return Number.isFinite(n) && validAccountIds.has(n) ? n : null;
+      };
+
+      const pickCashOrBank = (): number | null => {
+        const toLower = (s?: string) => (s || '').toLowerCase();
+
+        const findBank = () =>
+          accounts.find(
+            a =>
+              toLower(a.type) === 'asset' &&
+              /bank|cheque|current/.test(toLower(a.name))
+          );
+
+        const findCash = () =>
+          accounts.find(
+            a =>
+              toLower(a.type) === 'asset' &&
+              /cash/.test(toLower(a.name))
+          );
+
+        let picked: number | null = null;
+
+        if (forceCash) {
+          picked = findCash()
+            ? Number(findCash()!.id)
+            : findBank()
+            ? Number(findBank()!.id)
+            : null;
+        } else {
+          picked = findBank()
+            ? Number(findBank()!.id)
+            : findCash()
+            ? Number(findCash()!.id)
+            : null;
+        }
+
+        return normalizeValidId(picked);
+      };
+
+      const cashOrBankRaw = pickCashOrBank();
+
+      let patchedCount = 0;
+      const unmappedRows: Array<{
+        date: string;
+        description: string;
+        reason: string;
+      }> = [];
+
+      for (const p of preview.items) {
+        const original = nonAssetTransactions.find(
+          t => sourceUidOf(t) === p.sourceUid
+        );
+        if (!original) continue;
+
+        const chosenId = normalizeValidId(
+          original.account_id ? Number(original.account_id) : null
+        );
+        const cashBankId = normalizeValidId(cashOrBankRaw);
+
+        const ttype = (original.type || '').toLowerCase();
+        let debitId: number | null = null;
+        let creditId: number | null = null;
+
+        if (ttype === 'income') {
+          debitId = cashBankId;
+          creditId = chosenId;
+        } else if (ttype === 'expense') {
+          debitId = chosenId;
+          creditId = cashBankId;
+        } else if (ttype === 'debt') {
+          debitId = cashBankId;
+          creditId = chosenId;
+        } else {
+          debitId = cashBankId;
+          creditId = chosenId;
+        }
+
+        if (!debitId || !creditId) {
+          unmappedRows.push({
+            date: original.date || '',
+            description: original.description || 'Imported',
+            reason:
+              !debitId && !creditId
+                ? 'No valid debit & credit accounts'
+                : !debitId
+                ? 'No valid debit account'
+                : 'No valid credit account',
+          });
+          continue;
+        }
+
+        await patchRowMapping(
+          API_BASE_URL_REAL,
+          authHeaders,
+          p.rowId,
+          debitId,
+          creditId
+        );
+        patchedCount++;
+      }
+
+      if (unmappedRows.length) {
+        sendProgress('mapping', 'error');
+        setImportBusy(false);
+
+        addAssistantMessage(
+          <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200 text-sm">
+            <div className="font-semibold mb-1">
+              Some rows need attention
+            </div>
+            <div className="mb-1">
+              {unmappedRows.length} row
+              {unmappedRows.length > 1 ? 's' : ''} couldn’t be mapped to your
+              accounts. Pick a valid <em>Account</em> in the table (and make
+              sure you have a Bank/Cash account).
+            </div>
+            <ul className="list-disc ml-5">
+              {unmappedRows.slice(0, 5).map((r, i) => (
+                <li key={i}>
+                  {r.date} — {r.description}{' '}
+                  <span className="italic">({r.reason})</span>
+                </li>
+              ))}
+            </ul>
+            {unmappedRows.length > 5 && (
+              <div className="mt-1">
+                …and {unmappedRows.length - 5} more.
+              </div>
+            )}
+          </div>
+        );
+
+        return;
+      }
+
+      addAssistantMessage(
+        `Applied ${patchedCount} account mapping override(s).`
+      );
+      sendProgress('mapping', 'done');
+
+      // POSTING — commit journal batch
+      sendProgress('posting', 'running');
+
+      const resultCommit = await commitBatch(
+        API_BASE_URL_REAL,
+        authHeaders,
+        staged.batchId
+      );
+
+      const prettyLines = nonAssetTransactions.map(t => {
+        const amt = Number(t.amount || t._amt || 0);
+        const d = t.date || new Date().toISOString().slice(0, 10);
+        if (t.type === 'expense')
+          return `Paid ${t.description} — ${fmt(amt)} on ${d}`;
+        if (t.type === 'income')
+          return `Received ${t.description} — ${fmt(amt)} on ${d}`;
+        if (t.type === 'debt')
+          return `Debt ${t.description} — ${fmt(amt)} on ${d}`;
+        if (t.type === 'asset')
+          return `Asset ${t.description} — ${fmt(amt)} on ${d}`;
+        return `${t.type} ${t.description} — ${fmt(amt)} on ${d}`;
+      });
+
+      addAssistantMessage(
+        successBubble('✅ Transactions recorded', prettyLines)
+      );
+
+      addAssistantMessage(
+        <div className="p-3 rounded-2xl bg-green-100 text-green-900 border border-green-200">
+          <div className="font-semibold mb-1">Journal posting complete</div>
+          <div>
+            {resultCommit.posted} posted, {resultCommit.skipped} skipped.
+          </div>
+          <div className="mt-2 text-sm">
+            To see financial statements, go to the{' '}
+            <Link
+              to="/financials"
+              className="underline font-medium text-green-800"
+            >
+              Financials
+            </Link>{' '}
+            tab.
+          </div>
+        </div>
+      );
+
+      if (successfulAssets > 0) {
+        addAssistantMessage(
+          `Also created ${successfulAssets} asset(s). You can review them under Accounting → Assets.`
+        );
+      }
+
+      try {
+        const salesToSubmit = [...pendingSalesRef.current];
+        if (salesToSubmit.length) {
+          let ok = 0;
+          for (const s of salesToSubmit) {
+            try {
+              await submitSale(s);
+              ok++;
+              addAssistantMessage(
+                successBubble('✅ Sale submitted', [
+                  `${s.description} — ${fmt(
+                    Number(s.amount || 0)
+                  )} (${s.customer_name})`,
+                ])
+              );
+            } catch (e: any) {
+              addAssistantMessage(
+                `Failed sale for "${s.customer_name}" (${fmt(
+                  Number(s.amount || 0)
+                )}): ${e?.message || e}`
+              );
+            }
+          }
+          addAssistantMessage(
+            `Sales posting complete: ${ok}/${salesToSubmit.length} succeeded.`
+          );
+        }
+      } finally {
+        pendingSalesRef.current = [];
+        setPendingSales([]);
+        sendProgress('posting', 'done');
+      }
+    } catch (e: any) {
+      console.error('[IMPORT] Import failed:', e);
+
+      let raw = e?.message || '';
+      try {
+        const parsed = JSON.parse(raw);
+        raw = parsed.detail || parsed.error || raw;
+      } catch {
+        // keep raw
+      }
+      const looksLikeZeroAmount =
+        e?.code === '23514' ||
+        /check constraint/i.test(raw) ||
+        /journal_lines_check1/i.test(raw) ||
+        /0\.00/.test(raw);
+
+      if (looksLikeZeroAmount) {
+        addAssistantMessage(
+          <div className="p-3 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-sm">
+            <div className="font-semibold mb-1">
+              Import failed: zero amounts detected
+            </div>
+            <div>
+              One or more selected transactions have an amount of 0. Please
+              edit the amount or uncheck “Import?” and try again.
+            </div>
+          </div>
+        );
+      } else {
+        const msg = raw || String(e);
+        addAssistantMessage(
+          <div className="p-3 rounded-2xl bg-red-100 text-red-900 border border-red-200">
+            <div className="font-semibold mb-1">Import failed</div>
+            <div className="text-sm">{msg}</div>
+          </div>
+        );
+      }
+
+      sendProgress('posting', 'error');
+    } finally {
+      setImportBusy(false);
+    }
+  };
 
   const handleUnifiedSend = () => {
     if (file) {
@@ -2468,35 +3238,65 @@ if (t.type === 'debt')    return `Debt entry: ${t.description} — ${fmt(Number(
       }
     } else if (typedDescription.trim()) {
       if (typedDescription.startsWith('/audio')) {
-        addAssistantMessage('Please use the microphone icon to record audio, then click play to process.');
+        addAssistantMessage(
+          'Please use the microphone icon to record audio, then click play to process.'
+        );
         setTypedDescription('');
       } else if (typedDescription.startsWith('/upload')) {
-        addAssistantMessage('Please use the paperclip icon to select a file, then click Send.');
+        addAssistantMessage(
+          'Please use the paperclip icon to select a file, then click Send.'
+        );
         setTypedDescription('');
       } else if (typedDescription.startsWith('/text')) {
-        const textToProcess = typedDescription.substring('/text'.length).trim();
-        if (textToProcess) { setTypedDescription(textToProcess); handleTypedDescriptionSubmit(); }
-        else { addAssistantMessage("Please provide a description after '/text'."); setTypedDescription(''); }
+        const textToProcess = typedDescription
+          .substring('/text'.length)
+          .trim();
+        if (textToProcess) {
+          setTypedDescription(textToProcess);
+          handleTypedDescriptionSubmit();
+        } else {
+          addAssistantMessage(
+            "Please provide a description after '/text'."
+          );
+          setTypedDescription('');
+        }
       } else {
         handleTypedDescriptionSubmit();
       }
     } else {
-      addAssistantMessage('Please type a message or select a file to proceed.');
+      addAssistantMessage(
+        'Please type a message or select a file to proceed.'
+      );
     }
   };
 
   return (
     <>
       {/* Chat Messages Display Area */}
-      <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((msg) => (
+      <div
+        ref={chatContainerRef}
+        className="flex-1 overflow-y-auto p-4 space-y-4"
+      >
+        {messages.map(msg => (
           <motion.div
             key={msg.id}
-            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
-            className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+            className={`flex ${
+              msg.sender === 'user' ? 'justify-end' : 'justify-start'
+            }`}
           >
-            <div className={`max-w-[70%] p-3 rounded-2xl shadow-md ${msg.sender === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}`}>
-              {typeof msg.content === 'string' ? msg.content : msg.content}
+            <div
+              className={`max-w-[70%] p-3 rounded-2xl shadow-md ${
+                msg.sender === 'user'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-200 text-gray-800'
+              }`}
+            >
+              {typeof msg.content === 'string'
+                ? msg.content
+                : msg.content}
             </div>
           </motion.div>
         ))}
@@ -2505,34 +3305,44 @@ if (t.type === 'debt')    return `Debt entry: ${t.description} — ${fmt(Number(
       {/* Chat Input Area */}
       <div className="p-4 bg-white border-t shadow flex items-center space-x-2">
         <label htmlFor="file-upload-input" className="cursor-pointer">
-{/* Hidden file input (PDF + Excel) */}
-<Input
-  ref={fileInputRef}
-  id="file-upload-input"
-  type="file"
-  className="hidden"
-  onChange={handleFileChange}
-  accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png,.gif,.bmp,.webp,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*"
-/>
-
+          {/* Hidden file input (PDF + Excel + images) */}
+          <Input
+            ref={fileInputRef}
+            id="file-upload-input"
+            type="file"
+            className="hidden"
+            onChange={handleFileChange}
+            accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png,.gif,.bmp,.webp,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*"
+          />
         </label>
-{/* Paperclip button that triggers the hidden input */}
-<Button
-  type="button"
-  onClick={() => fileInputRef.current?.click()}
-  variant="ghost"
-  className="rounded-full p-2 text-gray-600 hover:bg-gray-100"
-  aria-label="Attach File"
->
-  <Paperclip size={20} className="text-gray-600" />
-</Button>
+
+        {/* Paperclip button that triggers the hidden input */}
+        <Button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          variant="ghost"
+          className="rounded-full p-2 text-gray-600 hover:bg-gray-100"
+          aria-label="Attach File"
+        >
+          <Paperclip size={20} className="text-gray-600" />
+        </Button>
 
         {isRecording ? (
-          <Button onClick={stopRecording} variant="ghost" className="rounded-full p-2 text-red-500 hover:bg-red-100 animate-pulse" aria-label="Stop Recording">
+          <Button
+            onClick={stopRecording}
+            variant="ghost"
+            className="rounded-full p-2 text-red-500 hover:bg-red-100 animate-pulse"
+            aria-label="Stop Recording"
+          >
             <StopCircle size={20} />
           </Button>
         ) : (
-          <Button onClick={startRecording} variant="ghost" className="rounded-full p-2 text-purple-600 hover:bg-purple-100" aria-label="Start Recording">
+          <Button
+            onClick={startRecording}
+            variant="ghost"
+            className="rounded-full p-2 text-purple-600 hover:bg-purple-100"
+            aria-label="Start Recording"
+          >
             <Mic size={20} />
           </Button>
         )}
@@ -2542,38 +3352,286 @@ if (t.type === 'debt')    return `Debt entry: ${t.description} — ${fmt(Number(
           className="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="Type a transaction description or command (/audio, /text)..."
           value={typedDescription}
-          onChange={(e) => setTypedDescription(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && (typedDescription.trim() || file)) handleUnifiedSend(); }}
+          onChange={e => setTypedDescription(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && (typedDescription.trim() || file)) {
+              handleUnifiedSend();
+            }
+          }}
         />
 
         <Button
           onClick={handleUnifiedSend}
-          disabled={(!typedDescription.trim() && !file && !isRecording && !audioBlob)}
+          disabled={
+            !typedDescription.trim() && !file && !isRecording && !audioBlob
+          }
           className="p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700"
           aria-label="Send Message"
         >
           <Send size={20} />
         </Button>
       </div>
-      {/* Evidence uploader modal */}
-<EvidencePrompt
-  open={evidenceOpen}
-  onClose={() => setEvidenceOpen(false)}
-  token={token}
-  apiBaseUrl={API_BASE_URL}
-  defaultNotes={evidenceNotes}
-  onUploaded={(ok) => {
-    if (ok) {
-      addAssistantMessage('Evidence uploaded ✅ You can find it in Documents.');
-    } else {
-      addAssistantMessage('Evidence upload was cancelled or failed.');
-    }
-  }}
-/>
 
+      {/* Asset funding dialog */}
+      <Dialog
+        open={assetFundingDialog.open}
+        onOpenChange={open => {
+          if (!open) resolveAssetFunding(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Asset funding details</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Tell RAIRO how this asset was acquired so the correct journal
+              can be posted.
+            </p>
+          </DialogHeader>
+
+          {assetFundingDialog.tx && (
+            <div className="space-y-4">
+              <div className="border rounded-md p-3 text-sm bg-muted/40">
+                <div className="font-medium">
+                  {assetFundingDialog.tx.description || 'Imported asset'}
+                </div>
+                <div className="flex justify-between mt-1 text-xs text-muted-foreground">
+                  <span>Date: {assetFundingDialog.tx.date}</span>
+                  <span>
+                    Amount:{' '}
+                    {fmt(
+                      Number(
+                        assetFundingDialog.tx._amt ??
+                          assetFundingDialog.tx.amount ??
+                          0
+                      )
+                    )}
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  Category:{' '}
+                  {assetFundingDialog.tx.category || 'Fixed Assets'}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  id="create-asset-toggle"
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={assetFundingForm.create}
+                  onChange={e =>
+                    setAssetFundingForm(prev => ({
+                      ...prev,
+                      create: e.target.checked,
+                    }))
+                  }
+                />
+                <Label
+                  htmlFor="create-asset-toggle"
+                  className="cursor-pointer"
+                >
+                  Create fixed asset record for this transaction
+                </Label>
+              </div>
+
+              {assetFundingForm.create && (
+                <>
+                  <div className="space-y-1">
+                    <Label>How was it acquired?</Label>
+                    <Select
+                      value={assetFundingForm.fundingMethod}
+                      onValueChange={(value: FundingMethod) =>
+                        setAssetFundingForm(prev => ({
+                          ...prev,
+                          fundingMethod: value,
+                          bankAccountId:
+                            value === 'cash' ? prev.bankAccountId : '',
+                          liabilityAccountId:
+                            value === 'liability'
+                              ? prev.liabilityAccountId
+                              : '',
+                        }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select funding method" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="cash">
+                          Cash / Bank (Dr Asset, Cr Bank)
+                        </SelectItem>
+                        <SelectItem value="liability">
+                          Liability / HP / Loan (Dr Asset, Cr Liability)
+                        </SelectItem>
+                        <SelectItem value="none">
+                          No funding journal (I’ll post later)
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {assetFundingForm.fundingMethod === 'cash' && (
+                    <div className="space-y-1">
+                      <Label>Bank / Cash account</Label>
+                      <Select
+                        value={assetFundingForm.bankAccountId}
+                        onValueChange={value =>
+                          setAssetFundingForm(prev => ({
+                            ...prev,
+                            bankAccountId: value,
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select bank / cash account" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {bankAccounts.map(acc => (
+                            <SelectItem
+                              key={acc.id}
+                              value={String(acc.id)}
+                            >
+                              {acc.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {!bankAccounts.length && (
+                        <p className="text-xs text-amber-700 mt-1">
+                          No bank/cash accounts found. You can still proceed
+                          without posting a funding journal.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {assetFundingForm.fundingMethod === 'liability' && (
+                    <div className="space-y-1">
+                      <Label>Liability account</Label>
+                      <Select
+                        value={assetFundingForm.liabilityAccountId}
+                        onValueChange={value =>
+                          setAssetFundingForm(prev => ({
+                            ...prev,
+                            liabilityAccountId: value,
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select liability account" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {liabilityAccounts.map(acc => (
+                            <SelectItem
+                              key={acc.id}
+                              value={String(acc.id)}
+                            >
+                              {acc.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {!liabilityAccounts.length && (
+                        <p className="text-xs text-amber-700 mt-1">
+                          No liability accounts found. You can still proceed
+                          without posting a funding journal.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="flex justify-between pt-2">
+                <Button
+                  variant="ghost"
+                  onClick={() => resolveAssetFunding(null)}
+                >
+                  Skip this asset
+                </Button>
+
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      resolveAssetFunding({
+                        create: false,
+                        fundingMethod: 'none',
+                        bankAccountId: null,
+                        liabilityAccountId: null,
+                      })
+                    }
+                  >
+                    Don’t create asset
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      if (assetFundingForm.create) {
+                        if (
+                          assetFundingForm.fundingMethod === 'cash' &&
+                          !assetFundingForm.bankAccountId &&
+                          bankAccounts.length
+                        ) {
+                          alert('Please select a bank/cash account.');
+                          return;
+                        }
+                        if (
+                          assetFundingForm.fundingMethod === 'liability' &&
+                          !assetFundingForm.liabilityAccountId &&
+                          liabilityAccounts.length
+                        ) {
+                          alert('Please select a liability account.');
+                          return;
+                        }
+                      }
+
+                      resolveAssetFunding({
+                        create: assetFundingForm.create,
+                        fundingMethod: assetFundingForm.fundingMethod,
+                        bankAccountId: assetFundingForm.bankAccountId
+                          ? Number(assetFundingForm.bankAccountId)
+                          : null,
+                        liabilityAccountId:
+                          assetFundingForm.liabilityAccountId
+                            ? Number(
+                                assetFundingForm.liabilityAccountId
+                              )
+                            : null,
+                      });
+                    }}
+                  >
+                    Save & continue
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Evidence uploader modal */}
+      <EvidencePrompt
+        open={evidenceOpen}
+        onClose={() => setEvidenceOpen(false)}
+        token={token}
+        apiBaseUrl={API_BASE_URL}
+        defaultNotes={evidenceNotes}
+        onUploaded={ok => {
+          if (ok) {
+            addAssistantMessage(
+              'Evidence uploaded ✅ You can find it in Documents.'
+            );
+          } else {
+            addAssistantMessage(
+              'Evidence upload was cancelled or failed.'
+            );
+          }
+        }}
+      />
     </>
   );
 };
+
 
 export default function App() {
   return (

@@ -3,7 +3,7 @@ import { useLocation, useNavigate, NavLink } from 'react-router-dom';
 import {
   Home, CreditCard, BarChart3, Upload, TrendingUp, FileText, MessageSquare,
   FolderOpen, Calculator, Users, Settings, User, LogOut, Package, DollarSign,
-  Wallet, ChevronUp, ChevronDown, ListStartIcon, UserPlus, UserCheck, Users2, Bot,
+  Wallet, ChevronUp, ChevronDown,ShieldCheck, ListStartIcon, UserPlus, UserCheck, Users2, Bot,
   Building2, ChevronsUpDown
 } from 'lucide-react';
 import {
@@ -60,7 +60,7 @@ const businessItems: NavigationItem[] = [
   { title: 'Projections', url: '/projections', icon: TrendingUp, allowedRoles: ['admin', 'manager','accountant', 'projections', 'user'] },
   { title: 'Accounting Setup', url: '/accounting', icon: Calculator, allowedRoles: ['admin', 'accountant', 'accounting', 'user', 'ceo'] },
   { title: 'Document Management', url: '/documents', icon: FolderOpen, allowedRoles: ['admin', 'manager', 'user', 'cashier', 'accountant', 'ceo', 'documents'] },
-  { title: 'Compliance Centre', url: '/compliance', icon: FolderOpen, allowedRoles: ['compliance'] },
+  { title: 'Compliance Centre', url: '/compliance', icon: ShieldCheck, allowedRoles: ['compliance'] },
   { title: 'Qx Chat', url: '/quant-chat', icon: MessageSquare, allowedRoles: ['admin', 'manager', 'user', 'cashier', 'accountant', 'ceo', 'chat'] },
 ];
 const setupItems: NavigationItem[] = [

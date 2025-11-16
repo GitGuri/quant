@@ -1502,7 +1502,7 @@ export default function POSScreen() {
             </div>
             {selectedProduct && (
               <div style={{ fontSize: 12, color: '#888' }}>
-                Stock: {selectedProduct.stock_quantity ?? 0}{' '}
+                Available: {selectedProduct.stock_quantity ?? 0}{' '}
                 {selectedProduct.unit || ''}
               </div>
             )}
@@ -1722,15 +1722,15 @@ export default function POSScreen() {
                 <div style={{ marginBottom: 4 }}>
                   <Text>Amount Paid</Text>
                 </div>
-                <InputNumber
-                  min={0}
-                  value={amountPaid}
-                  onChange={(value) => setAmountPaid(value ?? 0)}
-                  style={{ width: '100%' }}
-                  formatter={moneyFormatter}
-                  parser={moneyParser}
-                  disabled={!isAuthenticated || isLoading}
-                />
+<InputNumber
+  min={0}
+  value={amountPaid === 0 ? undefined : amountPaid} // hide zero when it's 0
+  onChange={(value) => setAmountPaid(value || undefined)} // don’t auto-set 0
+  style={{ width: '100%' }}
+  formatter={moneyFormatter}
+  parser={moneyParser}
+  disabled={!isAuthenticated || isLoading}
+/>
                 <div style={{ marginTop: 4 }}>
                   <Text strong>
                     Change:&nbsp;

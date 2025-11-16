@@ -1,27 +1,75 @@
-import React, { useEffect, useMemo, useState, useCallback, useRef, memo } from 'react';
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+  useRef,
+  memo,
+} from 'react';
 import { Card } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { Loader2, Edit3, Archive, Save, ListChecks, Gauge, RefreshCw, Send } from 'lucide-react';
+import {
+  Loader2,
+  Edit3,
+  Archive,
+  Save,
+  ListChecks,
+  Gauge,
+  RefreshCw,
+  Send,
+  FileText,
+} from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { TaskForm, type TaskFormData, type TaskStepFormData } from './TaskForm';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import {
+  TaskForm,
+  type TaskFormData,
+  type TaskStepFormData,
+} from './TaskForm';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 
-const API_BASE = 'https://quantnow-sa1e.onrender.com'
+const API_BASE = 'https://quantnow-sa1e.onrender.com';
 
 /* ---------- Types ---------- */
 type BaseTask = {
   id: string;
   title: string;
-  status: 'To Do' | 'In Progress' | 'Review' | 'Done' | 'Archived' | 'Overdue';
+  status:
+    | 'To Do'
+    | 'In Progress'
+    | 'Review'
+    | 'Done'
+    | 'Archived'
+    | 'Overdue';
   progress_percentage: number;
   due_date?: string | null;
   assignee_name?: string | null; // legacy single
-  assignee_id?: string | null;   // legacy single
+  assignee_id?: string | null; // legacy single
   project_id?: string | null;
   project_name?: string | null;
   priority: 'Low' | 'Medium' | 'High';
@@ -52,16 +100,46 @@ type Filters = {
   tab?: 'all' | 'inprogress' | 'completed' | 'overdue' | 'archived';
 };
 
+type NoteVisibility = 'owner' | 'admin' | 'all';
+type NoteKind = 'note' | 'progress' | 'status' | 'system';
+
+type TaskNote = {
+  id: string;
+  task_id: string;
+  author_user_id: string | null;
+  author_name: string | null;
+  visibility: NoteVisibility;
+  kind: NoteKind;
+  is_blocker: boolean;
+  message: string;
+  created_at: string;
+};
+
 /* ---------- NEW: Sorting types & helpers ---------- */
 type SortKey =
-  | 'due' | 'priority' | 'progress' | 'status' | 'project' | 'assignee' | 'title';
+  | 'due'
+  | 'priority'
+  | 'progress'
+  | 'status'
+  | 'project'
+  | 'assignee'
+  | 'title';
 
 type SortDir = 'asc' | 'desc';
 
-const PRIORITY_ORDER: Record<FullTask['priority'], number> = { High: 0, Medium: 1, Low: 2 };
+const PRIORITY_ORDER: Record<FullTask['priority'], number> = {
+  High: 0,
+  Medium: 1,
+  Low: 2,
+};
 
 const STATUS_ORDER: Record<FullTask['status'], number> = {
-  Overdue: 0, 'In Progress': 1, Review: 2, 'To Do': 3, Done: 4, Archived: 5,
+  Overdue: 0,
+  'In Progress': 1,
+  Review: 2,
+  'To Do': 3,
+  Done: 4,
+  Archived: 5,
 };
 
 function safeDateMs(d?: string | null) {
@@ -70,7 +148,7 @@ function safeDateMs(d?: string | null) {
 
 function assigneeStr(t: FullTask) {
   return Array.isArray(t.assignees) && t.assignees.length
-    ? t.assignees.map(a => a.name?.toLowerCase() || '').join(' ')
+    ? t.assignees.map((a) => a.name?.toLowerCase() || '').join(' ')
     : (t.assignee_name || '').toLowerCase();
 }
 
@@ -111,6 +189,46 @@ function debounce<T extends (...args: any[]) => any>(fn: T, ms = 250) {
   };
 }
 
+const createTaskNote = async (
+  taskId: string,
+  message: string,
+  opts?: {
+    visibility?: NoteVisibility;
+    kind?: NoteKind;
+    isBlocker?: boolean;
+  }
+): Promise<TaskNote | null> => {
+  const trimmed = message.trim();
+  if (!trimmed) return null;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/tasks/${taskId}/notes`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+      },
+      body: JSON.stringify({
+        message: trimmed,
+        visibility: opts?.visibility ?? 'owner',
+        kind: opts?.kind ?? 'note',
+        is_blocker: !!opts?.isBlocker,
+      }),
+    });
+
+    if (!res.ok) {
+      console.warn('Failed to create task note', await res.text());
+      return null;
+    }
+
+    const json = (await res.json()) as TaskNote;
+    return json;
+  } catch (err) {
+    console.warn('createTaskNote error', err);
+    return null;
+  }
+};
+
 /** Call this anywhere (Kanban/QuickTaskInput/TaskForm/ProjectForm) after create/update/delete */
 export const notifyTasksChanged = () => {
   window.dispatchEvent(new Event('tasks:refresh'));
@@ -122,11 +240,14 @@ export const notifyProjectsChanged = () => {
 
 const useIncrementProgress = () =>
   useCallback(async (taskId: string, incrementValue: number) => {
-    const response = await fetch(`${API_BASE}/api/tasks/${taskId}/progress/increment`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ increment: incrementValue }),
-    });
+    const response = await fetch(
+      `${API_BASE}/api/tasks/${taskId}/progress/increment`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ increment: incrementValue }),
+      }
+    );
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   }, []);
@@ -136,14 +257,24 @@ const useUpdateTaskProgress = () =>
     async (
       taskId: string,
       progressData: Partial<
-        Pick<FullTask, 'progress_mode' | 'progress_goal' | 'progress_current' | 'steps' | 'progress_percentage'>
+        Pick<
+          FullTask,
+          | 'progress_mode'
+          | 'progress_goal'
+          | 'progress_current'
+          | 'steps'
+          | 'progress_percentage'
+        >
       >
     ) => {
-      const response = await fetch(`${API_BASE}/api/tasks/${taskId}/progress`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify(progressData),
-      });
+      const response = await fetch(
+        `${API_BASE}/api/tasks/${taskId}/progress`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify(progressData),
+        }
+      );
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
     },
@@ -155,7 +286,10 @@ const useStableFormatDate = () => {
   return useCallback((dateString: string | null | undefined): string => {
     if (!dateString) return '—';
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    return date.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+    });
   }, []);
 };
 
@@ -175,15 +309,34 @@ const deriveUnarchivedStatus = (t: FullTask): FullTask['status'] => {
   const pct = Math.round(t.progress_percentage ?? 0);
   const base = computeStatusFromPct(pct);
   if (base === 'Done') return 'Done';
-  const overdue = isOverdue({ due_date: t.due_date!, status: base, progress_percentage: pct });
+  const overdue = isOverdue({
+    due_date: t.due_date!,
+    status: base,
+    progress_percentage: pct,
+  });
   return overdue ? 'Overdue' : base;
 };
 
 /* ---------- Priority UI ---------- */
 const PRIORITY_META = {
-  High:   { short: 'H', label: 'High',   dot: 'bg-red-500',    ring: 'ring-red-200' },
-  Medium: { short: 'M', label: 'Medium', dot: 'bg-yellow-500', ring: 'ring-yellow-200' },
-  Low:    { short: 'L', label: 'Low',    dot: 'bg-green-500',  ring: 'ring-green-200' },
+  High: {
+    short: 'H',
+    label: 'High',
+    dot: 'bg-red-500',
+    ring: 'ring-red-200',
+  },
+  Medium: {
+    short: 'M',
+    label: 'Medium',
+    dot: 'bg-yellow-500',
+    ring: 'ring-yellow-200',
+  },
+  Low: {
+    short: 'L',
+    label: 'Low',
+    dot: 'bg-green-500',
+    ring: 'ring-green-200',
+  },
 } as const;
 
 type Priority = keyof typeof PRIORITY_META;
@@ -191,7 +344,9 @@ type Priority = keyof typeof PRIORITY_META;
 function PriorityBadge({ value }: { value: Priority }) {
   const meta = PRIORITY_META[value];
   return (
-    <span className={`inline-flex items-center gap-2 px-2 py-1 rounded-md ring-1 ${meta.ring} bg-white`}>
+    <span
+      className={`inline-flex items-center gap-2 px-2 py-1 rounded-md ring-1 ${meta.ring} bg-white`}
+    >
       <span className={`w-2.5 h-2.5 rounded-full ${meta.dot}`} />
       <span className="text-xs font-medium">{meta.label}</span>
       <span className="text-[10px] text-gray-500">{meta.short}</span>
@@ -219,9 +374,13 @@ function PrioritySelect({
         {(Object.keys(PRIORITY_META) as Priority[]).map((p) => (
           <SelectItem key={p} value={p}>
             <div className="flex items-center gap-2">
-              <span className={`w-2.5 h-2.5 rounded-full ${PRIORITY_META[p].dot}`} />
+              <span
+                className={`w-2.5 h-2.5 rounded-full ${PRIORITY_META[p].dot}`}
+              />
               <span className="text-sm">{PRIORITY_META[p].label}</span>
-              <span className="ml-1 text-[10px] text-gray-500">{PRIORITY_META[p].short}</span>
+              <span className="ml-1 text-[10px] text-gray-500">
+                {PRIORITY_META[p].short}
+              </span>
             </div>
           </SelectItem>
         ))}
@@ -230,7 +389,7 @@ function PrioritySelect({
   );
 }
 
-/* ---------- Progress dialogs (return patches to avoid full refetch) ---------- */
+/* ---------- TargetDialog ---------- */
 function TargetDialog({
   task,
   open,
@@ -248,7 +407,15 @@ function TargetDialog({
   const [isSaving, setIsSaving] = useState(false);
 
   const pct =
-    goal === '' || goal === 0 ? 0 : Math.max(0, Math.min(100, Math.round(((current ?? 0) / Number(goal)) * 100)));
+    goal === '' || goal === 0
+      ? 0
+      : Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round(((current ?? 0) / Number(goal)) * 100)
+          )
+        );
 
   const save = async () => {
     setIsSaving(true);
@@ -283,7 +450,9 @@ function TargetDialog({
           <DialogTitle className="flex items-center gap-2">
             <RefreshCw className="h-5 w-5" /> Set Target for "{task.title}"
           </DialogTitle>
-          <DialogDescription>Define your goal and track your current progress.</DialogDescription>
+          <DialogDescription>
+            Define your goal and track your current progress.
+          </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid grid-cols-4 items-center gap-4">
@@ -291,7 +460,9 @@ function TargetDialog({
             <Input
               type="number"
               value={goal}
-              onChange={(e) => setGoal(e.target.value === '' ? '' : Number(e.target.value))}
+              onChange={(e) =>
+                setGoal(e.target.value === '' ? '' : Number(e.target.value))
+              }
               className="col-span-3"
               placeholder="e.g., 100"
             />
@@ -315,7 +486,8 @@ function TargetDialog({
                     className="h-2.5 rounded-full"
                     style={{
                       width: `${pct}%`,
-                      background: `linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)`,
+                      background:
+                        'linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)',
                     }}
                   />
                 </div>
@@ -330,7 +502,10 @@ function TargetDialog({
           <Button variant="outline" onClick={onClose} disabled={isSaving}>
             Cancel
           </Button>
-          <Button onClick={save} disabled={isSaving || (goal !== '' && current > Number(goal))}>
+          <Button
+            onClick={save}
+            disabled={isSaving || (goal !== '' && current > Number(goal))}
+          >
             {isSaving ? 'Saving…' : 'Save Target'}
           </Button>
         </DialogFooter>
@@ -339,6 +514,7 @@ function TargetDialog({
   );
 }
 
+/* ---------- StepsDialog ---------- */
 function StepsDialog({
   task,
   open,
@@ -384,16 +560,25 @@ function StepsDialog({
     });
 
   const remove = (i: number) =>
-    setSteps((prev) => prev.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, position: idx })));
+    setSteps((prev) =>
+      prev
+        .filter((_, idx) => idx !== i)
+        .map((s, idx) => ({ ...s, position: idx }))
+    );
 
   const totalW = steps.reduce((sum, s) => sum + (s.weight ?? 0), 0);
-  const doneW = steps.filter((s) => s.is_done).reduce((sum, s) => sum + (s.weight ?? 0), 0);
+  const doneW = steps
+    .filter((s) => s.is_done)
+    .reduce((sum, s) => sum + (s.weight ?? 0), 0);
   const stepPct = totalW > 0 ? Math.round((doneW / totalW) * 100) : 0;
 
   const save = async () => {
     setIsSaving(true);
     try {
-      const stepsToSend = steps.map((s) => ({ ...s, id: s.id.startsWith('new-') ? undefined : s.id }));
+      const stepsToSend = steps.map((s) => ({
+        ...s,
+        id: s.id.startsWith('new-') ? undefined : s.id,
+      }));
       await updateTaskProgress(task.id, {
         progress_mode: 'steps',
         steps: stepsToSend,
@@ -424,7 +609,9 @@ function StepsDialog({
           <DialogTitle className="flex items-center gap-2">
             <ListChecks className="h-5 w-5" /> Steps for "{task.title}"
           </DialogTitle>
-          <DialogDescription>Break down your task into smaller steps. Progress: {stepPct}%</DialogDescription>
+          <DialogDescription>
+            Break down your task into smaller steps. Progress: {stepPct}%
+          </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="flex gap-2">
@@ -434,21 +621,42 @@ function StepsDialog({
               placeholder="Add a new step..."
               onKeyDown={(e) => e.key === 'Enter' && add()}
             />
-            <Button onClick={add} size="sm">+</Button>
+            <Button onClick={add} size="sm">
+              +
+            </Button>
           </div>
           <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
             {steps.length ? (
               steps.map((s, i) => (
-                <div key={s.id} className="flex items-center gap-2 p-2 bg-gray-50 rounded">
-                  <Checkbox checked={s.is_done} onCheckedChange={() => toggle(i)} />
-                  <span className={`flex-1 text-sm ${s.is_done ? 'line-through text-gray-500' : ''}`}>{s.title}</span>
-                  <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-500" onClick={() => remove(i)}>
+                <div
+                  key={s.id}
+                  className="flex items-center gap-2 p-2 bg-gray-50 rounded"
+                >
+                  <Checkbox
+                    checked={s.is_done}
+                    onCheckedChange={() => toggle(i)}
+                  />
+                  <span
+                    className={`flex-1 text-sm ${
+                      s.is_done ? 'line-through text-gray-500' : ''
+                    }`}
+                  >
+                    {s.title}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0 text-red-500"
+                    onClick={() => remove(i)}
+                  >
                     –
                   </Button>
                 </div>
               ))
             ) : (
-              <p className="text-sm text-gray-500 text-center py-2">No steps yet.</p>
+              <p className="text-sm text-gray-500 text-center py-2">
+                No steps yet.
+              </p>
             )}
           </div>
           {steps.length > 0 && (
@@ -462,7 +670,8 @@ function StepsDialog({
                   className="h-1.5 rounded-full transition-all duration-300"
                   style={{
                     width: `${stepPct}%`,
-                    background: `linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)`,
+                    background:
+                      'linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)',
                   }}
                 />
               </div>
@@ -482,7 +691,7 @@ function StepsDialog({
   );
 }
 
-// --- ProgressOptionsDialog ---
+/* ---------- ProgressOptionsDialog ---------- */
 function ProgressOptionsDialog({
   task,
   open,
@@ -500,12 +709,16 @@ function ProgressOptionsDialog({
 }) {
   const updateTaskProgress = useUpdateTaskProgress();
   const incrementProgress = useIncrementProgress();
-  const [manualProgress, setManualProgress] = useState<number>(task.progress_percentage || 0);
+  const [manualProgress, setManualProgress] = useState<number>(
+    task.progress_percentage || 0
+  );
   const [isSaving, setIsSaving] = useState(false);
+  const [note, setNote] = useState('');
 
-  // Helpers for target-mode buttons (disable at bounds)
   const canAdd = (k: number) =>
-    task.progress_mode === 'target' && task.progress_goal != null && task.progress_current != null
+    task.progress_mode === 'target' &&
+    task.progress_goal != null &&
+    task.progress_current != null
       ? task.progress_current + k <= task.progress_goal
       : true;
 
@@ -518,7 +731,10 @@ function ProgressOptionsDialog({
     setIsSaving(true);
     try {
       const pct = Math.max(0, Math.min(100, Math.round(manualProgress)));
-      await updateTaskProgress(task.id, { progress_mode: 'manual', progress_percentage: pct });
+      await updateTaskProgress(task.id, {
+        progress_mode: 'manual',
+        progress_percentage: pct,
+      });
       await putStatusForPct(task, pct);
 
       const nextStatus = computeStatusFromPct(pct);
@@ -528,6 +744,15 @@ function ProgressOptionsDialog({
         progress_percentage: pct,
         status: task.status === 'Archived' ? task.status : nextStatus,
       });
+
+      if (note.trim()) {
+        await createTaskNote(task.id, note, {
+          kind: 'progress',
+          visibility: 'owner',
+          isBlocker: false,
+        });
+      }
+      setNote('');
       onClose();
     } catch (error) {
       console.error('Failed to save manual progress:', error);
@@ -542,15 +767,24 @@ function ProgressOptionsDialog({
       let newPct: number | null = null;
       let nextCurrent: number | null = null;
 
-      if (task.progress_mode === 'target' && task.progress_goal && task.progress_goal > 0) {
+      if (
+        task.progress_mode === 'target' &&
+        task.progress_goal &&
+        task.progress_goal > 0
+      ) {
         const curr = task.progress_current ?? 0;
-        nextCurrent = Math.max(0, Math.min(task.progress_goal, curr + n)); // clamp
+        nextCurrent = Math.max(
+          0,
+          Math.min(task.progress_goal, curr + n)
+        );
         const delta = nextCurrent - curr;
-        if (delta === 0) { setIsSaving(false); return; }
+        if (delta === 0) {
+          setIsSaving(false);
+          return;
+        }
         newPct = Math.round((nextCurrent / task.progress_goal) * 100);
         await incrementProgress(task.id, delta);
       } else {
-        // Non-target: just let backend decide; we still call increment endpoint
         await incrementProgress(task.id, n);
       }
 
@@ -558,7 +792,6 @@ function ProgressOptionsDialog({
         await putStatusForPct(task, newPct);
       }
 
-      // Apply local patch (keep dialog open for repeated clicks)
       onSaved({
         id: task.id,
         progress_current: nextCurrent ?? task.progress_current ?? null,
@@ -567,9 +800,18 @@ function ProgressOptionsDialog({
           task.status === 'Archived'
             ? task.status
             : newPct !== null
-              ? computeStatusFromPct(newPct)
-              : task.status,
+            ? computeStatusFromPct(newPct)
+            : task.status,
       });
+
+      if (note.trim()) {
+        await createTaskNote(task.id, note, {
+          kind: 'progress',
+          visibility: 'owner',
+          isBlocker: false,
+        });
+      }
+      setNote('');
     } catch (error) {
       console.error('Failed to increment progress:', error);
     } finally {
@@ -580,7 +822,10 @@ function ProgressOptionsDialog({
   function CustomIncrement({
     disabled,
     onApply,
-  }: { disabled?: boolean; onApply: (n: number) => void }) {
+  }: {
+    disabled?: boolean;
+    onApply: (n: number) => void;
+  }) {
     const [val, setVal] = useState<string>('');
     const apply = () => {
       const n = Number(val);
@@ -613,7 +858,9 @@ function ProgressOptionsDialog({
           <DialogTitle className="flex items-center gap-2">
             <Edit3 className="h-5 w-5" /> Edit Progress — "{task.title}"
           </DialogTitle>
-          <DialogDescription>Choose how you want to update the progress.</DialogDescription>
+          <DialogDescription>
+            Choose how you want to update the progress.
+          </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
           {task.progress_mode === 'manual' && (
@@ -625,14 +872,18 @@ function ProgressOptionsDialog({
                   min={0}
                   max={100}
                   value={manualProgress}
-                  onChange={(e) => setManualProgress(Number(e.target.value))}
+                  onChange={(e) =>
+                    setManualProgress(Number(e.target.value))
+                  }
                   className="flex-1"
                 />
                 <Button onClick={manualSave} disabled={isSaving}>
                   {isSaving ? 'Saving…' : 'Update'}
                 </Button>
               </div>
-              <p className="text-xs text-gray-500">Current: {Math.round(task.progress_percentage || 0)}%</p>
+              <p className="text-xs text-gray-500">
+                Current: {Math.round(task.progress_percentage || 0)}%
+              </p>
             </div>
           )}
 
@@ -641,23 +892,47 @@ function ProgressOptionsDialog({
               <Label>Target-Based</Label>
 
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" onClick={openTarget} disabled={isSaving}>
+                <Button
+                  variant="outline"
+                  onClick={openTarget}
+                  disabled={isSaving}
+                >
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Adjust Target
                 </Button>
 
-                {/* Quick presets */}
-                <Button onClick={() => inc(2)} disabled={isSaving || !canAdd(2)}>+2</Button>
-                <Button onClick={() => inc(5)} disabled={isSaving || !canAdd(5)}>+5</Button>
-                <Button onClick={() => inc(10)} disabled={isSaving || !canAdd(10)}>+10</Button>
-                <Button variant="outline" onClick={() => inc(-2)} disabled={isSaving || !canDec(2)}>−2</Button>
+                <Button onClick={() => inc(2)} disabled={isSaving || !canAdd(2)}>
+                  +2
+                </Button>
+                <Button
+                  onClick={() => inc(5)}
+                  disabled={isSaving || !canAdd(5)}
+                >
+                  +5
+                </Button>
+                <Button
+                  onClick={() => inc(10)}
+                  disabled={isSaving || !canAdd(10)}
+                >
+                  +10
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => inc(-2)}
+                  disabled={isSaving || !canDec(2)}
+                >
+                  −2
+                </Button>
               </div>
 
-              {/* Custom increment (supports negatives) */}
-              <CustomIncrement disabled={isSaving} onApply={(n) => inc(n)} />
+              <CustomIncrement
+                disabled={isSaving}
+                onApply={(n) => inc(n)}
+              />
 
               <p className="text-xs text-gray-500">
-                Current: {task.progress_current ?? 0} / {task.progress_goal ?? '—'}
+                Current: {task.progress_current ?? 0} /{' '}
+                {task.progress_goal ?? '—'}
               </p>
             </div>
           )}
@@ -665,12 +940,18 @@ function ProgressOptionsDialog({
           {task.progress_mode === 'steps' && (
             <div className="space-y-2">
               <Label>Step-Based</Label>
-              <Button variant="outline" onClick={openSteps} disabled={isSaving}>
+              <Button
+                variant="outline"
+                onClick={openSteps}
+                disabled={isSaving}
+              >
                 <ListChecks className="h-4 w-4 mr-2" />
                 Manage Steps
               </Button>
               <p className="text-xs text-gray-500">
-                Completed {task.steps.filter((s) => s.is_done).length} of {task.steps.length} steps.
+                Completed{' '}
+                {task.steps.filter((s) => s.is_done).length} of{' '}
+                {task.steps.length} steps.
               </p>
             </div>
           )}
@@ -690,13 +971,31 @@ function ProgressOptionsDialog({
               <div
                 className="h-1.5 rounded-full"
                 style={{
-                  width: `${Math.max(0, Math.min(100, Math.round(task.progress_percentage || 0)))}%`,
-                  background: `linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)`,
+                  width: `${Math.max(
+                    0,
+                    Math.min(100, Math.round(task.progress_percentage || 0))
+                  )}%`,
+                  background:
+                    'linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)',
                 }}
               />
             </div>
           </div>
+
+          <div className="space-y-2 pt-2 border-t">
+            <Label>Optional note</Label>
+            <Textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Add a short note for this update (optional)…"
+              className="min-h-[60px]"
+            />
+            <p className="text-xs text-gray-500">
+              If provided, this will be stored as a task note.
+            </p>
+          </div>
         </div>
+
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={isSaving}>
             Close
@@ -717,156 +1016,174 @@ type RowProps = {
   onArchive: (id: string) => void;
   onUnarchive: (id: string) => void;
   onOpenProgress: (task: FullTask) => void;
+  onOpenNotes: (task: FullTask) => void;
   formatDate: (d?: string | null) => string;
   onChangePriority: (id: string, p: Priority) => void;
-  onSendReminder: (task: FullTask) => void; // ★ NEW
+  onSendReminder: (task: FullTask) => void;
 };
 
-const TaskRow = memo(function TaskRow({
-  task: t,
-  onEdit,
-  onArchive,
-  onUnarchive,
-  onOpenProgress,
-  formatDate,
-  onChangePriority,
-  onSendReminder, // ★ NEW
-}: RowProps) {
-  return (
-    <TableRow className={t.status === 'Overdue' ? 'bg-red-50' : ''}>
-      <TableCell className="font-medium">{t.title}</TableCell>
-      <TableCell>{t.project_name || '—'}</TableCell>
-      <TableCell>
-        {Array.isArray(t.assignees) && t.assignees.length > 0 ? (
-          <div className="flex flex-wrap gap-1">
-            {t.assignees.map((u) => (
-              <span
-                key={u.id}
-                className="inline-block text-xs bg-gray-100 rounded-full px-2 py-0.5"
-                title={u.email || undefined}
-              >
-                {u.name}
-              </span>
-            ))}
-          </div>
-        ) : (
-          t.assignee_name || '—'
-        )}
-      </TableCell>
-      <TableCell>
-        <PrioritySelect value={t.priority as Priority} onChange={(p) => onChangePriority(t.id, p)} />
-      </TableCell>
-      <TableCell>{formatDate(t.due_date)}</TableCell>
-      <TableCell>
-        <div className="flex items-center gap-2 w-48">
-          <div
-            className="w-full bg-gray-200 rounded-full h-1.5"
-            role="progressbar"
-            aria-valuenow={Math.round(t.progress_percentage || 0)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <div
-              className="h-1.5 rounded-full transition-all duration-300"
-              style={{
-                width: `${Math.max(0, Math.min(100, Math.round(t.progress_percentage || 0)))}%`,
-                background: `linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)`,
-              }}
-            />
-          </div>
-          <span className="w-10 text-right tabular-nums">{Math.round(t.progress_percentage ?? 0)}%</span>
-        </div>
-      </TableCell>
-      <TableCell className="text-right">
-        <div className="flex items-center justify-end gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onOpenProgress(t)}
-            title="Update progress (manual/target/steps)"
-          >
-            <Gauge className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => onEdit(t)} title="Edit">
-            <Edit3 className="h-4 w-4" />
-          </Button>
-
-          {t.status === 'Archived' ? (
-            <Button variant="ghost" size="sm" onClick={() => onUnarchive(t.id)} title="Unarchive">
-              <Save className="h-4 w-4 text-emerald-600" />
-            </Button>
+const TaskRow = memo(
+  function TaskRow({
+    task: t,
+    onEdit,
+    onArchive,
+    onUnarchive,
+    onOpenProgress,
+    onOpenNotes,
+    formatDate,
+    onChangePriority,
+    onSendReminder,
+  }: RowProps) {
+    return (
+      <TableRow className={t.status === 'Overdue' ? 'bg-red-50' : ''}>
+        <TableCell className="font-medium">{t.title}</TableCell>
+        <TableCell>{t.project_name || '—'}</TableCell>
+        <TableCell>
+          {Array.isArray(t.assignees) && t.assignees.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {t.assignees.map((u) => (
+                <span
+                  key={u.id}
+                  className="inline-block text-xs bg-gray-100 rounded-full px-2 py-0.5"
+                  title={u.email || undefined}
+                >
+                  {u.name}
+                </span>
+              ))}
+            </div>
           ) : (
-            <Button variant="ghost" size="sm" onClick={() => onArchive(t.id)} title="Archive">
-              <Archive className="h-4 w-4 text-orange-600" />
-            </Button>
+            t.assignee_name || '—'
           )}
+        </TableCell>
+        <TableCell>
+          <PrioritySelect
+            value={t.priority as Priority}
+            onChange={(p) => onChangePriority(t.id, p)}
+          />
+        </TableCell>
+        <TableCell>{formatDate(t.due_date)}</TableCell>
+        <TableCell>
+          <div className="flex items-center gap-2 w-48">
+            <div
+              className="w-full bg-gray-200 rounded-full h-1.5"
+              role="progressbar"
+              aria-valuenow={Math.round(t.progress_percentage || 0)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                className="h-1.5 rounded-full transition-all duration-300"
+                style={{
+                  width: `${Math.max(
+                    0,
+                    Math.min(100, Math.round(t.progress_percentage || 0))
+                  )}%`,
+                  background:
+                    'linear-gradient(to right, #4ade80, #22d3ee, #3b82f6)',
+                }}
+              />
+            </div>
+            <span className="w-10 text-right tabular-nums">
+              {Math.round(t.progress_percentage ?? 0)}%
+            </span>
+          </div>
+        </TableCell>
+        <TableCell className="text-right">
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onOpenProgress(t)}
+              title="Update progress (manual/target/steps)"
+            >
+              <Gauge className="h-4 w-4" />
+            </Button>
 
-          {/* ★ NEW: send reminder */}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onSendReminder(t)}
-            title="Send reminder email"
-          >
-            <Send className="h-4 w-4" />
-          </Button>
-        </div>
-      </TableCell>
-    </TableRow>
-  );
-}, (prev, next) => {
-  const a = prev.task, b = next.task;
-  return (
-    a.id === b.id &&
-    a.title === b.title &&
-    a.project_name === b.project_name &&
-    a.assignee_name === b.assignee_name &&
-    JSON.stringify(a.assignees || []) === JSON.stringify(b.assignees || []) &&
-    a.priority === b.priority &&
-    a.due_date === b.due_date &&
-    a.progress_percentage === b.progress_percentage &&
-    a.status === b.status
-  );
-});
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onOpenNotes(t)}
+              title="View notes"
+            >
+              <FileText className="h-4 w-4" />
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onEdit(t)}
+              title="Edit"
+            >
+              <Edit3 className="h-4 w-4" />
+            </Button>
+
+            {t.status === 'Archived' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onUnarchive(t.id)}
+                title="Unarchive"
+              >
+                <Save className="h-4 w-4 text-emerald-600" />
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onArchive(t.id)}
+                title="Archive"
+              >
+                <Archive className="h-4 w-4 text-orange-600" />
+              </Button>
+            )}
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onSendReminder(t)}
+              title="Send reminder email"
+            >
+              <Send className="h-4 w-4" />
+            </Button>
+          </div>
+        </TableCell>
+      </TableRow>
+    );
+  },
+  (prev, next) => {
+    const a = prev.task,
+      b = next.task;
+    return (
+      a.id === b.id &&
+      a.title === b.title &&
+      a.project_name === b.project_name &&
+      a.assignee_name === b.assignee_name &&
+      JSON.stringify(a.assignees || []) ===
+        JSON.stringify(b.assignees || []) &&
+      a.priority === b.priority &&
+      a.due_date === b.due_date &&
+      a.progress_percentage === b.progress_percentage &&
+      a.status === b.status
+    );
+  }
+);
 
 /* ---------- Main table ---------- */
 
-// helpers to keep payloads clean for your backend
-const UUIDish = (v?: string | null) => !!v && /^[0-9a-fA-F-]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(v);
-const pickValidIds = (ids?: string[]) => (Array.isArray(ids) ? ids.filter((v) => UUIDish(v)) : []);
+const UUIDish = (v?: string | null) =>
+  !!v &&
+  /^[0-9a-fA-F-]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(
+    v
+  );
+const pickValidIds = (ids?: string[]) =>
+  Array.isArray(ids) ? ids.filter((v) => UUIDish(v)) : [];
 
 const buildCreatePayload = (d: TaskFormData) => {
   const isTarget = d.progress_mode === 'target';
-  const due = d.due_date && String(d.due_date).trim() !== '' ? d.due_date : null;
-
-  const payload: any = {
-    title: d.title,
-    description: d.description ?? null,
-    priority: d.priority ?? 'Medium',
-    due_date: due,
-    project_id: d.project_id ?? null,
-    progress_mode: d.progress_mode ?? 'manual',
-    assignee_ids: pickValidIds(d.assignee_ids), // multi-assignees
-  };
-
-  if (d.progress_mode === 'manual') {
-    payload.progress_percentage = Math.max(0, Math.min(100, Math.round(d.progress_percentage ?? 0)));
-  }
-  if (isTarget) {
-    payload.progress_goal = d.progress_goal ?? null;
-    payload.progress_current = d.progress_current ?? 0;
-  }
-
-  // legacy single (optional)
-  if (UUIDish(d.assignee_id)) {
-    payload.assignee_id = d.assignee_id!;
-  }
-  return payload;
-};
-
-const buildUpdatePayload = (d: TaskFormData) => {
-  const isTarget = d.progress_mode === 'target';
-  const due = d.due_date && String(d.due_date).trim() !== '' ? d.due_date : null;
+  const due =
+    d.due_date && String(d.due_date).trim() !== ''
+      ? d.due_date
+      : null;
 
   const payload: any = {
     title: d.title,
@@ -879,13 +1196,52 @@ const buildUpdatePayload = (d: TaskFormData) => {
   };
 
   if (d.progress_mode === 'manual') {
-    payload.progress_percentage = Math.max(0, Math.min(100, Math.round(d.progress_percentage ?? 0)));
+    payload.progress_percentage = Math.max(
+      0,
+      Math.min(100, Math.round(d.progress_percentage ?? 0))
+    );
+  }
+  if (isTarget) {
+    payload.progress_goal = d.progress_goal ?? null;
+    payload.progress_current = d.progress_current ?? 0;
+  }
+
+  if (UUIDish(d.assignee_id)) {
+    payload.assignee_id = d.assignee_id!;
+  }
+  return payload;
+};
+
+const buildUpdatePayload = (d: TaskFormData) => {
+  const isTarget = d.progress_mode === 'target';
+  const due =
+    d.due_date && String(d.due_date).trim() !== ''
+      ? d.due_date
+      : null;
+
+  const payload: any = {
+    title: d.title,
+    description: d.description ?? null,
+    priority: d.priority ?? 'Medium',
+    due_date: due,
+    project_id: d.project_id ?? null,
+    progress_mode: d.progress_mode ?? 'manual',
+    assignee_ids: pickValidIds(d.assignee_ids),
+  };
+
+  if (d.progress_mode === 'manual') {
+    payload.progress_percentage = Math.max(
+      0,
+      Math.min(100, Math.round(d.progress_percentage ?? 0))
+    );
   } else if (isTarget) {
     payload.progress_goal = d.progress_goal ?? null;
     payload.progress_current = d.progress_current ?? 0;
   }
 
-  payload.assignee_id = UUIDish(d.assignee_id) ? d.assignee_id! : null;
+  payload.assignee_id = UUIDish(d.assignee_id)
+    ? d.assignee_id!
+    : null;
   return payload;
 };
 
@@ -915,39 +1271,65 @@ export function TasksTable({
   const [showTargetDialog, setShowTargetDialog] = useState(false);
   const [showStepsDialog, setShowStepsDialog] = useState(false);
 
-  // ★ NEW: reminder states
   const [sendingId, setSendingId] = useState<string | null>(null);
-  const [noteFor, setNoteFor] = useState<FullTask | null>(null);
-  const [customNote, setCustomNote] = useState('');
+  const [noteForReminder, setNoteForReminder] = useState<FullTask | null>(
+    null
+  );
+  const [customReminderNote, setCustomReminderNote] = useState('');
+
+  // Notes dialog state
+  const [notesTask, setNotesTask] = useState<FullTask | null>(null);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [notesSaving, setNotesSaving] = useState(false);
+  const [notes, setNotes] = useState<TaskNote[]>([]);
+  const [noteMessage, setNoteMessage] = useState('');
+  const [noteVisibility, setNoteVisibility] =
+    useState<NoteVisibility>('owner');
+  const [noteIsBlocker, setNoteIsBlocker] = useState(false);
 
   const formatDate = useStableFormatDate();
 
-const normalize = (t: any): FullTask => {
-  const rawSteps = t?.steps;
-  let steps: TaskStep[] = [];
-  if (Array.isArray(rawSteps)) steps = rawSteps as TaskStep[];
-  else if (typeof rawSteps === 'string') {
-    try { steps = JSON.parse(rawSteps) ?? []; } catch { steps = []; }
-  }
+  const normalize = (t: any): FullTask => {
+    const rawSteps = t?.steps;
+    let steps: TaskStep[] = [];
+    if (Array.isArray(rawSteps)) steps = rawSteps as TaskStep[];
+    else if (typeof rawSteps === 'string') {
+      try {
+        steps = JSON.parse(rawSteps) ?? [];
+      } catch {
+        steps = [];
+      }
+    }
 
-  const rawAssignees = t?.assignees;
-  const assignees = Array.isArray(rawAssignees)
-    ? rawAssignees
-    : typeof rawAssignees === 'string'
-      ? (() => { try { return JSON.parse(rawAssignees) ?? []; } catch { return []; } })()
+    const rawAssignees = t?.assignees;
+    const assignees = Array.isArray(rawAssignees)
+      ? rawAssignees
+      : typeof rawAssignees === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(rawAssignees) ?? [];
+          } catch {
+            return [];
+          }
+        })()
       : [];
 
-  return {
-    ...t,
-    progress_mode: (['manual','target','steps'].includes(t.progress_mode) ? t.progress_mode : 'manual'),
-    progress_goal: t.progress_goal ?? null,
-    progress_current: t.progress_current ?? 0,
-    steps,
-    assignees,
-    priority: (t.priority ?? 'Medium') as FullTask['priority'],
+    return {
+      ...t,
+      progress_mode: ['manual', 'target', 'steps'].includes(
+        t.progress_mode
+      )
+        ? t.progress_mode
+        : 'manual',
+      progress_goal: t.progress_goal ?? null,
+      progress_current: t.progress_current ?? 0,
+      steps,
+      assignees,
+      priority: (t.priority ?? 'Medium') as FullTask['priority'],
+    };
   };
-};
-
 
   const fetchTasks = useCallback(async () => {
     inFlight.current?.abort();
@@ -963,21 +1345,30 @@ const normalize = (t: any): FullTask => {
       });
       if (!r.ok) throw new Error('Failed to load tasks');
       const data = await r.json();
-      const normalized: FullTask[] = (Array.isArray(data) ? data : []).map(normalize);
+      const normalized: FullTask[] = (Array.isArray(data) ? data : []).map(
+        normalize
+      );
 
       const withOverdueUI = normalized.map((t) =>
-        isOverdue(t) && t.status !== 'Overdue' ? ({ ...t, status: 'Overdue' as const }) : t
+        isOverdue(t) && t.status !== 'Overdue'
+          ? ({ ...t, status: 'Overdue' as const })
+          : t
       );
 
       setTasks(withOverdueUI);
 
-      const toMark = normalized.filter((t) => isOverdue(t) && t.status !== 'Overdue');
+      const toMark = normalized.filter(
+        (t) => isOverdue(t) && t.status !== 'Overdue'
+      );
       if (toMark.length) {
         Promise.all(
           toMark.map((t) =>
             fetch(`${API_BASE}/api/tasks/${t.id}`, {
               method: 'PUT',
-              headers: { 'Content-Type': 'application/json', ...authHeaders() },
+              headers: {
+                'Content-Type': 'application/json',
+                ...authHeaders(),
+              },
               body: JSON.stringify({ status: 'Overdue' }),
             })
           )
@@ -985,21 +1376,25 @@ const normalize = (t: any): FullTask => {
       }
     } catch (e: any) {
       if (e?.name !== 'AbortError') {
-        toast({ title: 'Error', description: e.message || 'Failed to load tasks', variant: 'destructive' });
+        toast({
+          title: 'Error',
+          description: e.message || 'Failed to load tasks',
+          variant: 'destructive',
+        });
       }
     } finally {
       setLoading(false);
     }
   }, [toast]);
 
-  // Global "Add Task" button event
   useEffect(() => {
     const handler = () => {
       setTaskToEdit(null);
       setShowTaskForm(true);
     };
     window.addEventListener('tasks:add' as any, handler);
-    return () => window.removeEventListener('tasks:add' as any, handler);
+    return () =>
+      window.removeEventListener('tasks:add' as any, handler);
   }, []);
 
   useEffect(() => {
@@ -1007,7 +1402,6 @@ const normalize = (t: any): FullTask => {
     return () => inFlight.current?.abort();
   }, [fetchTasks]);
 
-  /** ---------- Auto-refresh hooks (events, focus/visibility) ---------- */
   useEffect(() => {
     const refreshDebounced = debounce(() => fetchTasks(), 200);
     const handler = () => refreshDebounced();
@@ -1019,25 +1413,34 @@ const normalize = (t: any): FullTask => {
       'projects:refresh',
       'projects:created',
     ];
-    events.forEach((e) => window.addEventListener(e as any, handler));
+    events.forEach((e) =>
+      window.addEventListener(e as any, handler)
+    );
 
-    const onVisibility = () => { if (document.visibilityState === 'visible') refreshDebounced(); };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshDebounced();
+    };
     window.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', handler);
 
     return () => {
-      events.forEach((e) => window.removeEventListener(e as any, handler));
-      window.removeEventListener('visibilitychange', onVisibility);
+      events.forEach((e) =>
+        window.removeEventListener(e as any, handler)
+      );
+      window.removeEventListener(
+        'visibilitychange',
+        onVisibility
+      );
       window.removeEventListener('focus', handler);
     };
   }, [fetchTasks]);
 
-  /** ---------- Handle demo imports (e.g., Read.ai) ---------- */
   useEffect(() => {
     type ImportDetail = { source?: string; tasks?: any[] };
 
     const onImport = (e: Event) => {
-      const detail = (e as CustomEvent<ImportDetail>).detail || {};
+      const detail =
+        (e as CustomEvent<ImportDetail>).detail || {};
       if (!detail?.tasks?.length) return;
       if (detail.source && detail.source !== 'readai') return;
 
@@ -1046,21 +1449,31 @@ const normalize = (t: any): FullTask => {
       setTasks((prev) => {
         const map = new Map<string, FullTask>();
         [...prev, ...incoming].forEach((t) => {
-          const enriched = isOverdue(t) && t.status !== 'Overdue' ? ({ ...t, status: 'Overdue' as const }) : t;
+          const enriched =
+            isOverdue(t) && t.status !== 'Overdue'
+              ? ({ ...t, status: 'Overdue' as const })
+              : t;
           map.set(enriched.id, enriched);
         });
         return Array.from(map.values());
       });
     };
 
-    window.addEventListener('tasks:import', onImport as EventListener);
-    return () => window.removeEventListener('tasks:import', onImport as EventListener);
+    window.addEventListener(
+      'tasks:import',
+      onImport as EventListener
+    );
+    return () =>
+      window.removeEventListener(
+        'tasks:import',
+        onImport as EventListener
+      );
   }, []);
-  /** -------------------------------------------------------- */
 
-  /* ---------- helpers ---------- */
   const patchTask = useCallback((id: string, patch: Partial<FullTask>) => {
-    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+    setTasks((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, ...patch } : t))
+    );
   }, []);
 
   const onRangeChange = useCallback(
@@ -1080,25 +1493,51 @@ const normalize = (t: any): FullTask => {
         return;
       }
       try {
-        const nextStatus = t.status === 'Archived' ? t.status : computeStatusFromPct(pct);
-        const maybeOverdue = isOverdue({ due_date: t.due_date!, status: nextStatus, progress_percentage: pct });
-        const finalStatus = nextStatus === 'Done' ? 'Done' : maybeOverdue ? 'Overdue' : nextStatus;
-
-        patchTask(id, { progress_percentage: pct, status: finalStatus });
-
-        const r = await fetch(`${API_BASE}/api/tasks/${id}/progress`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ progress_percentage: pct }),
+        const nextStatus =
+          t.status === 'Archived'
+            ? t.status
+            : computeStatusFromPct(pct);
+        const maybeOverdue = isOverdue({
+          due_date: t.due_date!,
+          status: nextStatus,
+          progress_percentage: pct,
         });
+        const finalStatus =
+          nextStatus === 'Done'
+            ? 'Done'
+            : maybeOverdue
+            ? 'Overdue'
+            : nextStatus;
+
+        patchTask(id, {
+          progress_percentage: pct,
+          status: finalStatus,
+        });
+
+        const r = await fetch(
+          `${API_BASE}/api/tasks/${id}/progress`,
+          {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
+            body: JSON.stringify({ progress_percentage: pct }),
+          }
+        );
         if (!r.ok) throw new Error('Failed to update progress');
 
         await putStatusForPct({ ...t, status: finalStatus }, pct);
 
         onChanged?.();
-        notifyTasksChanged(); // 🔔 inform other views
+        notifyTasksChanged();
       } catch (e: any) {
-        toast({ title: 'Error', description: e.message || 'Failed to update progress', variant: 'destructive' });
+        toast({
+          title: 'Error',
+          description:
+            e.message || 'Failed to update progress',
+          variant: 'destructive',
+        });
       } finally {
         setSavingId(null);
       }
@@ -1106,71 +1545,107 @@ const normalize = (t: any): FullTask => {
     [tasks, patchTask, toast, onChanged]
   );
 
-    const fetchTaskById = useCallback(async (id: string): Promise<FullTask | null> => {
-    try {
-      const r = await fetch(`${API_BASE}/api/tasks/${id}?ts=${Date.now()}`, {
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        cache: 'no-store',
-      });
-      if (!r.ok) return null;
-      const t = await r.json();
-      return normalize(t);
-    } catch {
-      return null;
-    }
-  }, []);
+  const fetchTaskById = useCallback(
+    async (id: string): Promise<FullTask | null> => {
+      try {
+        const r = await fetch(
+          `${API_BASE}/api/tasks/${id}?ts=${Date.now()}`,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
+            cache: 'no-store',
+          }
+        );
+        if (!r.ok) return null;
+        const t = await r.json();
+        return normalize(t);
+      } catch {
+        return null;
+      }
+    },
+    []
+  );
 
-  // update priority (optimistic)
   const onChangePriority = useCallback(
     async (id: string, p: Priority) => {
-      const prev = tasks.find((t) => t.id === id)?.priority as Priority | undefined;
+      const prev = tasks.find((t) => t.id === id)
+        ?.priority as Priority | undefined;
       patchTask(id, { priority: p as FullTask['priority'] });
 
       try {
         const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders(),
+          },
           body: JSON.stringify({ priority: p }),
         });
         if (!res.ok) throw new Error('Failed to update priority');
-        toast({ title: 'Priority updated', description: `Set to ${PRIORITY_META[p].label}` });
+        toast({
+          title: 'Priority updated',
+          description: `Set to ${PRIORITY_META[p].label}`,
+        });
         onChanged?.();
-        notifyTasksChanged(); // 🔔
+        notifyTasksChanged();
       } catch (e: any) {
-        if (prev) patchTask(id, { priority: prev as FullTask['priority'] });
-        toast({ title: 'Error', description: e?.message || 'Failed to update priority', variant: 'destructive' });
+        if (prev)
+          patchTask(id, {
+            priority: prev as FullTask['priority'],
+          });
+        toast({
+          title: 'Error',
+          description:
+            e?.message || 'Failed to update priority',
+          variant: 'destructive',
+        });
       }
     },
     [patchTask, tasks, toast, onChanged]
   );
 
-const onEdit = useCallback(async (task: FullTask) => {
-  setShowTaskForm(true);
-  // show something immediately so the dialog opens fast
-  setTaskToEdit(task);
-
-  // now fetch the fully hydrated task (includes steps)
-  const full = await fetchTaskById(task.id);
-  if (full) setTaskToEdit(full);
-}, [fetchTaskById]);
-
+  const onEdit = useCallback(
+    async (task: FullTask) => {
+      setShowTaskForm(true);
+      setTaskToEdit(task);
+      const full = await fetchTaskById(task.id);
+      if (full) setTaskToEdit(full);
+    },
+    [fetchTaskById]
+  );
 
   const onArchive = useCallback(
     async (id: string) => {
       try {
-        patchTask(id, { status: 'Archived' }); // optimistic
-        const updateResponse = await fetch(`${API_BASE}/api/tasks/${id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ status: 'Archived' }),
-        });
-        if (!updateResponse.ok) throw new Error('Only tasks creator or Company owner can archive task');
+        patchTask(id, { status: 'Archived' });
+        const updateResponse = await fetch(
+          `${API_BASE}/api/tasks/${id}`,
+          {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
+            body: JSON.stringify({ status: 'Archived' }),
+          }
+        );
+        if (!updateResponse.ok)
+          throw new Error(
+            'Only tasks creator or Company owner can archive task'
+          );
         toast({ title: 'Task archived' });
         onChanged?.();
-        notifyTasksChanged(); // 🔔
+        notifyTasksChanged();
       } catch (e: any) {
-        toast({ title: 'Error', description: e.message || 'Failed to archive task', variant: 'destructive' });
-        fetchTasks(); // revert
+        toast({
+          title: 'Error',
+          description:
+            e.message || 'Failed to archive task',
+          variant: 'destructive',
+        });
+        fetchTasks();
       }
     },
     [toast, patchTask, onChanged, fetchTasks]
@@ -1182,40 +1657,57 @@ const onEdit = useCallback(async (task: FullTask) => {
       if (!t) return;
       const restored = deriveUnarchivedStatus(t);
       try {
-        patchTask(id, { status: restored }); // optimistic
-        const updateResponse = await fetch(`${API_BASE}/api/tasks/${id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ status: restored }),
-        });
-        if (!updateResponse.ok) throw new Error('Failed to unarchive task');
+        patchTask(id, { status: restored });
+        const updateResponse = await fetch(
+          `${API_BASE}/api/tasks/${id}`,
+          {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
+            body: JSON.stringify({ status: restored }),
+          }
+        );
+        if (!updateResponse.ok)
+          throw new Error('Failed to unarchive task');
         toast({ title: 'Task unarchived' });
         onChanged?.();
-        notifyTasksChanged(); // 🔔
+        notifyTasksChanged();
       } catch (e: any) {
-        toast({ title: 'Error', description: e.message || 'Failed to unarchive task', variant: 'destructive' });
-        fetchTasks(); // revert
+        toast({
+          title: 'Error',
+          description:
+            e.message || 'Failed to unarchive task',
+          variant: 'destructive',
+        });
+        fetchTasks();
       }
     },
     [tasks, patchTask, toast, onChanged, fetchTasks]
   );
 
-  // CREATE/UPDATE (with optimistic add for create)
   const submitTask = useCallback(
     async (data: TaskFormData, initialSteps?: TaskStepFormData[]) => {
       try {
         if (taskToEdit) {
-          // UPDATE
-          const r = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify(buildUpdatePayload(data)),
-          });
+          const r = await fetch(
+            `${API_BASE}/api/tasks/${taskToEdit.id}`,
+            {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+                ...authHeaders(),
+              },
+              body: JSON.stringify(buildUpdatePayload(data)),
+            }
+          );
 
           if (r.status === 403) {
             toast({
               title: 'Not allowed',
-              description: 'Only the creator or company owner can edit this task.',
+              description:
+                'Only the creator or company owner can edit this task.',
               variant: 'destructive',
             });
             return;
@@ -1223,73 +1715,102 @@ const onEdit = useCallback(async (task: FullTask) => {
 
           if (!r.ok) throw new Error('Failed to update task');
 
-          // If switched to steps on edit and we have steps to seed, push them now
           if (data.progress_mode === 'steps' && initialSteps?.length) {
-            const stepsToSend = initialSteps.map(s => ({ ...s, id: undefined }));
-            const r2 = await fetch(`${API_BASE}/api/tasks/${taskToEdit.id}/progress`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json', ...authHeaders() },
-              body: JSON.stringify({ progress_mode: 'steps', steps: stepsToSend }),
-            });
+            const stepsToSend = initialSteps.map((s) => ({
+              ...s,
+              id: undefined,
+            }));
+            const r2 = await fetch(
+              `${API_BASE}/api/tasks/${taskToEdit.id}/progress`,
+              {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...authHeaders(),
+                },
+                body: JSON.stringify({
+                  progress_mode: 'steps',
+                  steps: stepsToSend,
+                }),
+              }
+            );
 
             if (r2.status === 403) {
               toast({
                 title: 'Not allowed',
-                description: 'You cannot update steps for a task you are not assigned to.',
+                description:
+                  'You cannot update steps for a task you are not assigned to.',
                 variant: 'destructive',
               });
               return;
             }
 
-            if (!r2.ok) throw new Error('Failed to seed steps');
+            if (!r2.ok)
+              throw new Error('Failed to seed steps');
           }
         } else {
-          // CREATE
           const createRes = await fetch(`${API_BASE}/api/tasks`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
             body: JSON.stringify(buildCreatePayload(data)),
           });
-          if (!createRes.ok) throw new Error('Failed to create task');
+          if (!createRes.ok)
+            throw new Error('Failed to create task');
 
           const created = await createRes.json();
 
-          // Show immediately (optimistic insert)
           const normalized = normalize(created);
           const withOverdueUI =
-            isOverdue(normalized) && normalized.status !== 'Overdue'
+            isOverdue(normalized) &&
+            normalized.status !== 'Overdue'
               ? ({ ...normalized, status: 'Overdue' as const })
               : normalized;
           setTasks((prev) => [withOverdueUI, ...prev]);
 
-          // Seed steps immediately if step-based
           if (data.progress_mode === 'steps' && initialSteps?.length) {
-            const stepsToSend = initialSteps.map(s => ({ ...s, id: undefined, task_id: created.id }));
-            const r2 = await fetch(`${API_BASE}/api/tasks/${created.id}/progress`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json', ...authHeaders() },
-              body: JSON.stringify({ progress_mode: 'steps', steps: stepsToSend }),
-            });
+            const stepsToSend = initialSteps.map((s) => ({
+              ...s,
+              id: undefined,
+              task_id: created.id,
+            }));
+            const r2 = await fetch(
+              `${API_BASE}/api/tasks/${created.id}/progress`,
+              {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...authHeaders(),
+                },
+                body: JSON.stringify({
+                  progress_mode: 'steps',
+                  steps: stepsToSend,
+                }),
+              }
+            );
 
             if (r2.status === 403) {
               toast({
                 title: 'Not allowed',
-                description: 'You cannot update steps for a task you are not assigned to.',
+                description:
+                  'You cannot update steps for a task you are not assigned to.',
                 variant: 'destructive',
               });
               return;
             }
-            if (!r2.ok) throw new Error('Failed to seed steps for new task');
+            if (!r2.ok)
+              throw new Error('Failed to seed steps for new task');
           }
         }
 
         setShowTaskForm(false);
         setTaskToEdit(null);
 
-        // Fresh read (cache-busting) so server-enriched fields show up
         await fetchTasks();
         onChanged?.();
-        notifyTasksChanged(); // 🔔 let other views update
+        notifyTasksChanged();
       } catch (e: any) {
         toast({
           title: 'Error',
@@ -1301,16 +1822,19 @@ const onEdit = useCallback(async (task: FullTask) => {
     [taskToEdit, fetchTasks, onChanged, toast]
   );
 
-  /* ---------- fetch full task (with steps) before opening progress ---------- */
-
-
   const onOpenProgress = useCallback(
     async (t: FullTask) => {
-      let base: FullTask = { ...t, steps: Array.isArray(t.steps) ? t.steps : [] };
+      let base: FullTask = {
+        ...t,
+        steps: Array.isArray(t.steps) ? t.steps : [],
+      };
       setProgressTask(base);
       setShowProgressOptions(true);
 
-      if (t.progress_mode === 'steps' && (!t.steps || t.steps.length === 0)) {
+      if (
+        t.progress_mode === 'steps' &&
+        (!t.steps || t.steps.length === 0)
+      ) {
         const full = await fetchTaskById(t.id);
         if (full) {
           setProgressTask(full);
@@ -1325,7 +1849,9 @@ const onEdit = useCallback(async (task: FullTask) => {
       if (!patch?.id) return;
 
       setTasks((prevTasks) => {
-        const idx = prevTasks.findIndex((t) => t.id === patch.id);
+        const idx = prevTasks.findIndex(
+          (t) => t.id === patch.id
+        );
         if (idx !== -1) {
           const updated = [...prevTasks];
           updated[idx] = { ...updated[idx], ...patch };
@@ -1342,12 +1868,11 @@ const onEdit = useCallback(async (task: FullTask) => {
       });
 
       onChanged?.();
-      notifyTasksChanged(); // 🔔
+      notifyTasksChanged();
     },
     [onChanged]
   );
 
-  /* ---------- NEW: Sort state + persistence ---------- */
   const [sortKey, setSortKey] = useState<SortKey>(() => {
     return (localStorage.getItem('tasks.sortKey') as SortKey) || 'due';
   });
@@ -1360,70 +1885,95 @@ const onEdit = useCallback(async (task: FullTask) => {
     localStorage.setItem('tasks.sortDir', sortDir);
   }, [sortKey, sortDir]);
 
-  const makeComparator = useCallback((key: SortKey, dir: SortDir) => {
-    const sign = dir === 'asc' ? 1 : -1;
+  const makeComparator = useCallback(
+    (key: SortKey, dir: SortDir) => {
+      const sign = dir === 'asc' ? 1 : -1;
 
-    return (a: FullTask, b: FullTask) => {
-      let base = 0;
-      switch (key) {
-        case 'due': {
-          base = cmp(safeDateMs(a.due_date), safeDateMs(b.due_date));
-          break;
+      return (a: FullTask, b: FullTask) => {
+        let base = 0;
+        switch (key) {
+          case 'due': {
+            base = cmp(
+              safeDateMs(a.due_date),
+              safeDateMs(b.due_date)
+            );
+            break;
+          }
+          case 'priority': {
+            base = cmp(
+              PRIORITY_ORDER[a.priority],
+              PRIORITY_ORDER[b.priority]
+            );
+            break;
+          }
+          case 'progress': {
+            base = cmp(
+              Number(a.progress_percentage ?? 0),
+              Number(b.progress_percentage ?? 0)
+            );
+            break;
+          }
+          case 'status': {
+            base = cmp(
+              STATUS_ORDER[a.status],
+              STATUS_ORDER[b.status]
+            );
+            break;
+          }
+          case 'project': {
+            base = cmp(
+              (a.project_name || '').toLowerCase(),
+              (b.project_name || '').toLowerCase()
+            );
+            break;
+          }
+          case 'assignee': {
+            base = cmp(assigneeStr(a), assigneeStr(b));
+            break;
+          }
+          case 'title': {
+            base = cmp(
+              a.title.toLowerCase(),
+              b.title.toLowerCase()
+            );
+            break;
+          }
+          default:
+            base = 0;
         }
-        case 'priority': {
-          base = cmp(PRIORITY_ORDER[a.priority], PRIORITY_ORDER[b.priority]);
-          break;
-        }
-        case 'progress': {
-          base = cmp(Number(a.progress_percentage ?? 0), Number(b.progress_percentage ?? 0));
-          break;
-        }
-        case 'status': {
-          base = cmp(STATUS_ORDER[a.status], STATUS_ORDER[b.status]);
-          break;
-        }
-        case 'project': {
-          base = cmp((a.project_name || '').toLowerCase(), (b.project_name || '').toLowerCase());
-          break;
-        }
-        case 'assignee': {
-          base = cmp(assigneeStr(a), assigneeStr(b));
-          break;
-        }
-        case 'title': {
-          base = cmp(a.title.toLowerCase(), b.title.toLowerCase());
-          break;
-        }
-        default:
-          base = 0;
-      }
-      if (base !== 0) return base * sign;
+        if (base !== 0) return base * sign;
 
-      // Tie-breakers for deterministic order
-      const tiebreak =
-        cmp(safeDateMs(a.due_date), safeDateMs(b.due_date)) ||
-        cmp(PRIORITY_ORDER[a.priority], PRIORITY_ORDER[b.priority]) ||
-        cmp(a.title.toLowerCase(), b.title.toLowerCase());
-      return tiebreak;
-    };
-  }, []);
+        const tiebreak =
+          cmp(safeDateMs(a.due_date), safeDateMs(b.due_date)) ||
+          cmp(
+            PRIORITY_ORDER[a.priority],
+            PRIORITY_ORDER[b.priority]
+          ) ||
+          cmp(a.title.toLowerCase(), b.title.toLowerCase());
+        return tiebreak;
+      };
+    },
+    []
+  );
 
   const filtered = useMemo(() => {
     let rows = tasks;
 
-    // 🚫 Hide archived in every view except the "archived" tab
     if (mode !== 'archived') {
       rows = rows.filter((t) => t.status !== 'Archived');
     }
 
-    // Tab-specific filters
     if (mode !== 'all') {
       if (mode === 'inprogress') {
         rows = rows.filter(
-          (t) => (t.progress_percentage ?? 0) >= 1 && (t.progress_percentage ?? 0) < 100
+          (t) =>
+            (t.progress_percentage ?? 0) >= 1 &&
+            (t.progress_percentage ?? 0) < 100
         );
       } else if (mode === 'completed') {
-        rows = rows.filter((t) => (t.progress_percentage ?? 0) >= 100);
+        rows = rows.filter(
+          (t) => (t.progress_percentage ?? 0) >= 100
+        );
       } else if (mode === 'overdue') {
         rows = rows.filter((t) => t.status === 'Overdue');
       } else if (mode === 'archived') {
@@ -1431,62 +1981,173 @@ const onEdit = useCallback(async (task: FullTask) => {
       }
     }
 
-    // External filters
-    if (filters?.projectId) rows = rows.filter((t) => t.project_id === filters.projectId);
+    if (filters?.projectId)
+      rows = rows.filter(
+        (t) => t.project_id === filters.projectId
+      );
     if (filters?.search) {
       const q = filters.search.toLowerCase();
       rows = rows.filter((t) => {
         const names = Array.isArray(t.assignees)
-          ? t.assignees.map((u) => (u.name || '').toLowerCase()).join(' ')
+          ? t.assignees
+              .map((u) => (u.name || '').toLowerCase())
+              .join(' ')
           : (t.assignee_name || '').toLowerCase();
         return (
           t.title.toLowerCase().includes(q) ||
-          (t.project_name || '').toLowerCase().includes(q) ||
+          (t.project_name || '')
+            .toLowerCase()
+            .includes(q) ||
           names.includes(q)
         );
       });
     }
 
-    // Sort
     const comparator = makeComparator(sortKey, sortDir);
     return [...rows].sort(comparator);
-  }, [tasks, mode, filters?.projectId, filters?.search, makeComparator, sortKey, sortDir]);
+  }, [
+    tasks,
+    mode,
+    filters?.projectId,
+    filters?.search,
+    makeComparator,
+    sortKey,
+    sortDir,
+  ]);
 
+  const sendReminder = useCallback(
+    async (taskId: string, note?: string) => {
+      setSendingId(taskId);
+      try {
+        const r = await fetch(
+          `${API_BASE}/api/tasks/${taskId}/send-reminder-email`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
+            body: JSON.stringify({ customNote: note ?? '' }),
+          }
+        );
+        const ok = r.ok || r.status === 207;
+        const j = await r.json().catch(() => ({} as any));
 
-  /* ---------- NEW: reminder senders ---------- */
-  const sendReminder = useCallback(async (taskId: string, note?: string) => {
-    setSendingId(taskId);
-    try {
-      const r = await fetch(`${API_BASE}/api/tasks/${taskId}/send-reminder-email`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ customNote: note ?? '' })
-      });
-      const ok = r.ok || r.status === 207;
-      const j = await r.json().catch(() => ({} as any));
-
-      if (r.status === 429) {
-        toast({ title: 'Rate limited', description: j.error || 'Reminder recently sent.', variant: 'destructive' });
-      } else {
+        if (r.status === 429) {
+          toast({
+            title: 'Rate limited',
+            description:
+              j.error || 'Reminder recently sent.',
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: ok ? 'Reminder sent' : 'Failed to send',
+            description: j.message || j.error || '',
+            variant: ok ? 'default' : 'destructive',
+          });
+        }
+      } catch (e: any) {
         toast({
-          title: ok ? 'Reminder sent' : 'Failed to send',
-          description: j.message || j.error || '',
-          variant: ok ? 'default' : 'destructive'
+          title: 'Error',
+          description:
+            e?.message ?? 'Failed to send reminder',
+          variant: 'destructive',
         });
+      } finally {
+        setSendingId(null);
+        setNoteForReminder(null);
+        setCustomReminderNote('');
       }
-    } catch (e: any) {
-      toast({ title: 'Error', description: e?.message ?? 'Failed to send reminder', variant: 'destructive' });
-    } finally {
-      setSendingId(null);
-      setNoteFor(null);
-      setCustomNote('');
-    }
-  }, [toast]);
+    },
+    [toast]
+  );
 
   const onSendReminder = useCallback((task: FullTask) => {
-    // Open dialog to include custom note
-    setNoteFor(task);
+    setNoteForReminder(task);
   }, []);
+
+  // Notes: loader
+  const loadNotes = useCallback(
+    async (task: FullTask) => {
+      setNotesTask(task);
+      setNotesOpen(true);
+      setNotesLoading(true);
+      setNotesError(null);
+      try {
+        const r = await fetch(
+          `${API_BASE}/api/tasks/${task.id}/notes`,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
+          }
+        );
+        const data = await r.json();
+        if (!r.ok) {
+          throw new Error(
+            data?.error || 'Failed to fetch notes'
+          );
+        }
+        setNotes(Array.isArray(data) ? data : []);
+      } catch (e: any) {
+        setNotesError(
+          e?.message || 'Failed to fetch notes'
+        );
+      } finally {
+        setNotesLoading(false);
+      }
+    },
+    []
+  );
+
+  const onOpenNotes = useCallback(
+    (task: FullTask) => {
+      loadNotes(task);
+    },
+    [loadNotes]
+  );
+
+  const handleAddNote = useCallback(async () => {
+    if (!notesTask || !noteMessage.trim()) return;
+    setNotesSaving(true);
+    try {
+      const created = await createTaskNote(
+        notesTask.id,
+        noteMessage,
+        {
+          visibility: noteVisibility,
+          isBlocker: noteIsBlocker,
+          kind: 'note',
+        }
+      );
+
+      if (created) {
+        setNotes((prev) => [created, ...prev]);
+      } else {
+        await loadNotes(notesTask);
+      }
+      setNoteMessage('');
+      setNoteIsBlocker(false);
+    } catch (e: any) {
+      toast({
+        title: 'Error',
+        description:
+          e?.message || 'Failed to add note',
+        variant: 'destructive',
+      });
+    } finally {
+      setNotesSaving(false);
+    }
+  }, [
+    notesTask,
+    noteMessage,
+    noteVisibility,
+    noteIsBlocker,
+    loadNotes,
+    toast,
+  ]);
 
   return (
     <Card className="p-0 overflow-hidden">
@@ -1497,23 +2158,38 @@ const onEdit = useCallback(async (task: FullTask) => {
         </div>
       ) : (
         <div className="overflow-x-auto">
-          {/* Sort toolbar */}
           <div className="flex items-center justify-between px-4 pt-4">
             <div className="text-xs text-muted-foreground">
-              {filtered.length} task{filtered.length === 1 ? '' : 's'}
+              {filtered.length} task
+              {filtered.length === 1 ? '' : 's'}
             </div>
             <div className="flex items-center gap-2">
-              <Select value={sortKey} onValueChange={(v) => setSortKey(v as SortKey)}>
+              <Select
+                value={sortKey}
+                onValueChange={(v) =>
+                  setSortKey(v as SortKey)
+                }
+              >
                 <SelectTrigger className="w-[180px] h-8">
                   <SelectValue placeholder="Sort by" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="due">Due date</SelectItem>
-                  <SelectItem value="priority">Priority</SelectItem>
-                  <SelectItem value="progress">Progress</SelectItem>
-                  <SelectItem value="status">Status</SelectItem>
-                  <SelectItem value="project">Project</SelectItem>
-                  <SelectItem value="assignee">Assignee</SelectItem>
+                  <SelectItem value="priority">
+                    Priority
+                  </SelectItem>
+                  <SelectItem value="progress">
+                    Progress
+                  </SelectItem>
+                  <SelectItem value="status">
+                    Status
+                  </SelectItem>
+                  <SelectItem value="project">
+                    Project
+                  </SelectItem>
+                  <SelectItem value="assignee">
+                    Assignee
+                  </SelectItem>
                   <SelectItem value="title">Title</SelectItem>
                 </SelectContent>
               </Select>
@@ -1522,8 +2198,16 @@ const onEdit = useCallback(async (task: FullTask) => {
                 variant="outline"
                 size="sm"
                 className="h-8"
-                onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
-                title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+                onClick={() =>
+                  setSortDir((d) =>
+                    d === 'asc' ? 'desc' : 'asc'
+                  )
+                }
+                title={
+                  sortDir === 'asc'
+                    ? 'Ascending'
+                    : 'Descending'
+                }
               >
                 {sortDir === 'asc' ? 'Asc' : 'Desc'}
               </Button>
@@ -1538,14 +2222,21 @@ const onEdit = useCallback(async (task: FullTask) => {
                 <TableHead>Assignees</TableHead>
                 <TableHead>Priority</TableHead>
                 <TableHead>Due date</TableHead>
-                <TableHead className="w-[220px]">Progress</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead className="w-[220px]">
+                  Progress
+                </TableHead>
+                <TableHead className="text-right">
+                  Actions
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-10">
+                  <TableCell
+                    colSpan={7}
+                    className="text-center text-muted-foreground py-10"
+                  >
                     No tasks found.
                   </TableCell>
                 </TableRow>
@@ -1555,15 +2246,16 @@ const onEdit = useCallback(async (task: FullTask) => {
                     key={t.id}
                     task={t}
                     savingId={savingId}
-                    onRangeChange={() => {}}
+                    onRangeChange={onRangeChange}
                     onSaveProgress={onSaveProgress}
                     onEdit={onEdit}
                     onArchive={onArchive}
                     onUnarchive={onUnarchive}
                     onOpenProgress={onOpenProgress}
+                    onOpenNotes={onOpenNotes}
                     formatDate={formatDate}
                     onChangePriority={onChangePriority}
-                    onSendReminder={onSendReminder} // ★ pass down
+                    onSendReminder={onSendReminder}
                   />
                 ))
               )}
@@ -1584,8 +2276,9 @@ const onEdit = useCallback(async (task: FullTask) => {
       >
         <DialogContent className="sm:max-w-[720px]">
           <DialogHeader>
-            {taskToEdit ? 'Edit Task' : 'New Task'}</DialogHeader>
-          
+            {taskToEdit ? 'Edit Task' : 'New Task'}
+          </DialogHeader>
+
           <TaskForm
             task={taskToEdit as any}
             onCancel={() => {
@@ -1643,13 +2336,22 @@ const onEdit = useCallback(async (task: FullTask) => {
         </>
       )}
 
-      {/* ★ NEW: Send Reminder — custom note dialog */}
-      <Dialog open={!!noteFor} onOpenChange={(o) => { if (!o) { setNoteFor(null); setCustomNote(''); } }}>
+      {/* Reminder dialog */}
+      <Dialog
+        open={!!noteForReminder}
+        onOpenChange={(o) => {
+          if (!o) {
+            setNoteForReminder(null);
+            setCustomReminderNote('');
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle>Send reminder</DialogTitle>
             <DialogDescription>
-              Optional: include a short note to the assignees of “{noteFor?.title}”.
+              Optional: include a short note to the
+              assignees of “{noteForReminder?.title}”.
             </DialogDescription>
           </DialogHeader>
 
@@ -1657,17 +2359,201 @@ const onEdit = useCallback(async (task: FullTask) => {
             <Label>Custom note</Label>
             <Input
               placeholder="e.g. Please update progress before stand-up."
-              value={customNote}
-              onChange={(e) => setCustomNote(e.target.value)}
+              value={customReminderNote}
+              onChange={(e) =>
+                setCustomReminderNote(e.target.value)
+              }
             />
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setNoteFor(null)} disabled={sendingId === noteFor?.id}>
+            <Button
+              variant="outline"
+              onClick={() => setNoteForReminder(null)}
+              disabled={
+                sendingId === noteForReminder?.id
+              }
+            >
               Cancel
             </Button>
-            <Button onClick={() => noteFor && sendReminder(noteFor.id, customNote)} disabled={sendingId === noteFor?.id}>
-              {sendingId === noteFor?.id ? 'Sending…' : 'Send'}
+            <Button
+              onClick={() =>
+                noteForReminder &&
+                sendReminder(
+                  noteForReminder.id,
+                  customReminderNote
+                )
+              }
+              disabled={sendingId === noteForReminder?.id}
+            >
+              {sendingId === noteForReminder?.id
+                ? 'Sending…'
+                : 'Send'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Notes dialog */}
+      <Dialog
+        open={notesOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setNotesOpen(false);
+            setNotesTask(null);
+            setNotes([]);
+            setNoteMessage('');
+            setNoteIsBlocker(false);
+            setNotesError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[700px]">
+          <DialogHeader>
+            <DialogTitle>
+              Notes — {notesTask?.title || ''}
+            </DialogTitle>
+            <DialogDescription>
+              Admins / company owners see all notes. Creators
+              see notes on tasks they created. Others see
+              notes marked as “Everyone”.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-4 max-h-[60vh]">
+            {/* Add note box */}
+            <div className="space-y-2 border-b pb-3">
+              <Label>Add note</Label>
+              <Textarea
+                value={noteMessage}
+                onChange={(e) =>
+                  setNoteMessage(e.target.value)
+                }
+                placeholder="Write a note about this task…"
+                className="min-h-[70px]"
+              />
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div>
+                    <Label className="text-xs mb-1 block">
+                      Visibility
+                    </Label>
+                    <Select
+                      value={noteVisibility}
+                      onValueChange={(v) =>
+                        setNoteVisibility(
+                          v as NoteVisibility
+                        )
+                      }
+                    >
+                      <SelectTrigger className="h-8 w-[160px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">
+                          Everyone
+                        </SelectItem>
+                        <SelectItem value="owner">
+                          Owner / Creator
+                        </SelectItem>
+                        <SelectItem value="admin">
+                          Admin only
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-5">
+                    <Checkbox
+                      id="note-blocker"
+                      checked={noteIsBlocker}
+                      onCheckedChange={(v) =>
+                        setNoteIsBlocker(!!v)
+                      }
+                    />
+                    <Label
+                      htmlFor="note-blocker"
+                      className="text-xs"
+                    >
+                      Mark as blocker
+                    </Label>
+                  </div>
+                </div>
+
+                <Button
+                  onClick={handleAddNote}
+                  disabled={
+                    notesSaving || !noteMessage.trim()
+                  }
+                >
+                  {notesSaving ? 'Saving…' : 'Add note'}
+                </Button>
+              </div>
+            </div>
+
+            {/* Notes list */}
+            <div className="flex-1 overflow-y-auto pr-1">
+              {notesLoading ? (
+                <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Loading notes…
+                </div>
+              ) : notesError ? (
+                <div className="text-sm text-red-600 py-4">
+                  {notesError}
+                </div>
+              ) : notes.length === 0 ? (
+                <div className="text-sm text-muted-foreground py-4">
+                  No notes yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notes.map((n) => (
+                    <div
+                      key={n.id}
+                      className="border rounded-md px-3 py-2 bg-white"
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <div className="text-xs font-medium">
+                          {n.author_name || 'Unknown'}
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                          <span>
+                            {new Date(
+                              n.created_at
+                            ).toLocaleString()}
+                          </span>
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-gray-100">
+                            <span className="capitalize">
+                              {n.kind}
+                            </span>
+                            <span className="text-[9px] text-gray-500">
+                              {n.visibility}
+                            </span>
+                          </span>
+                          {n.is_blocker && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-red-100 text-[10px] text-red-700">
+                              Blocker
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-sm whitespace-pre-wrap">
+                        {n.message}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setNotesOpen(false)}
+            >
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

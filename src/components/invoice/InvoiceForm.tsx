@@ -955,7 +955,7 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
                   id={`quantity-${index}`}
                   name="quantity"
                   type="number"
-                  value={item.quantity}
+                  value={item.quantity === 0 ? '' : item.quantity} 
                   onChange={e => handleLineItemChange(index, 'quantity', e.target.value)}
                   placeholder="Qty"
                   min="0"
@@ -970,7 +970,7 @@ export function InvoiceForm({ invoice, onClose, onSubmitSuccess }: InvoiceFormPr
                   id={`unit_price-${index}`}
                   name="unit_price"
                   type="number"
-                  value={item.unit_price}
+                  value={item.unit_price === 0 ? '' : item.unit_price}
                   onChange={e => handleLineItemChange(index, 'unit_price', e.target.value)}
                   placeholder="Price"
                   min="0"

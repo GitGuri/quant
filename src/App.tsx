@@ -38,6 +38,7 @@ import OAuthCallback from './pages/OAuthCallback';
 import VerifyEmail from './pages/VerifyEmail';
 import ComplianceCentre from './pages/ComplianceCentre';
 import RequireRoles from '@/components/auth/RequireRoles';
+import VerifyGoodStandingPage from './pages/VerifyGoodStanding';
 import './lib/fetch-patch';
 
 const Forbidden = () => (
@@ -69,6 +70,7 @@ const AppContent = () => {
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/verify-email" element={<VerifyEmail />} />
             <Route path="/oauth-callback" element={<OAuthCallback />} />
+            <Route path="/verify/good-standing" element={<VerifyGoodStandingPage />} />
 
             {/* 403 */}
             <Route path="/403" element={<Forbidden />} />

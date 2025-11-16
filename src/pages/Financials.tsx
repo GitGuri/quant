@@ -164,9 +164,11 @@ interface ApiBalanceSheetResponse {
 
   current_assets_detail?: ApiCurrentAssetsDetail;
   non_current_assets_detail?: ApiPpeDetail;
-  overdraft?: number; // NEW
-  current_liabilities_detail?: ApiCurrentLiabilitiesDetail; 
+  overdraft?: number;
+  current_liabilities_detail?: ApiCurrentLiabilitiesDetail;
 
+  // NEW from backend
+  reclassTotal?: number;
   equityBreakdown?: {
     opening?: number | string;
     priorRetained?: number | string;
@@ -189,8 +191,40 @@ interface ApiBalanceSheetResponse {
     };
   };
 
-  debug?: any;
+  checks?: ApiBalanceSheetChecks;
+  hints?: string[];
+
+  debug?: {
+    accountsBySection?: any[];
+    suspects?: ApiDebugSuspect[];
+    [key: string]: any;
+  };
 }
+type UnbalancedEntry = {
+  id: number;
+  entryDate: string;
+  reference: string | null;
+  description: string | null;
+  totalDebit: number;
+  totalCredit: number;
+  diff: number;
+};
+
+type UnbalancedEntryLine = {
+  entryId: number;
+  lineId: number;
+  date: string;
+  reference: string | null;
+  description: string | null;
+  code: string;
+  name: string;
+  type: string;
+  debit: number;
+  credit: number;
+};
+
+
+
 
 interface BalanceSheetData {
   assets: BalanceSheetLineItem[];
@@ -203,7 +237,14 @@ interface BalanceSheetData {
     totalEquityAndLiabilities: number;
     diff: number;
   };
+  // NEW
+  hints?: string[];
+  suspects?: ApiDebugSuspect[];
+    unbalancedEntries: UnbalancedEntry[];
+  unbalancedEntryLines: UnbalancedEntryLine[];
 }
+
+
 
 interface ApiLiabilityDetailRow {
   section: string;
@@ -212,6 +253,48 @@ interface ApiLiabilityDetailRow {
 }
 interface ApiCurrentLiabilitiesDetail {
   rows: ApiLiabilityDetailRow[];
+}
+
+interface ApiBalanceSheetChecks {
+  eps?: number;
+  detailVsSections?: {
+    currentAssetsDetailTotal?: number;
+    presentedCurrentAssets?: number;
+    deltaCurrentDetailVsSection?: number;
+
+    nonCurrentAssetsDetailTotal?: number;
+    presentedNonCurrentAssets?: number;
+    deltaNonCurrentDetailVsSection?: number;
+
+    ok?: boolean;
+  };
+  presentationVsControl?: {
+    presentedAssetsTotal?: number;
+    controlAssetsTotal?: number;
+    deltaAssets_PresentationVsControl?: number;
+
+    presentedLiabEqTotal?: number;
+    controlLiabEq_EquityOnly?: number;
+    controlLiabEq_EquityComputed?: number;
+    deltaLiabEq_PresentationVsControl_EquityOnly?: number;
+    deltaLiabEq_PresentationVsControl_EquityComputed?: number;
+
+    ok?: boolean;
+  };
+  doubleEntry?: {
+    diffComputed?: number;
+    ok?: boolean;
+  };
+}
+
+interface ApiDebugSuspect {
+  id: number;
+  code: string;
+  name: string;
+  type: string;
+  normalSide: string;
+  section: string;
+  amount: number;
 }
 
 interface ApiIncomeStatementSection {
@@ -559,6 +642,34 @@ lines.push({
     const equity: BalanceSheetLineItem[] = [];
     const overdraft = num((response as any)?.overdraft ?? 0);
     const cliabDetail = response.current_liabilities_detail?.rows ?? [];
+    const hints = Array.isArray(response.hints) ? response.hints : [];
+
+    const unbalancedEntries = Array.isArray(response.debug?.unbalancedEntries)
+  ? response.debug!.unbalancedEntries.map((e: any) => ({
+      ...e,
+      totalDebit: num(e.totalDebit),
+      totalCredit: num(e.totalCredit),
+      diff: num(e.diff),
+    }))
+  : [];
+
+const unbalancedEntryLines = Array.isArray(response.debug?.unbalancedEntryLines)
+  ? response.debug!.unbalancedEntryLines.map((l: any) => ({
+      ...l,
+      debit: num(l.debit),
+      credit: num(l.credit),
+    }))
+  : [];
+
+const suspects = Array.isArray(response.debug?.suspects)
+  ? response.debug!.suspects.map(s => ({
+      ...s,
+      amount: num(s.amount)
+    }))
+  : [];
+
+
+
 
 
     if (!response) {
@@ -611,9 +722,14 @@ const controlAssetsTotal         = num(response.control?.assetsTotal);
 const controlLiabPlusEquityEff   = num(response.control?.effective?.liabPlusEquityComputed);
 const controlDiffEff             = num(response.control?.effective?.diffComputed);
 
-const totalAssetsFinal           = controlAssetsTotal || displayTotalAssets;
-const totalEquityAndLiabsFinal   = controlLiabPlusEquityEff || displayLiabPlusEquity;
-const diffFinal                  = Number((totalAssetsFinal - totalEquityAndLiabsFinal).toFixed(2));
+// ✅ What the user should see on the face of the report
+const totalAssetsFinal         = displayTotalAssets;
+const totalEquityAndLiabsFinal = displayLiabPlusEquity;
+
+// ✅ Keep using GL control diff for the warning, fall back to presentation diff if missing
+const presentationDiff = Number((displayTotalAssets - displayLiabPlusEquity).toFixed(2));
+const diffFinal = controlDiffEff || presentationDiff;
+
 
 
     // ----- Build asset lines -----
@@ -708,8 +824,14 @@ liabilities.push({ item: 'Total Non-Current Liabilities', amount: nonCurrentLiab
         totalEquity: equityComputed,
         totalEquityAndLiabilities: totalEquityAndLiabsFinal,
         diff: controlDiffEff || diffFinal,
-      }
+      },
+      hints,
+      suspects,
+      unbalancedEntries,
+      unbalancedEntryLines,
     };
+
+
   }, []);
 
   // --- Cashflow (memoized) ---
@@ -2009,21 +2131,168 @@ const handleDownloadPdf = async () => {
                       </Table>
 
                       {/* Equality Check */}
-                      <div className="mt-6 border-t pt-3 space-y-1">
-                        <div className="flex justify-between">
-                          <span className="font-semibold">TOTAL ASSETS </span>
-                          <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalAssets)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="font-semibold">TOTAL EQUITY AND LIABILITIES </span>
-                          <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalEquityAndLiabilities)}</span>
-                        </div>
-                        {nonZero(balanceSheetData.totals.diff) && (
-                          <div className="mt-2 rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 px-3 py-2 text-sm">
-                            Out of balance by {formatCurrency(balanceSheetData.totals.diff)} (per GL control).
-                          </div>
-                        )}
-                      </div>
+{/* Equality Check + Diagnostics */}
+<div className="mt-6 border-t pt-3 space-y-3">
+  <div className="flex justify-between">
+    <span className="font-semibold">TOTAL ASSETS</span>
+    <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalAssets)}</span>
+  </div>
+  <div className="flex justify-between">
+    <span className="font-semibold">TOTAL EQUITY AND LIABILITIES</span>
+    <span className="font-mono">{formatCurrency(balanceSheetData.totals.totalEquityAndLiabilities)}</span>
+  </div>
+
+  {nonZero(balanceSheetData.totals.diff) && (
+    <div className="mt-2 space-y-3">
+      <div className="rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 px-3 py-2 text-sm">
+        <div className="font-semibold">
+          Out of balance by {formatCurrency(balanceSheetData.totals.diff)} (per GL control).
+        </div>
+        <div className="text-xs mt-1">
+          Your debits and credits don’t fully agree for this date; see possible causes below.
+        </div>
+      </div>
+
+      {/* High-level hints from backend */}
+      {balanceSheetData.hints && balanceSheetData.hints.length > 0 && (
+        <div className="rounded-md border border-sky-300 bg-sky-50 dark:bg-sky-900/20 text-sky-900 dark:text-sky-100 px-3 py-2 text-xs">
+          <div className="font-semibold mb-1">System diagnostics</div>
+          <ul className="list-disc pl-4 space-y-1">
+            {balanceSheetData.hints.map((h, idx) => (
+              <li key={idx}>{h}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+
+            {/* Unbalanced journal entries (DR != CR) */}
+      {balanceSheetData.unbalancedEntries && balanceSheetData.unbalancedEntries.length > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-100 px-3 py-2 text-xs mt-3">
+          <div className="font-semibold mb-2">
+            Problem entries (debits ≠ credits)
+          </div>
+          <div className="overflow-x-auto -mx-1 mb-2">
+            <Table className="min-w-[600px] text-xs">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Reference</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead className="text-right">Total DR ({symbol})</TableHead>
+                  <TableHead className="text-right">Total CR ({symbol})</TableHead>
+                  <TableHead className="text-right">Diff</TableHead>
+                  {/* Optional: actions column */}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {balanceSheetData.unbalancedEntries.map(e => (
+                  <TableRow key={e.id}>
+                    <TableCell>
+                      {e.entryDate ? new Date(e.entryDate).toLocaleDateString('en-ZA') : ''}
+                    </TableCell>
+                    <TableCell>{e.reference || '-'}</TableCell>
+                    <TableCell className="max-w-[200px] truncate">{e.description || '-'}</TableCell>
+                    <TableCell className="text-right">{moneyOrBlank(e.totalDebit)}</TableCell>
+                    <TableCell className="text-right">{moneyOrBlank(e.totalCredit)}</TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {moneyOrBlank(e.diff)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* Optional: show first few lines for context */}
+          {balanceSheetData.unbalancedEntryLines &&
+            balanceSheetData.unbalancedEntryLines.length > 0 && (
+              <div className="mt-2">
+                <div className="font-semibold mb-1">Sample entry lines</div>
+                <div className="overflow-x-auto -mx-1">
+                  <Table className="min-w-[650px] text-[11px]">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Entry #</TableHead>
+                        <TableHead>Account</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead className="text-right">Debit</TableHead>
+                        <TableHead className="text-right">Credit</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {balanceSheetData.unbalancedEntryLines.slice(0, 20).map(l => (
+                        <TableRow key={l.lineId}>
+                          <TableCell>{l.entryId}</TableCell>
+                          <TableCell>{l.code} – {l.name}</TableCell>
+                          <TableCell>{l.type}</TableCell>
+                          <TableCell className="text-right">{moneyOrBlank(l.debit)}</TableCell>
+                          <TableCell className="text-right">{moneyOrBlank(l.credit)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  {balanceSheetData.unbalancedEntryLines.length > 20 && (
+                    <div className="mt-1 text-[10px] text-muted-foreground">
+                      Showing first 20 lines; fix these entries in your journal screen.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+        </div>
+      )}
+
+ 
+
+
+      {/* Suspect accounts table */}
+      {balanceSheetData.suspects && balanceSheetData.suspects.length > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-100 px-3 py-2 text-xs">
+          <div className="font-semibold mb-2">
+            Accounts to review (mapping / section issues)
+          </div>
+          <div className="overflow-x-auto -mx-1">
+            <Table className="min-w-[500px] text-xs">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Code</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Section</TableHead>
+                  <TableHead className="text-right">Balance ({symbol})</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {balanceSheetData.suspects.slice(0, 10).map(s => (
+                  <TableRow key={s.id}>
+                    <TableCell>{s.code}</TableCell>
+                    <TableCell>{s.name}</TableCell>
+                    <TableCell>{s.type}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {s.section || '<none>'}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {moneyOrBlank(s.amount)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {balanceSheetData.suspects.length > 10 && (
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                Showing first 10 suspect accounts; refine mappings in your chart of accounts for more detail.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )}
+</div>
+
+
+
                     </div>
                   </>
                 )}

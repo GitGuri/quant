@@ -384,16 +384,36 @@ export default function ComplianceCentre() {
       }
 
       if (activeDoc === 'letter-good-standing') {
-        // Prefer PDF if available, else CSV fallback from preview
         const url = `${API_BASE_URL}/compliance/good-standing.pdf`;
         const r = await tryFetchPdf(url, `Letter_of_Good_Standing.pdf`);
+
         if (r && !r.ok) {
-          const blob = buildCsvFallback();
-          openBlobInNewTab(blob, `Letter_of_Good_Standing_${iso(new Date())}.csv`);
-          toast({ title: 'No PDF route — CSV downloaded instead' });
+          // Try read JSON error from backend
+          let msg = 'Unable to generate Letter of Good Standing.';
+          try {
+            const data = await r.json();
+            if (data?.code === 'not_eligible_good_standing') {
+              msg =
+                data.error ||
+                'This company does not currently meet the solvency / PIS criteria for an audit exemption letter.';
+            } else if (data?.error) {
+              msg = data.error;
+            }
+          } catch {
+            // ignore JSON parse errors
+          }
+
+          toast({
+            variant: 'destructive',
+            title: 'Cannot generate Letter of Good Standing',
+            description: msg,
+          });
         }
+
+        // 💡 No CSV fallback here – blocked means blocked.
         return;
       }
+
 
       // Safety net (shouldn’t reach here)
       toast({ title: 'Unsupported document', description: 'This document cannot be generated yet.', variant: 'destructive' });
@@ -548,26 +568,92 @@ export default function ComplianceCentre() {
     }
 
     // Letter of Good Standing
+    // Letter of Good Standing
     return (
       <Card>
         <CardHeader>
           <CardTitle>Letter of Good Standing</CardTitle>
-          <CardDescription>COIDA Compliance Status</CardDescription>
+          <CardDescription>
+            {good?.status === 'valid' &&
+              'Company meets solvency and public interest score criteria for an audit exemption letter.'}
+            {good?.status === 'pending' &&
+              'Company does not currently meet the solvency / public interest score criteria. A Letter of Good Standing cannot be generated automatically.'}
+            {good?.status === 'expired' &&
+              'A previously issued Letter of Good Standing has expired. Please request an updated assessment from your accountant.'}
+            {!good &&
+              'COIDA / audit exemption status is not yet available for this company.'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {!good ? (
-            <div className="text-sm text-muted-foreground">No status available.</div>
+            <div className="text-sm text-muted-foreground">
+              No status available. Please ensure your books and payroll are up to date, then refresh this page.
+            </div>
           ) : (
-            <div className="grid sm:grid-cols-2 gap-3 text-sm">
-              <div className="flex justify-between"><span>Status</span><span className={`font-medium ${good.status === 'valid' ? 'text-emerald-600' : good.status === 'expired' ? 'text-red-600' : 'text-amber-600'}`}>{good.status.toUpperCase()}</span></div>
-              {good.reference && <div className="flex justify-between"><span>Reference</span><span className="font-mono">{good.reference}</span></div>}
-              {good.issuedOn && <div className="flex justify-between"><span>Issued on</span><span>{good.issuedOn}</span></div>}
-              {good.validUntil && <div className="flex justify-between"><span>Valid until</span><span>{good.validUntil}</span></div>}
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between">
+                <span>Status</span>
+                <span
+                  className={
+                    'font-medium ' +
+                    (good.status === 'valid'
+                      ? 'text-emerald-600'
+                      : good.status === 'expired'
+                      ? 'text-red-600'
+                      : 'text-amber-600')
+                  }
+                >
+                  {good.status.toUpperCase()}
+                </span>
+              </div>
+
+              {good.status === 'valid' && (
+                <>
+                  {good.reference && (
+                    <div className="flex justify-between">
+                      <span>Reference</span>
+                      <span className="font-mono">{good.reference}</span>
+                    </div>
+                  )}
+                  {good.issuedOn && (
+                    <div className="flex justify-between">
+                      <span>Issued on</span>
+                      <span>{good.issuedOn}</span>
+                    </div>
+                  )}
+                  {good.validUntil && (
+                    <div className="flex justify-between">
+                      <span>Valid until</span>
+                      <span>{good.validUntil}</span>
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground mt-2">
+                    This status is based on solvency and public interest score (PIS) calculations from your latest
+                    accounting records.
+                  </p>
+                </>
+              )}
+
+              {good.status === 'pending' && (
+                <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
+                  The company does not currently meet the solvency and/or PIS thresholds for an audit exemption letter.
+                  Please review your latest financial statements with your accountant before requesting a Letter of Good
+                  Standing.
+                </p>
+              )}
+
+              {good.status === 'expired' && (
+                <p className="text-xs text-red-700 dark:text-red-400 mt-2">
+                  The previous Letter of Good Standing is no longer valid. An updated solvency and PIS assessment is
+                  required before a new letter can be issued.
+                </p>
+              )}
             </div>
           )}
         </CardContent>
       </Card>
     );
+
   }, [activeDoc, fromDate, toDate, vat, emp201, emp501, prov, good, money, symbol]);
 
   return (
