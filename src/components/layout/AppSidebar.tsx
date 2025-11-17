@@ -34,6 +34,7 @@ interface NavigationItem {
   allowedRoles?: string[];
 }
 const navigationItems: NavigationItem[] = [
+  { title: 'Usage Dashboard', url: '/usage', icon: Home, allowedRoles: ['DEV'] },
   { title: 'Dashboard', url: '/', icon: Home, allowedRoles: ['admin', 'ceo', 'manager', 'dashboard','cashier','accountant', 'user'] },
   { title: 'POS Transact', url: '/pos', icon: CreditCard, allowedRoles: ['cashier', 'user', 'pos-transact','accountant', 'admin'] },
   { title: 'Import', url: '/import', icon: Upload, allowedRoles: ['manager', 'import', 'user', 'admin'] },

@@ -39,6 +39,7 @@ import VerifyEmail from './pages/VerifyEmail';
 import ComplianceCentre from './pages/ComplianceCentre';
 import RequireRoles from '@/components/auth/RequireRoles';
 import VerifyGoodStandingPage from './pages/VerifyGoodStanding';
+import PlatformUsageDashboard from './pages/PlatformUsageDashboard';
 import './lib/fetch-patch';
 
 const Forbidden = () => (
@@ -246,6 +247,14 @@ const AppContent = () => {
               element={
                 <RequireRoles anyOf={['manager','pos-admin','accountant','user','admin']}>
                   <CashInScreen />
+                </RequireRoles>
+              }
+            />
+            <Route
+              path="/usage"
+              element={
+                <RequireRoles anyOf={['DEV']}>
+                  <PlatformUsageDashboard />
                 </RequireRoles>
               }
             />

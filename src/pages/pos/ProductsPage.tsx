@@ -199,22 +199,20 @@ const ProductsPage = () => {
     return () => clearInterval(t);
   }, []);
 
-  // Build options for product picker (products only)
-  const productOptions = useMemo(
+  // Build options for combo picker (products + services)
+  const itemOptions = useMemo(
     () =>
-      products
-        .filter((p) => p.type === 'product')
-        .map((p) => ({
-          value: Number(p.id),
-          label: `${p.name} — ${fmt(
-            p.unitPrice ?? p.price ?? 0
-          )}${p.unit ? ` / ${p.unit}` : ''}`,
-          search: `${p.name} ${p.unit ?? ''}`.toLowerCase(),
-        })),
+      products.map((p) => ({
+        value: Number(p.id),
+        label: `${p.name} (${p.type === 'service' ? 'Service' : 'Product'}) — ${fmt(
+          p.unitPrice ?? p.price ?? 0
+        )}${p.unit ? ` / ${p.unit}` : ''}`,
+        search: `${p.name} ${p.unit ?? ''} ${p.type}`.toLowerCase(),
+      })),
     [products, fmt]
   );
 
-  const productFilterOption = (input: string, option?: any) =>
+  const itemFilterOption = (input: string, option?: any) =>
     (option?.label as string)
       ?.toLowerCase()
       .includes(input.toLowerCase()) ||
@@ -1056,14 +1054,14 @@ const ProductsPage = () => {
                               {...it}
                               name={[it.name, 'product_id']}
                               fieldKey={[it.fieldKey!, 'product_id']}
-                              label="Product"
-                              rules={[{ required: true, message: 'Choose a product' }]}
+                              label="Item (Product or Service)"
+                              rules={[{ required: true, message: 'Choose an item' }]}
                             >
                               <Select
                                 showSearch
-                                placeholder="Search product by name"
-                                options={productOptions}
-                                filterOption={productFilterOption}
+                                placeholder="Search item by name"
+                                options={itemOptions}
+                                filterOption={itemFilterOption}
                                 optionFilterProp="label"
                                 allowClear
                               />
@@ -1105,8 +1103,8 @@ const ProductsPage = () => {
         )}
       </Form.List>
       <p style={{ fontSize: 12, color: '#666', marginTop: 8 }}>
-        Pick products by name; set quantities. The combo is sold at the total price you
-        specify.
+        Pick items (products or services) by name; set quantities. The combo is sold at
+        the total price you specify.
       </p>
     </Card>
   );
@@ -1455,10 +1453,6 @@ const ProductsPage = () => {
               your supplier if provided).
             </p>
           </Card>
-
-          {/* Bulk Pricing & Combos */}
-          <BulkPricingEditor />
-          <ComboOffersEditor />
         </>
       )}
 
@@ -1471,6 +1465,10 @@ const ProductsPage = () => {
           <InputNumber min={0} style={{ width: '100%' }} />
         </Form.Item>
       )}
+
+      {/* Bulk pricing & combos apply to both products and services */}
+      <BulkPricingEditor />
+      <ComboOffersEditor />
 
       {/* Promotions */}
       <PromotionsEditor />

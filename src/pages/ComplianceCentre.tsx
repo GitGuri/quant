@@ -34,7 +34,7 @@ const DOCS: { id: DocId; label: string; icon: React.ComponentType<any>; blurb: s
   { id: 'emp201', label: 'EMP201 (Monthly PAYE/UIF/SDL)', icon: CalendarClock, blurb: 'Monthly payroll tax declaration totals.' },
   { id: 'emp501', label: 'EMP501 (Reconciliation)', icon: FileText, blurb: 'Mid/Year-end payroll tax reconciliation.' },
   { id: 'provisional-tax', label: 'Provisional Tax (IRP6)', icon: Calculator, blurb: 'Half-yearly prepayment based on estimates.' },
-  { id: 'letter-good-standing', label: 'Letter of Good Standing', icon: ShieldCheck, blurb: 'COIDA compliance validity status.' },
+  { id: 'letter-good-standing', label: 'Letter of Good Standing', icon: ShieldCheck, blurb: 'Accountant`s compliance validity status.' },
 ];
 
 // -------------------- Small utils --------------------
@@ -581,7 +581,7 @@ export default function ComplianceCentre() {
             {good?.status === 'expired' &&
               'A previously issued Letter of Good Standing has expired. Please request an updated assessment from your accountant.'}
             {!good &&
-              'COIDA / audit exemption status is not yet available for this company.'}
+              'Accountant`s / audit exemption status is not yet available for this company.'}
           </CardDescription>
         </CardHeader>
         <CardContent>
