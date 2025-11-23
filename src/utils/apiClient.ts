@@ -1,6 +1,6 @@
 // src/utils/apiClient.ts
 
-const BASE_URL = 'https://quantnow-sa1e.onrender.com' deployed backend
+const BASE_URL = 'https://quantnow-sa1e.onrender.com' // deployed backend
 
 export const apiClient = {
   get: async (endpoint: string) => {
