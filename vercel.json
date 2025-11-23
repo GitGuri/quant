@@ -1,10 +1,12 @@
 {
   "version": 2,
+  "installCommand": "npm install",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "framework": null,
   "rewrites": [
     {
-      "source": "/((?!assets|.*\\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|webmanifest|json|jsx|ts|tsx)).*)",
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ],
@@ -33,3 +35,4 @@
     }
   ]
 }
+
