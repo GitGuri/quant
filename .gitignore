@@ -24,3 +24,4 @@ logs/
 # Sensitive files - ADD THESE TO YOUR .gitignore
 backend/pythonapi/app/service_account.json
 backend/pythonapi/app/main.py # if it contains hardcoded tokens, otherwise just the token itself
+.vercel
