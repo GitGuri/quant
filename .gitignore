@@ -2,6 +2,12 @@
 node_modules/
 dist/
 build/
+.gradle/
+.idea/
+.bubblewrap/
+app/build/
+*.keystore
+android.keystore
 .env
 npm-debug.log*
 yarn-debug.log*
